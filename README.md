@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/fernandeusto/dockme/main/custom/icons/dockme.svg" width="200">
+</p>
+
 # Dockme
 
 **Gestión visual de Docker Compose con monitorización inteligente**
