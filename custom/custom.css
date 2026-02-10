@@ -1,0 +1,939 @@
+/* ========================================
+   MODIFICACION UI CON CSS
+   ======================================== */
+
+/* Efecto zoom sobre los iconos en compose */
+.cp-icon {
+    transition: transform 0.6s ease-in-out;
+}
+.cp-icon:hover {
+    transform: scale(1.25);
+}
+
+/* convierte los estados de badge "activo" en bolas verdes/rojas/grises en lista de stacks */
+a.item .cp-badge {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 10px 0 0 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    height: auto !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    gap: 15px !important;
+}
+
+/* Tamaño de icono en lista de stacks */
+a.item .cp-icon {
+    width: 35px !important;
+    height: 35px !important;
+    min-width: 35px !important;
+    min-height: 35px !important;
+    flex: 0 0 auto !important;
+    display: inline-block !important;
+}
+
+/* Bolas de estado en lista de stacks */
+a.item .cp-circle {
+    width: 20px !important;
+    height: 20px !important;
+    border-radius: 50% !important;
+    display: inline-block !important;
+    flex: 0 0 auto !important;
+}
+
+/* tamaño del nombre del stack en lista stacks*/
+a.item .title .cp-title {
+    font-size: 1.15em !important;
+}
+
+/* Permitir hover real sobre los stacks */
+a.item * {
+    pointer-events: none;
+}
+a.item {
+    pointer-events: auto;
+}
+
+/* destacar nombre del elemento seleccionado en lista stacks */
+a.item:hover .title .cp-title.active {
+    color: #bbbf53 !important;
+    font-weight: 500 !important;
+}
+
+/* Color del texto del stack segun activo/inactivo en lista stacks */ 
+a.item .title .cp-title.active {
+    color: #fff !important;
+    font-weight: 300 !important;
+}
+a.item .title .cp-title.inactive {
+    color: #888 !important;
+    font-weight: 400 !important;
+}
+
+/* Corrige de layout en la pagina compose */
+.shadow-box.container > .row {
+    display: flex !important;
+    align-items: center !important;
+    flex-wrap: nowrap !important;
+}
+
+.shadow-box.container > .row > img.cp-icon[data-icono-app="1"] {
+    flex: 0 0 auto !important;
+    margin-right: 20px !important;
+}
+
+.shadow-box.container > .row > .col-7 {
+    flex: 1 1 auto !important;
+    max-width: unset !important;
+}
+
+.shadow-box.container > .row > .col-5 {
+    flex: 0 0 auto !important;
+    margin-left: auto !important;
+    width: auto !important;
+    max-width: unset !important;
+}
+
+/* Estilos para poner a solo 2 columnas (stacks izquierda y contenido derecho) */
+@media (min-width: 0px) and (max-width: 4100px) {
+    div.col-lg-6 {
+        max-width: none !important;
+        width: 100% !important;
+    }
+
+    div.container.mb-3.big-padding.shadow-box {
+        max-width: none !important;
+        width: 100% !important;
+    }
+
+    div.col-xl-3.col-md-4.col-12 {
+        width: 350px !important;
+        flex: 0 0 auto !important;
+    }
+
+    div.mb-3.col-xl-9.col-md-8.col-12 {
+        width: calc(100% - 350px) !important;
+        max-width: none !important;
+        flex: 1 1 auto !important;
+    }
+
+    /* Responsive móvil */
+    @media (max-width: 700px) {
+        div.col-xl-3.col-md-4.col-12,
+        div.mb-3.col-xl-9.col-md-8.col-12 {
+            width: 100% !important;
+            flex: 0 0 100% !important;
+        }
+    }
+}
+
+/* Tamaño de fuente en el editor y terminal */
+div.editor-box.mb-3.shadow-box {
+    font-size: 14px !important;
+}
+div.xterm-rows {
+    font-size: 14px !important;
+}
+
+/* Nombre junto al icono principal: Evita que el titulo se estilice con degradado */
+.fs-4.title {
+    color: inherit;
+    font-size: inherit;
+}
+
+/* Cambiar fondo de los botones normales a Azul oscuro */
+.btn-normal {
+    color: #b1b8c0 !important;
+    background-color: #214a83 !important;
+}
+
+/* Fila superior con el logo y nombre mas estrecha (header) */
+.py-3 {
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+}
+
+/* Color destacado en azul para la version de la imagen */
+.tag {
+    color: #5fb8ed !important;
+}
+
+/* Caja de los contenedores con fondo mas visible */
+.shadow-box.big-padding {
+    padding: 10px;
+    background-color: #1c2431 !important;
+}
+
+/* Head fijo con el menu superior */
+header {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    background: #090c0f;
+}
+
+/* Ocultar botón Consola del header */
+header .nav-item.me-2 > a[href="/console"] {
+    display: none !important;
+}
+/* Ocultar botón Inicio del header a la derecha */
+header .nav-item.me-2 > a[href="/"] {
+    display: none !important;
+}
+/* Ocultar título del header por defecto "Dockge" junto al logo */
+header .fs-4.title {
+    visibility: hidden;
+}
+body.dockme-title-ready header .fs-4.title { /* y mostrarlo cuando lo hemos personalizado */
+    visibility: visible;
+}
+
+/* Ocultar contenido de Settings */
+.settings-menu {
+    display: none !important; /* menu lateral siempre oculto */
+}
+.settings-content {
+    display: none !important; /* contenido oculto en cualquier otra settings */
+}
+body.settings-security .settings-content {
+    display: block !important; /* contenido visible solo en settings security */
+}
+
+/* ocultar SIEMPRE el Home nativo de Dockge */
+.first-row {
+    display: none !important;
+}
+
+/* Boton primario sin degradado azul y con color solido */
+a.btn.btn-primary, button.btn.btn-primary {
+    background: none !important;
+    background-color: #0ca2f4 !important;
+}
+
+/* Bolas de estado de docker sin degradado */
+span.badge.bg-primary {
+    background: none !important;
+    background-color: #008000 !important;
+    color: #fff !important;
+}
+
+/* Ocultar el endpoint en el titulo del header del compose */
+.compose-header .agent-name {
+    display: none !important;
+}
+
+/* ========================================
+   TARJETAS DE RECIENTES Y UPDATES
+   ======================================== */
+.stack-card-link {
+    display: block;
+    text-decoration: none;
+    color: inherit;
+}
+
+.stack-card-horizontal {
+    display: flex;
+    align-items: center;
+    background-color: #222;
+    color: #fff;
+    border: 1px solid #444;
+    border-radius: 5px;
+    padding: 15px;
+    transition: background 0.2s;
+    height: 110px;
+}
+
+.stack-card-horizontal:hover {
+    background-color: #333;
+}
+
+.stack-card-horizontal.update {
+    border: 1px solid #ab8f39;
+    background-color: #342812;
+}
+
+/* Hueco del Logo */
+.stack-logo-left {
+    height: 96px;
+    width: 96px;
+    margin-right: 20px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+/* Imagen del logo */
+.stack-logo-left img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;   /* mantiene proporciones */
+    display: block;
+}
+
+/* Contenedor de texto */
+.stack-info {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0; /* CLAVE para ellipsis */
+}
+
+/* Fila superior (nombre + ignorar) */
+.linea1-stack-update {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 12px;
+}
+
+/* Nombre del stack */
+.stack-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    font-size: 1.7em;
+    color: #4f84c8;
+}
+
+/* Botón Ignorar */
+.stack-ignorar {
+    flex: 0 0 auto;
+    font-size: 14px;
+    white-space: nowrap;
+}
+
+.ignore-btn {
+    color: #d07272;
+    cursor: pointer;
+    font-weight: 600;
+}
+
+/* Hostname */
+.stack-hostname {
+    font-size: 1.2em;
+    font-weight: bold;
+    color: #bbb840;
+    margin-top: -2px;
+}
+
+/* Changelog */
+.stack-docker-image {
+    min-height: 1em;
+    color: #aa753d;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Estado */
+.stack-status {
+    font-size: 14px;
+    text-align: right;
+    color: #ccc;
+}
+
+/* ========================================
+   TARJETAS DE MÉTRICAS
+   ======================================== */
+.metrics-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 15px;
+    margin-bottom: 35px; /* igual que en dashboard-section-grid */
+}
+
+.metric-card {
+    background: #1c2431;
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 15px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.metric-card:hover {
+    background: #2a3441;
+    border-color: #4f84c8;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.metric-card.selected {
+    border-color: #4f84c8;
+    border-width: 3px;
+}
+
+.metric-card.disconnected {
+    opacity: 0.6;
+    border-color: #e74c3c;
+}
+
+.metric-card.disconnected:hover {
+    border-color: #c0392b;
+}
+
+/* Header de la tarjeta */
+.metric-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #333;
+}
+
+.metric-hostname {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: #4f84c8;
+}
+
+.metric-version {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 0px 6px;
+    background: #2a3441;
+    border: 1px solid #3a4557;
+    border-radius: 10px;
+    font-size: 0.75em;
+    font-weight: normal;
+    color: #79c0ff;
+}
+
+.metric-uptime {
+    font-size: 0.85em;
+    color: #888;
+}
+
+.metric-uptime.active {
+    color: #2ecc71;
+}
+
+.metric-uptime.disconnected {
+    color: #e74c3c;
+    font-weight: bold;
+}
+
+/* Filas de métricas */
+.metric-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 6px 0;
+    font-size: 0.95em;
+}
+
+.metric-label {
+    color: #aaa;
+}
+
+.metric-value {
+    font-weight: bold;
+}
+
+/* Colores según threshold */
+.metric-value.normal {
+    color: #2ecc71;
+}
+
+.metric-value.warning {
+    color: #f39c12;
+}
+
+.metric-value.danger {
+    color: #e74c3c;
+}
+
+/* Docker containers */
+.metric-docker {
+    color: #3498db;
+}
+
+.metric-stopped {
+    color: #e74c3c;
+    font-weight: bold;
+}
+
+/* Título de sección */
+.metrics-section-title {
+    font-size: 1.3em;
+    font-weight: bold;
+    padding-top: 10px;
+}
+
+/* Títulos de sección del dashboard */
+.dashboard-section-title {
+    font-size: 1.4em;
+    font-weight: bold;
+    margin-bottom: 10px !important;
+    padding-top: 10px;
+}
+
+/* Grid base común para secciones de Updates y Recientes */
+.dashboard-section-grid {
+    display: grid;
+    gap: 15px;
+    margin-bottom: 35px; /* igual que en metrics-container */
+}
+
+/* Grid de actualizaciones (tarjetas más anchas) */
+.dashboard-grid-updates {
+    grid-template-columns: repeat(auto-fill, minmax(600px, 1fr));
+}
+
+/* Grid de recientes (tarjetas más compactas) */
+.dashboard-grid-recientes {
+    grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+}
+
+/* ========================================
+   EDITOR DE ICONOS DE STACKS
+   ======================================== */
+/* Icono de editar stacks junto al buscador */
+.header-top {
+    display: flex;
+    align-items: center;
+}
+.dockme-edit-stacks-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    height: 38px;              /* igual que el input */
+    padding: 0 10px;
+    margin-right: 6px;
+
+    border: 1px solid #3a4557;
+    border-radius: 6px;
+
+    cursor: pointer;
+    font-size: 16px;
+    opacity: 0.8;
+    user-select: none;
+}
+.dockme-edit-stacks-icon:hover {
+    opacity: 1;
+    background-color: #2a3445;
+}
+.dockme-edit-stacks-icon.active {
+    background-color: #3a4b6b;      /* fondo más claro */
+    border-color: #6fa8ff;          /* azul más vivo */
+    color: #ffffff;                 /* icono bien visible */
+    opacity: 1;
+    box-shadow: 0 0 0 2px rgba(111,168,255,0.25);
+}
+.dockme-edit-stacks-icon.active:hover {
+    background-color: #445a82;
+}
+#dockme-stack-editor {
+    margin-top: 55px;
+}
+/* Contenedor del editor de iconos */
+.dockme-icon-preview {
+    margin-top: 15px;
+    width: 96px;
+    height: 96px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border: 1px dashed #3a4557;
+    border-radius: 8px;
+}
+.icon-placeholder,
+.icon-missing {
+    font-size: 13px;
+    color: #9aa4b2;
+    text-align: center;
+}
+.dockme-icon-editor {
+    margin-top: 20px;
+    max-width: 500px;
+}
+
+.dockme-icon-label {
+    display: block;
+    font-size: 14px;
+    margin-bottom: 6px;
+    color: #cfd6e4;
+}
+
+.dockme-icon-url-input {
+    width: 100%;
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid #3a4557;
+    background: #121821;
+    color: #fff;
+}
+
+.dockme-icon-upload-btn {
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid #3a4557;
+    margin-top: 30px;
+    background: #1f2937;
+    color: #fff;
+    cursor: pointer;
+}
+
+.dockme-icon-upload-btn:hover {
+    background: #2a3445;
+}
+
+.dockme-icon-error {
+    margin-top: 10px;
+    color: #ff8a8a;
+    font-size: 13px;
+}
+
+.dockme-icon-success {
+    margin-top: 10px;
+    color: #8affc1;
+    font-size: 13px;
+}
+.dockme-editor-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.dockme-stack-name {
+    font-size: 1.8em;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.dockme-editor-hint {
+    margin-top: 20px;
+    font-size: 13px;
+    color: #9aa4b2;
+}
+
+.dockme-icon-preview img {
+    max-width: 96px;
+    max-height: 96px;
+}
+
+.dockme-icon-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dockme-icon-status {
+    font-size: 22px;
+    min-width: 20px;
+    margin-left: 5px;
+}
+
+.dockme-icon-status.ok {
+    color: #22c55e; /* verde */
+}
+
+.dockme-icon-status.error {
+    color: #ef4444; /* rojo */
+}
+
+.dockme-inline-error {
+    margin-left: 6px;
+    font-size: 13px;
+    color: #ef4444;
+}
+
+/* dockme auto update */
+#dockme-update-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.dockme-update-box {
+    background: #7a1f1f;
+    color: #fff;
+    padding: 30px 40px;
+    border-radius: 8px;
+    text-align: center;
+    max-width: 420px;
+    box-shadow: 0 0 30px rgba(0,0,0,0.6);
+}
+.dockme-update-box h2 {
+    margin-top: 0;
+    margin-bottom: 15px;
+}
+.dockme-update-box p {
+    margin: 0;
+    font-size: 1.1em;
+}
+
+/* mantener fijo en scroll el header en vista compose con icono y nombre*/
+body:has(.compose-header) main {
+    overflow: hidden;
+}
+.compose-sticky-wrapper {
+    position: sticky;
+    top: 0;
+    z-index: 200;
+    background: #090c0f;
+    padding-bottom: 10px;
+}
+.compose-header,
+.compose-sticky-wrapper > .mb-3 {
+    position: relative;
+}
+body:has(.compose-header)
+.col-12.col-md-8.col-xl-9.mb-3 {
+    max-height: calc(100vh - 160px);
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* sección de gestión de agentes Dockge */
+.dockme-section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;              /* ≈ 1 cm visual */
+    margin-bottom: 10px;
+}
+.dockme-manage-btn {
+    margin-left: 12px;
+    padding: 2px 5px;
+    font-size: 0.7em;
+    background-color: #1c2431;
+    border: 1px solid #3a465c;
+    border-radius: 3px;
+    color: #cbd5e1;
+    cursor: pointer;
+}
+.dockme-manage-btn:hover {
+    background-color: #2a3446;
+}
+/* ========================================
+   GESTIÓN DE AGENTES
+   ======================================== */
+.dockme-agents-manager {
+    margin-top: 20px;
+}
+
+.dockme-agents-wrapper {
+    margin-top: 20px;
+}
+
+.dockme-agents-table {
+    max-width: 800px;
+    width: 100%;
+    border-collapse: collapse;
+    background: #1c2431;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.dockme-agents-table thead {
+    background: #2a3441;
+}
+
+.dockme-agents-table th {
+    padding: 12px 15px;
+    text-align: left;
+    font-weight: 600;
+    color: #e0e0e0;
+    border-bottom: 2px solid #3a4557;
+}
+
+.dockme-agents-table td {
+    padding: 12px 15px;
+    border-bottom: 1px solid #2a3441;
+    color: #cfd6e4;
+}
+
+.dockme-agents-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.dockme-agents-table tbody tr:hover {
+    background: #252d3a;
+}
+
+.dockme-agents-table code,
+.detected-server-endpoint code {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: #79c0ff;
+}
+
+.dockme-agents-table .text-center {
+    text-align: center;
+}
+/* Servidores detectados */
+.dockme-detected-servers {
+    margin-top: 40px;
+}
+
+.detected-servers-list {
+    background: #1c2431;
+    border-radius: 8px;
+    padding: 15px;
+    max-width: 800px;
+}
+
+.detected-server-row {
+    padding: 20px;
+    background: #252d3a;
+    border-radius: 6px;
+    margin-bottom: 15px;
+}
+
+.detected-server-row:last-child {
+    margin-bottom: 0;
+}
+
+/* Header (hostname + endpoint) */
+.detected-server-header {
+    margin-bottom: 15px;
+}
+
+.detected-server-hostname {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: #e0e0e0;
+    margin-bottom: 5px;
+}
+
+.detected-server-endpoint {
+    font-size: 0.9em;
+    color: #888;
+}
+
+/* Formulario inline */
+.detected-server-form {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 15px;
+    align-items: end;
+}
+
+.detected-server-form .form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.detected-server-form label {
+    color: #cbd5e1;
+    font-weight: 500;
+    font-size: 0.9em;
+}
+
+.detected-server-form input {
+    padding: 8px 12px;
+    border: 1px solid #3a4557;
+    border-radius: 4px;
+    background: #1c2431;
+    color: #fff;
+    font-size: 0.95em;
+}
+
+.detected-server-form input:focus {
+    outline: none;
+    border-color: #4f84c8;
+    background: #242d3c;
+}
+
+.detected-server-form input::placeholder {
+    color: #666;
+}
+
+/* Mensaje de error */
+.detected-server-error {
+    margin-top: 12px;
+    padding: 10px;
+    background: #3a1a1a;
+    border: 1px solid #e74c3c;
+    border-radius: 4px;
+    color: #ff8a8a;
+    font-size: 0.9em;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .detected-server-form {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Alerta simple de servidores detectados */
+.dockme-detected-alert-simple {
+    color: #f39c12;
+    font-size: 1em;
+    font-weight: 500;
+    margin: 10px 0 15px 0;
+    padding: 0;
+}
+/* Alerta temporal de actualización */
+.dockme-updating-alert {
+    font-size: 1em;
+    font-weight: 500;
+    color: #f39c12;
+    margin: 15px 0 15px 10px;
+    padding: 0;
+    display: none;
+}
+/* Botón eliminar agente */
+.btn-delete-agent {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2em;
+    padding: 5px;
+    opacity: 0.7;
+    transition: opacity 0.2s, transform 0.2s;
+}
+
+.btn-delete-agent:hover {
+    opacity: 1;
+    transform: scale(1.2);
+}
+/* Botón descartar servidor detectado */
+.detected-server-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 15px;
+}
+
+.detected-server-info {
+    flex: 1;
+}
+
+.btn-discard-detected {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2em;
+    padding: 5px 10px;
+    opacity: 0.6;
+    transition: opacity 0.2s, transform 0.2s;
+    color: #e74c3c;
+}
+
+.btn-discard-detected:hover {
+    opacity: 1;
+    transform: scale(1.2);
+}

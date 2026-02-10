@@ -1,0 +1,13 @@
+{
+  "name": "dockme-api",
+  "version": "1.0.0",
+  "description": "API Node.js para gestión de updates de Dockme",
+  "type": "module",
+  "main": "api.js",
+  "scripts": {
+    "start": "node api.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

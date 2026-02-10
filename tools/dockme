@@ -1,0 +1,84 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+  checkupdates)
+    echo "[dockme] Ejecutando chequeo de actualizaciones..."
+    exec bash /tools/check-updates.sh
+    ;;
+    
+prune)
+    echo "[dockme] Limpiando imágenes huérfanas..."
+    prune_output=$(docker image prune -f 2>&1 || true)
+    reclaimed=$(echo "$prune_output" | grep -i "Total reclaimed space" | sed 's/Total reclaimed space/Espacio recuperado/' || echo "")
+    
+    if [ -z "$reclaimed" ]; then
+        echo "✅ Nada que limpiar."
+    else
+        echo "🗑️  $reclaimed"
+    fi
+    ;;
+```
+
+---
+
+## 🧪 **SALIDA AHORA:**
+
+**Con limpieza:**
+```
+[dockme] Limpiando imágenes huérfanas...
+🗑️  Espacio recuperado: 45.2MB
+```
+
+**Sin limpieza:**
+```
+[dockme] Limpiando imágenes huérfanas...
+✅ Nada que limpiar.
+    
+  test-telegram)
+    if [ -z "$TELEGRAM_TOKEN" ] || [ -z "$TELEGRAM_CHATID" ]; then
+        echo "❌ Error: Telegram no configurado"
+        echo "   Configura TELEGRAM_TOKEN y TELEGRAM_CHATID en tu compose"
+        exit 1
+    fi
+    
+    echo "[dockme] Enviando mensaje de test a Telegram..."
+    
+    HOSTNAME="${HOSTNAME:-$(hostname)}"
+    message="🧪 Test desde Dockme
+Servidor: $HOSTNAME
+Fecha: $(date '+%d-%m-%Y %H:%M')
+✅ Telegram configurado correctamente"
+    
+    response=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHATID}" \
+        -d text="$message" \
+        -d parse_mode="HTML")
+    
+    if echo "$response" | grep -q '"ok":true'; then
+        echo "✅ Mensaje enviado correctamente"
+    else
+        echo "❌ Error al enviar mensaje"
+        echo "   Respuesta: $response"
+        exit 1
+    fi
+    ;;
+    
+  ""|help|-h|--help)
+    echo "Dockme CLI"
+    echo
+    echo "Uso: dockme <comando>"
+    echo
+    echo "Comandos:"
+    echo "  checkupdates    Ejecutar chequeo de actualizaciones ahora"
+    echo "  prune           Limpiar imágenes Docker huérfanas"
+    echo "  test-telegram   Enviar mensaje de prueba a Telegram"
+    echo "  help            Mostrar esta ayuda"
+    ;;
+    
+  *)
+    echo "Comando desconocido: $1"
+    echo "Ejecuta 'dockme help' para ver los comandos disponibles."
+    exit 1
+    ;;
+esac
