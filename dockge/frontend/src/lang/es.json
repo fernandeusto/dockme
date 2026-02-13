@@ -123,6 +123,8 @@
     "Restarted": "Reseteado",
     "Downed": "Caído",
     "Switch to sh": "Cambiar a sh",
+    "Switch to bash": "Cambiar a bash",
+    "Back to Compose": "Volver al compose",
     "terminal": "Terminal",
     "CurrentHostname": "(Vacío: Seguir hostname actual)",
     "New Container Name...": "Nombre del nuevo Container...",

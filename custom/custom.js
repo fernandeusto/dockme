@@ -818,30 +818,6 @@
 
     // ==================== UI COMPONENTS ====================
     const UIComponents = {
-        insertBackButton() {
-            const h1s = Array.from(document.querySelectorAll('h1.mb-3'));
-            const terminalHeader = h1s.find(h1 => h1.textContent.includes('Terminal -'));
-            if (!terminalHeader) return;
-
-            const parentContainer = terminalHeader.parentElement;
-            const botonContainer = parentContainer.querySelector('div.mb-3');
-            if (!botonContainer || botonContainer.querySelector('.btn-volver-compose')) return;
-
-            const match = window.location.pathname.match(/^\/terminal\/([^/]+)/);
-            if (!match) return;
-
-            const stack = match[1];
-            const endpoint = RouteManager.extractEndpoint();
-            const endpointPath = endpoint && endpoint !== 'Actual' ? `/${endpoint}` : '';
-
-            const volverBtn = document.createElement('a');
-            volverBtn.href = `/compose/${stack}${endpointPath}`;
-            volverBtn.className = 'btn btn-normal me-2 btn-volver-compose';
-            volverBtn.textContent = '⬅️ Volver a Compose';
-            botonContainer.insertBefore(volverBtn, botonContainer.firstChild);
-        },
-
-
         async insertLogo() {
             const stackName = RouteManager.extractStackName();
             if (!stackName) return;
@@ -2467,7 +2443,6 @@ function init() {
             }
         }
         ItemManager.processAll();
-        UIComponents.insertBackButton();
         ensureTitleIsCorrect();
         insertEditStacksIcon();
         setTimeout(() => ItemManager.refreshIcons(), CONFIG.ICON_REFRESH_DELAY);
