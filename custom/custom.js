@@ -113,7 +113,7 @@
         }
         const hostname = routeHostname || State.hostnameLocal || 'Dockme';
         titleElement.textContent = hostname;
-        document.title = hostname;
+        document.title = `Dockme - ${hostname}`;
         titleElement.style.visibility = '';
         document.body.classList.add('dockme-title-ready');
     }
@@ -440,7 +440,7 @@
         }
     };
 
-    // ==================== GESTIÃ“N DE ITEMS ====================
+    // ==================== GESTIÓN DE ITEMS ====================
     const ItemManager = {
         processTitle(item) {
             const span = item.querySelector('.title span');
@@ -1100,7 +1100,7 @@
                 select.addEventListener("change", function () {
                     let texto = this.options[this.selectedIndex].textContent.trim();
                     const titulo = texto.replace(/\(.*?\)\s*/g, "");
-                    document.title = titulo;
+                    document.title = `Dockme - ${titulo}`;
                     const titleElement = document.querySelector('.fs-4.title');
                     if (titleElement) {
                         titleElement.textContent = titulo;
