@@ -34,6 +34,9 @@ services:
     image: ghcr.io/fernandeusto/dockme:latest
     restart: always
     
+    environment:
+      - HOSTNAME=NombreDeServidor    # ⚠️ Obligatorio
+    
     ports:
       - "5041:8080"
     
@@ -45,17 +48,17 @@ services:
 
 ---
 
-### ⚙️ Variables de entorno opcionales
+### ⚙️ Variables de entorno
 
 | Variable | Descripción | Por defecto |
 |----------|-------------|-------------|
-| `HOSTNAME` | Nombre del servidor | *(hostname del sistema)* |
+| `HOSTNAME` | Nombre del servidor ⚠️ **Obligatorio** | |
 | `CHECK_TIMES` | Horarios de chequeo (HH:MM, separados por comas) | `09:00` |
 | `TZ` | Zona horaria | `Europe/Madrid` |
-| `TELEGRAM_TOKEN` | Token del bot de Telegram |  |
-| `TELEGRAM_CHATID` | ID del chat de Telegram |  |
-| `ENDPOINT` | IP:Puerto del servidor remoto | (solo remotos) |
-| `WEBHOOK_URL` | URL del servidor central | (solo remotos) |
+| `TELEGRAM_TOKEN` | Token del bot de Telegram | |
+| `TELEGRAM_CHATID` | ID del chat de Telegram | |
+| `ENDPOINT` | IP:Puerto del servidor remoto | *(solo remotos)* |
+| `WEBHOOK_URL` | URL del servidor central | *(solo remotos)* |
 
 ### 📂 Sobre el volumen `/opt/stacks`
 

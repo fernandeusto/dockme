@@ -5,7 +5,7 @@ services:
     restart: always
     
     environment:
-      HOSTNAME: "ServidorRemoto" #opcional, si no se especifica se usará el hostname del contenedor
+      HOSTNAME: "Dockme-Remoto" # ⚠️ Obligatorio, asignar el nombre con el que identificarlo
       CHECK_TIMES: "15:00" #opcional, formato HH:MM, hora a la que se realizará el check de stacks, si no se especifica se hará cada 24h
 
     #opcional para recibir notificaciones por telegram, se deben configurar las siguientes dos variables:

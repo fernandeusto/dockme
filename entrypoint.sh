@@ -7,8 +7,18 @@ echo "🚀 Iniciando Dockme"
 echo "🕒 $START_TIME"
 echo "===================="
 
-# Usar hostname del sistema si no se especifica
-HOSTNAME="${HOSTNAME:-$(hostname)}"
+# HOSTNAME es obligatorio - debe definirse en el compose
+SYSTEM_HOSTNAME=$(hostname)
+if [ "$HOSTNAME" = "$SYSTEM_HOSTNAME" ]; then
+    echo "==================================="
+    echo "❌ ERROR: HOSTNAME no configurado"
+    echo ""
+    echo "   Añade en tu docker-compose.yml:"
+    echo "   environment:"
+    echo "     - HOSTNAME=NombreDeServidor"
+    echo "==================================="
+    exit 1
+fi
 export HOSTNAME
 
 DOCKME_VERSION="unknown"
@@ -55,7 +65,7 @@ if [ -d "/metadata/icons" ] || [ -d "/metadata/json" ]; then
     rm -rf /metadata 2>/dev/null || true
     
     # Crear flag de inicialización (evitar bloque de instalación limpia)
-    touch /app/data/.dockme-initialized
+    touch /app/data/config/.dockme-initialized
     echo "  ✅ Migración completada"
     echo ""
     echo "  ℹ️  IMPORTANTE: Puedes eliminar el volumen /metadata del docker-compose.yml"
@@ -63,9 +73,19 @@ if [ -d "/metadata/icons" ] || [ -d "/metadata/json" ]; then
 fi
 
 # ========================================
+# Migración flag initialized (v1.9 → v1.10)
+# ========================================
+if [ -f "/app/data/.dockme-initialized" ] && [ ! -f "/app/data/config/.dockme-initialized" ]; then
+    echo "🔄 Migrando flag de inicialización a nueva ubicación..."
+    mv /app/data/.dockme-initialized /app/data/config/.dockme-initialized
+    echo "✅ Flag migrado correctamente"
+fi
+
+
+# ========================================
 # Inicialización de metadata (primera vez)
 # ========================================
-INIT_FLAG="/app/data/.dockme-initialized"
+INIT_FLAG="/app/data/config/.dockme-initialized"
 
 if [ ! -f "$INIT_FLAG" ]; then
     echo "🆕 Instalación limpia, creando configuración por defecto..."
@@ -102,7 +122,7 @@ tsx /app/backend/index.ts >> /tmp/dockge.log 2>&1 &
 # ========================================
 # 2. Arrancar API Node (updates + remove)
 # ========================================
-echo "🔧 Iniciando API..."
+echo "🔧 Iniciando entorno..."
 node /custom/api.js >> /tmp/api-node.log 2>&1 &
 
 # ========================================
@@ -167,8 +187,6 @@ fi
 # 4b.Actualizar hostname local en updates.json
 # ============================================
 if [ "$ENDPOINT" = "Actual" ] || [ -z "$WEBHOOK_URL" ]; then
-    echo "🏠 Actualizando hostname local en updates.json..."
-    
     UPDATES_FILE="/app/data/config/updates.json"
     
     # Verificar que existe el archivo
@@ -200,8 +218,6 @@ try:
     # Guardar
     with open("$UPDATES_FILE", "w") as f:
         json.dump(data, f, indent=2)
-    
-    print("✅ Hostname local actualizado: $HOSTNAME")
     
 except Exception as e:
     print(f"⚠️ Error actualizando hostname: {e}")
