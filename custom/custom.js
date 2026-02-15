@@ -897,6 +897,17 @@
     // ==================== EVENT HANDLERS ====================
     const EventHandlers = {
         handleButtonClick(e) {
+            // Detectar "Detener y desactivar" en dropdown
+            const menuItem = e.target.closest('[role="menuitem"]');
+            if (menuItem) {
+                const text = menuItem.textContent.trim();
+                if (text.includes('Detener y desactivar')) {
+                    const parts = RouteManager.extractComposeParts();
+                    if (parts) {
+                        RecentManager.remove(parts.name, parts.endpoint);
+                    }
+                }
+            }
             if (dockmeEditMode) {
                 const stackItem = e.target.closest('a.item');
                 if (stackItem) {
