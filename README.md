@@ -1,19 +1,18 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/fernandeusto/dockme/main/custom/icons/dockme.svg" width="200">
-</p>
-
 # Dockme
 
-**Gestión visual de Docker Compose con monitorización inteligente**
+<p align="left">
+  <img src="https://raw.githubusercontent.com/fernandeusto/dockme/main/custom/icons/dockme.svg" width="120">
+</p>
 
-Dockme es una solución completa para administrar tus contenedores Docker desde una interfaz web moderna. Basado en Dockge de Louis Lam, añade detección automática de actualizaciones, notificaciones, métricas en tiempo real y gestión centralizada multi-servidor.
+**Dockme** es una solución completa para administrar tus docker-compose desde una interfaz web moderna.
+Basado en el conocido Dockge, añade nuevas funcionalidades y mejora su diseño.
 
 ---
 
 ## 🌟 Características destacadas
 
-- 🎨 **Interfaz web intuitiva** - Gestiona tus stacks Docker Compose visualmente
-- 🎯 **Iconos personalizados por stack** - Sube tus propios iconos SVG desde la interfaz
+- 🎨 **Interfaz web intuitiva** - Gestiona tus Compose con editor en pantalla completa y Terminal con portapapeles
+- 🎯 **Iconos personalizados por stack** - Sube tus propios iconos SVG desde URL o local
 - ⚡ **Ordenación inteligente** - Stacks activos primero, inactivos al final y filtrado por servidor
 - 🎯 **Acceso rápido** - Tarjetas con últimos stacks visitados y con actualizaciones pendientes
 - 🔔 **Detección de actualizaciones** - Chequeo automático programable de actualizaciones
@@ -23,6 +22,11 @@ Dockme es una solución completa para administrar tus contenedores Docker desde 
 - 🔄 **Auto-actualización** - Sistema integrado para actualizarse Dockme a si mismo
 
 ---
+
+<p align="left">
+  <img src="https://raw.githubusercontent.com/fernandeusto/dockme/main/screenshot/main-screen.png" style="width:100%;max-width:800px">
+</p>
+
 
 ## 🚀 Instalación rápida
 
