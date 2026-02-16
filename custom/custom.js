@@ -1324,7 +1324,19 @@
         if (dashboard) dashboard.style.display = 'none';
         MetricsManager.stop();
     }
-
+    function OcultarAddUrlComposEditor() {
+        // Ocultar sección "Addicional" en modo edición de compose
+        if (RouteManager.isComposePath()) {
+            const addicionalH4 = Array.from(document.querySelectorAll('h4.mb-3'))
+                .find(h4 => h4.textContent.trim() === 'Addicional');
+            if (addicionalH4) {
+                const container = addicionalH4.parentElement;
+                if (container && container.style.display !== 'none') {
+                    container.style.display = 'none';
+                }
+            }
+        }
+    }
     function showDashboardContainer() {
         const dashboard = document.querySelector('#dockme-dashboard');
         if (dashboard) dashboard.style.display = '';
@@ -2457,6 +2469,7 @@ function init() {
         ensureTitleIsCorrect();
         insertEditStacksIcon();
         setTimeout(() => ItemManager.refreshIcons(), CONFIG.ICON_REFRESH_DELAY);
+        OcultarAddUrlComposEditor();
     };
 
     DOMObserver.init(processTodoCompleto);
