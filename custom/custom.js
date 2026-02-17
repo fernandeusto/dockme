@@ -1060,7 +1060,41 @@
                 });
         }
     };
-
+    // ==================== MENÚ MÓVIL ====================
+    const MobileMenu = {
+        ensureToggle() {
+            const existingBtn = document.querySelector('.mobile-menu-toggle');
+            
+            // Si no estamos en root → eliminar botón si existe
+            if (!RouteManager.isRootPath()) {
+                existingBtn?.remove();
+                return;
+            }
+            
+            // Si no es móvil → eliminar botón si existe
+            if (window.innerWidth > 700) {
+                existingBtn?.remove();
+                return;
+            }
+            
+            // Si ya existe → no crear otro
+            if (existingBtn) return;
+            
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'mobile-menu-toggle';
+            toggleBtn.innerHTML = '☰';
+            toggleBtn.onclick = () => {
+                const lista = document.querySelector('div.col-xl-3.col-md-4.col-12');
+                lista?.classList.toggle('mobile-open');
+            };
+            document.body.appendChild(toggleBtn);
+        },
+        
+        close() {
+            const lista = document.querySelector('div.col-xl-3.col-md-4.col-12');
+            lista?.classList.remove('mobile-open');
+        }
+    };
     // ==================== ROUTE OBSERVER ====================
     const RouteObserver = {
         lastRoute: null,
@@ -1075,6 +1109,8 @@
 
         handleRouteChange(route) {
             updatePageTitleForRoute();
+            MobileMenu.close();
+            MobileMenu.ensureToggle();
 
             if (RouteManager.isSetupPath()) {
                 forceSetupLanguageES();
@@ -1534,6 +1570,7 @@
         const parts = href.split('/').filter(Boolean);
         const stackName = parts[1];
         if (!stackName) return;
+        MobileMenu.close();
         showStackEditorForStack(stackName);
     }
     function hideDockgeHomeBlock() {

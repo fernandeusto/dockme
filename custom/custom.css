@@ -102,35 +102,77 @@ a.item .title .cp-title.inactive {
 }
 
 /* Estilos para poner a solo 2 columnas (stacks izquierda y contenido derecho) */
-@media (min-width: 0px) and (max-width: 4100px) {
-    div.col-lg-6 {
-        max-width: none !important;
-        width: 100% !important;
-    }
+div.col-lg-6 {
+    max-width: none !important;
+    width: 100% !important;
+}
 
-    div.container.mb-3.big-padding.shadow-box {
-        max-width: none !important;
-        width: 100% !important;
-    }
+div.container.mb-3.big-padding.shadow-box {
+    max-width: none !important;
+    width: 100% !important;
+}
 
+div.col-xl-3.col-md-4.col-12 {
+    width: 350px !important;
+    flex: 0 0 auto !important;
+}
+
+div.mb-3.col-xl-9.col-md-8.col-12 {
+    width: calc(100% - 350px) !important;
+    max-width: none !important;
+    flex: 1 1 auto !important;
+}
+
+/* Responsive móvil */
+@media (max-width: 700px) {
+    /* Lista oculta por defecto */
     div.col-xl-3.col-md-4.col-12 {
+        position: fixed;
+        left: -350px;
+        top: 105px;
         width: 350px !important;
-        flex: 0 0 auto !important;
+        height: calc(100vh - 60px);
+        background: #090c0f;
+        z-index: 999;
+        transition: left 0.3s ease;
+        overflow-y: auto;
+        box-shadow: 2px 0 10px rgba(0,0,0,0.5);
     }
-
+    
+    /* Lista visible cuando está abierta */
+    div.col-xl-3.col-md-4.col-12.mobile-open {
+        left: 0;
+    }
+    
+    /* Contenido ocupa todo el ancho */
     div.mb-3.col-xl-9.col-md-8.col-12 {
-        width: calc(100% - 350px) !important;
-        max-width: none !important;
-        flex: 1 1 auto !important;
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+    
+    /* Botón hamburguesa (lo creamos en JS) */
+    .mobile-menu-toggle {
+        position: absolute;
+        top: 60px;
+        left: 10px;
+        z-index: 998;
+        background: #142d4f;
+        border: none;
+        border-radius: 6px;
+        padding: 8px 15px;
+        height: 40px;
+        color: #fff;
+        font-size: 20px;
+        line-height: 24px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
-    /* Responsive móvil */
-    @media (max-width: 700px) {
-        div.col-xl-3.col-md-4.col-12,
-        div.mb-3.col-xl-9.col-md-8.col-12 {
-            width: 100% !important;
-            flex: 0 0 100% !important;
-        }
+    /* Header móvil: quitar centrado */
+    header.justify-content-center {
+        justify-content: space-between !important;
     }
 }
 
@@ -177,6 +219,7 @@ header {
     top: 0;
     z-index: 1000;
     background: #090c0f;
+    height: 55px;
 }
 
 /* Ocultar botón Consola del header */
@@ -683,25 +726,27 @@ span.badge.bg-primary {
 }
 
 /* mantener fijo en scroll el header en vista compose con icono y nombre*/
-body:has(.compose-header) main {
-    overflow: hidden;
-}
-.compose-sticky-wrapper {
-    position: sticky;
-    top: 0;
-    z-index: 200;
-    background: #090c0f;
-    padding-bottom: 10px;
-}
-.compose-header,
-.compose-sticky-wrapper > .mb-3 {
-    position: relative;
-}
-body:has(.compose-header)
-.col-12.col-md-8.col-xl-9.mb-3 {
-    max-height: calc(100vh - 160px);
-    overflow-y: auto;
-    overflow-x: hidden;
+@media (min-width: 701px) {
+    body:has(.compose-header) main {
+        overflow: hidden;
+    }
+    .compose-sticky-wrapper {
+        position: sticky;
+        top: 0;
+        z-index: 200;
+        background: #090c0f;
+        padding-bottom: 10px;
+    }
+    .compose-header,
+    .compose-sticky-wrapper > .mb-3 {
+        position: relative;
+    }
+    body:has(.compose-header)
+    .col-12.col-md-8.col-xl-9.mb-3 {
+        max-height: calc(100vh - 160px);
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
 }
 
 /* sección de gestión de agentes Dockge */
