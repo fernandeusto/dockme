@@ -932,6 +932,16 @@
                 const pathParts = location.pathname.split('/');
                 const endpoint = pathParts.length > 3 ? pathParts[3] : 'Actual';
 
+                // Scroll al inicio para ver el terminal (en caso de rocket)
+                if (iconName === 'rocket') {
+                    const scrollContainer = document.querySelector('.col-12.col-md-8.col-xl-9.mb-3');
+                    if (scrollContainer) {
+                        scrollContainer.scrollTo({ top: 0, behavior: 'smooth' });
+                    } else {
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                }
+
                 if (isDockmeCompose()) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1003,7 +1013,6 @@
                 }
 
                 if (iconName === 'rocket') {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
                     return;
                 }
             }
