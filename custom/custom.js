@@ -1822,6 +1822,9 @@
 
             // Click para filtrar
             card.addEventListener('click', () => {
+                // Si solo hay una tarjeta → no filtrar
+                const totalCards = this.container.querySelectorAll('.metric-card').length;
+                if (totalCards <= 1) return;
                 // Click sobre el mismo host → desactivar filtro
                 if (this.filterActive && this.currentFilter === hostname) {
                     this.clearHostFilter();
@@ -1829,6 +1832,17 @@
                 }
                 // Click sobre otro host → activar / cambiar filtro
                 this.applyHostFilter(hostname);
+            });
+
+            // Tooltip al hacer hover en tarjeta métricas
+            card.addEventListener('mouseenter', () => {
+                const totalCards = this.container.querySelectorAll('.metric-card').length;
+                if (totalCards <= 1) {
+                    card.removeAttribute('title');
+                    return;
+                }
+                const isActive = this.filterActive && this.currentFilter === hostname;
+                card.title = isActive ? 'Click para quitar filtro' : 'Click para filtrar';
             });
             return card;
         },

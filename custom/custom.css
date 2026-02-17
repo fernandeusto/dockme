@@ -405,12 +405,7 @@ span.badge.bg-primary {
     transition: all 0.2s;
 }
 
-.metric-card:hover {
-    background: #2a3441;
-    border-color: #4f84c8;
-    transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
-}
+
 
 .metric-card.selected {
     border-color: #4f84c8;
