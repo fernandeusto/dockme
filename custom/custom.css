@@ -348,19 +348,6 @@ span.badge.bg-primary {
     color: #4f84c8;
 }
 
-/* Botón Ignorar */
-.stack-ignorar {
-    flex: 0 0 auto;
-    font-size: 14px;
-    white-space: nowrap;
-}
-
-.ignore-btn {
-    color: #d07272;
-    cursor: pointer;
-    font-weight: 600;
-}
-
 /* Hostname */
 .stack-hostname {
     font-size: 1.2em;
@@ -386,6 +373,216 @@ span.badge.bg-primary {
     color: #ccc;
 }
 
+/* Selector de tarjetas de updates */
+.stack-selector {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+}
+
+.stack-checkbox {
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    accent-color: #4f84c8;
+    filter: grayscale(100%) brightness(0.6);
+}
+
+.stack-checkbox:checked {
+    filter: none;
+}
+
+/* Tarjeta seleccionada - borde destacado */
+.stack-card-horizontal:has(.stack-checkbox:checked) {
+    border-color: #4f84c8;
+    border-width: 2px;
+}
+
+/* Controles de bulk update en título */
+.bulk-update-controls {
+    display: inline-flex;
+    gap: 12px;
+    margin-left: 20px;
+}
+
+.bulk-update-controls .dockme-manage-btn {
+    font-size: 0.75em;
+}
+
+/* ========================================
+   BULK UPDATE PANEL
+   ======================================== */
+
+/* Panel flotante - Desktop */
+.bulk-update-panel {
+    position: fixed;
+    top: 55px;
+    right: 20px;
+    width: 350px;
+    max-height: calc(100vh - 100px);
+    background: #1c2431;
+    border: 3px solid #ab8f39;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    z-index: 900;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.bulk-update-panel.success {
+    border-color: #1b9548; /* verde éxito */
+}
+.bulk-update-panel.error {
+    border-color: #c23737; /* rojo error/cancelado */
+}
+/* Botón comenzar actualizaciones */
+.btn-start-updates {
+    background: #22c55e;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 2px 5px;
+    font-size: 1.1em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    width: calc(100% - 50px);
+    margin-right: 10px;
+}
+
+.btn-start-updates:hover {
+    background: #16a34a;
+}
+
+.panel-title {
+    flex: 1;
+    margin: 0;
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* Header del panel */
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px;
+    background: #2a3441;
+    border-bottom: 1px solid #3a4557;
+}
+
+.panel-header h3 {
+    margin: 0;
+    font-size: 1.1em;
+    color: #e0e0e0;
+}
+
+.btn-close-panel {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    line-height: 1;
+}
+
+.btn-close-panel:hover {
+    color: #fff;
+}
+
+/* Cuerpo del panel */
+.panel-body {
+    padding: 15px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* Fila de cada stack */
+.stack-update-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px;
+    margin-bottom: 8px;
+    background: #252d3a;
+    border-radius: 6px;
+    border: 1px solid #3a4557;
+}
+
+.stack-update-name {
+    font-weight: 500;
+    color: #4f84c8;
+}
+
+.stack-update-status {
+    font-size: 0.9em;
+    color: #ccc;
+}
+
+/* Título de grupo de servidor */
+.server-group-title {
+    font-size: 1.1em;
+    font-weight: 800;
+    color: #bbb840;
+    margin: 20px 0 5px 0;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #3a4557;
+}
+
+.server-group-title:first-child {
+    margin-top: 0;
+}
+
+/* Logo pequeño en cada stack */
+.stack-update-icon {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+    margin-right: 10px;
+    border-radius: 4px;
+}
+
+/* Ajustar layout de la fila */
+.stack-update-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.stack-update-name {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Móvil - pantalla completa deslizable */
+@media (max-width: 700px) {
+    .bulk-update-panel {
+        top: 55px;
+        right: 0;
+        width: 100%;
+        height: calc(100vh - 55px);  /* ← ajustar altura también */
+        max-height: calc(100vh - 55px);
+        border-radius: 0;
+        transform: translateX(calc(100% - 14px));  /* ← 14px visible */
+        transition: transform 0.3s ease;
+    }
+    
+    .bulk-update-panel.open {
+        transform: translateX(0);
+    }
+    
+    body:has(.bulk-update-panel.open) {
+        overflow: hidden !important;
+    }
+}
+
 /* ========================================
    TARJETAS DE MÉTRICAS
    ======================================== */
@@ -404,8 +601,6 @@ span.badge.bg-primary {
     cursor: pointer;
     transition: all 0.2s;
 }
-
-
 
 .metric-card.selected {
     border-color: #4f84c8;
@@ -461,6 +656,23 @@ span.badge.bg-primary {
 .metric-uptime.disconnected {
     color: #e74c3c;
     font-weight: bold;
+}
+
+/* Botón actualizar Dockme en tarjeta de métricas */
+.btn-update-dockme {
+    background: #22c55e;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 2px 5px;
+    font-size: 0.8em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    white-space: nowrap;
+}
+.btn-update-dockme:hover {
+    background: #16a34a;
 }
 
 /* Filas de métricas */
@@ -533,6 +745,41 @@ span.badge.bg-primary {
 /* Grid de recientes (tarjetas más compactas) */
 .dashboard-grid-recientes {
     grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+}
+
+/* Móvil: tarjetas fluidas que ocupan todo el ancho */
+@media (max-width: 700px) {
+    .dashboard-grid-updates,
+    .dashboard-grid-recientes {
+        grid-template-columns: 1fr !important;
+    }
+    
+    .stack-card-horizontal {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+        height: 80px !important;
+    }
+    
+    /* Logo más pequeño */
+    .stack-logo-left {
+        width: 60px !important;
+        height: 60px !important;
+        margin-right: 10px !important;
+    }
+    
+    /* Textos más pequeños */
+    .stack-name {
+        font-size: 1.2em !important;
+    }
+    
+    .stack-hostname {
+        font-size: 0.95em !important;
+    }
+    
+    .stack-docker-image {
+        font-size: 0.85em !important;
+    }
 }
 
 /* ========================================
@@ -691,35 +938,6 @@ span.badge.bg-primary {
     font-size: 13px;
     color: #ef4444;
 }
-
-/* dockme auto update */
-#dockme-update-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.75);
-    z-index: 99999;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-.dockme-update-box {
-    background: #7a1f1f;
-    color: #fff;
-    padding: 30px 40px;
-    border-radius: 8px;
-    text-align: center;
-    max-width: 420px;
-    box-shadow: 0 0 30px rgba(0,0,0,0.6);
-}
-.dockme-update-box h2 {
-    margin-top: 0;
-    margin-bottom: 15px;
-}
-.dockme-update-box p {
-    margin: 0;
-    font-size: 1.1em;
-}
-
 /* mantener fijo en scroll el header en vista compose con icono y nombre*/
 @media (min-width: 701px) {
     body:has(.compose-header) main {

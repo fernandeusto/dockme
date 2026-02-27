@@ -34,15 +34,13 @@ fi
 
 log "📦 Imagen actual de Dockme: $IMAGE"
 
-# Si es imagen local / dev, no hacer auto-update
-if echo "$IMAGE" | grep -qE '(^dockme(:|$)|:dev$)'; then
-    log "⚠️ Dockme usa una imagen local/de desarrollo"
-    log "⚠️ Auto-update deshabilitado en este entorno"
-    exit 0
+# Si es imagen de registry, hacer pull
+if echo "$IMAGE" | grep -qE '^ghcr.io/'; then
+    log "📥 Descargando imagen nueva..."
+    docker compose pull >> "$LOG_FILE" 2>&1
+else
+    log "⚠️ Imagen local detectada, omitiendo pull..."
 fi
-
-log "📥 Descargando imagen nueva..."
-docker compose pull >> "$LOG_FILE" 2>&1
 
 log "🚀 Imagen descargada, reiniciando Dockme en 3 segundos..."
 sleep 3

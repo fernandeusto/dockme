@@ -3,6 +3,7 @@
     let dockmeWaitingForLogin = false;
     let dockmeLoginWasVisible = false;
     let dockmeEditMode = false;
+    let dockmeUpdateInProgress = false;
     let dockmeIconVersion = localStorage.getItem('dockmeIconVersion') || Date.now();
 
     // ==================== CONSTANTES ====================
@@ -216,40 +217,6 @@
 
         isSettingsPath() {
             return window.location.pathname.startsWith('/settings');
-        }
-    };
-
-    // ==================== GESTIÓN DE NOTIFICACIONES ====================
-    const NotificationManager = {
-        KEY: 'notificacionesBloqueadas',
-
-        ignore(nombre, endpoint = null) {
-            const ahora = Date.now();
-            const expiracion = ahora + CONFIG.NOTIFICATION_BLOCK_TIME;
-
-            let bloqueadas = Storage.get(this.KEY, []);
-            bloqueadas = bloqueadas.filter(item => item.expiracion > ahora);
-            bloqueadas.push({ nombre, endpoint, expiracion });
-            
-            Storage.set(this.KEY, bloqueadas);
-        },
-
-        filter(lista) {
-            const ahora = Date.now();
-            let bloqueadas = Storage.get(this.KEY, []);
-            
-            bloqueadas = bloqueadas.filter(item => item.expiracion > ahora);
-            Storage.set(this.KEY, bloqueadas);
-
-            return lista.filter(item => {
-                const nombre = item.stack || item.name || item.nombre || item;
-                const endpoint = item.endpoint || null;
-
-                return !bloqueadas.some(b =>
-                    b.nombre.toLowerCase() === nombre.toLowerCase() &&
-                    ((b.endpoint || '').toLowerCase() === (endpoint || '').toLowerCase())
-                );
-            });
         }
     };
 
@@ -550,9 +517,6 @@
     // ==================== GESTIÓN DE BLOQUES DE STACKS ====================
     const StackBlockManager = {
         async create(contenedor, lista, idBase, titulo, status, sources = {}) {
-            if (idBase.startsWith('updates')) {
-                lista = NotificationManager.filter(lista);
-            }
             if (!Array.isArray(lista) || lista.length === 0) {
                 this.remove(contenedor, idBase);
                 return;
@@ -564,6 +528,10 @@
                 blockTitle.className = 'dashboard-section-title mb-3';
                 blockTitle.textContent = titulo;
                 contenedor.appendChild(blockTitle);
+                // Añadir botones si es sección de updates
+                if (idBase.startsWith('updates')) {
+                    this.addUpdateButtons(blockTitle);
+                }
             }
             let blockRow = contenedor.querySelector(`#${idBase}-row`);
             if (!blockRow) {
@@ -595,6 +563,30 @@
 
             link.addEventListener('click', e => {
                 if (e.target.closest('a[target="_blank"]')) return;
+                
+                // Gestionar checkbox en updates (todas las pantallas)
+                if (idBase.startsWith('updates')) {        
+                    const checkbox = card.querySelector('.stack-checkbox');
+                    if (checkbox && !e.target.closest('.stack-checkbox')) {
+                        e.preventDefault();
+                        
+                        const allCheckboxes = document.querySelectorAll('.stack-checkbox:checked');
+                        const totalChecked = allCheckboxes.length;
+                        
+                        // Si hay exactamente 1 marcada Y es esta → navegar
+                        if (totalChecked === 1 && checkbox.checked) {
+                            window.history.pushState({}, '', link.href);
+                            window.dispatchEvent(new Event('popstate'));
+                            return;
+                        }
+                        
+                        // Si no → toggle
+                        checkbox.checked = !checkbox.checked;
+                        return;
+                    }
+                }
+                
+                // Comportamiento normal
                 e.preventDefault();
                 window.history.pushState({}, '', link.href);
                 window.dispatchEvent(new Event('popstate'));
@@ -611,6 +603,44 @@
 
             link.appendChild(card);
             return link;
+        },
+
+        addUpdateButtons(blockTitle) {
+            // Evitar duplicados
+            if (blockTitle.querySelector('.bulk-update-controls')) return;
+            
+            const controls = document.createElement('div');
+            controls.className = 'bulk-update-controls';
+            controls.innerHTML = `
+                <button class="dockme-manage-btn btn-select-all">Seleccionar todas</button>
+                <button class="dockme-manage-btn btn-update-selected">Actualizar seleccionadas</button>
+            `;
+            
+            blockTitle.appendChild(controls);
+            
+            // Listeners
+            const btnSelectAll = controls.querySelector('.btn-select-all');
+            const btnUpdate = controls.querySelector('.btn-update-selected');
+            
+            btnSelectAll.addEventListener('click', () => {
+                const checkboxes = document.querySelectorAll('.stack-checkbox');
+                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+                checkboxes.forEach(cb => cb.checked = !allChecked);
+                btnSelectAll.textContent = allChecked ? 'Seleccionar todas' : 'Deseleccionar todas';
+            });
+            
+            btnUpdate.addEventListener('click', () => {
+                const selected = Array.from(document.querySelectorAll('.stack-checkbox:checked'));
+                if (selected.length === 0) {
+                    alert('Selecciona al menos un stack para actualizar');
+                    return;
+                }
+                const stacks = selected.map(cb => ({
+                    name: cb.dataset.stackName,
+                    endpoint: cb.dataset.endpoint
+                }));
+                BulkUpdatePanel.open(stacks);
+            });
         },
 
         extractCardData(item, idBase) {
@@ -660,7 +690,9 @@
             card.className = 'stack-card-horizontal update';
             const repoUrl = sources[nombre] || '';
             const changelogLine = repoUrl 
-                ? `<a href="${repoUrl}/releases" target="_blank">${repoUrl}/releases</a>`
+                ? (window.innerWidth <= 700 
+                    ? `<a href="${repoUrl}/releases" target="_blank" rel="noopener">Changelog</a>`
+                    : `Changelog: <a href="${repoUrl}/releases" target="_blank" rel="noopener">${repoUrl}/releases</a>`)
                 : '';
 
             const mostrarHostname = 
@@ -675,13 +707,13 @@
                 <div class="stack-info">
                     <div class="linea1-stack-update">
                         <div class="stack-name">${displayName}</div>
-                        <div class="stack-ignorar">
-                            <strong class="ignore-btn">Ignorar</strong>
+                        <div class="stack-selector">
+                            <input type="checkbox" class="stack-checkbox" data-stack-name="${nombre}" data-endpoint="${endpoint || 'Actual'}">
                         </div>
                     </div>
                     <div class="stack-hostname">${mostrarHostname ? item.hostname : '&nbsp;'}</div>
                     <div class="stack-docker-image">
-                        ${changelogLine ? `Changelog: ${changelogLine}` : '&nbsp;'}
+                        ${changelogLine || '&nbsp;'}
                     </div>
                 </div>
             `;
@@ -691,17 +723,10 @@
                     if (img.src !== CONFIG.ICON_DEFAULT) {img.src = CONFIG.ICON_DEFAULT;}
                 };
             }
-            const ignoreBtn = card.querySelector('.ignore-btn');
-            if (ignoreBtn) {
-                ignoreBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    NotificationManager.ignore(nombre, endpoint);
-                    card.remove();
-                    if (blockRow.querySelectorAll('.stack-card-horizontal').length === 0) {
-                        blockTitle.remove();
-                        blockRow.remove();
-                    }
+            const checkbox = card.querySelector('.stack-checkbox');
+            if (checkbox) {
+                checkbox.addEventListener('click', (e) => {
+                    e.stopPropagation(); // Evitar que navegue al compose al hacer click
                 });
             }
         },
@@ -784,9 +809,14 @@
             );
             window.allUpdatesGlobal = allUpdates;
 
+            // Filtrar Dockme del dashboard (se actualiza desde tarjeta de métricas)
+            const updatesForDashboard = allUpdates.filter(item => 
+                item.stack.toLowerCase() !== 'dockme'
+            );
+
             await StackBlockManager.create(
                 col7,
-                allUpdates,
+                updatesForDashboard,
                 'updates',
                 '⬆️ Actualizaciones disponibles',
                 'Actualización',
@@ -946,17 +976,6 @@
                     e.preventDefault();
                     e.stopPropagation();
 
-                    if (
-                        !confirm(
-                            'Dockme se reiniciará para aplicar la actualización.\n\n' +
-                            '¿Deseas continuar?'
-                        )
-                    ) {
-                        return;
-                    }
-
-                    this.handleUpdateButton();
-
                     if (iconName === 'rocket') {
                         const saveBtn = document.querySelector(
                             'button.btn.btn-normal svg[data-icon="floppy-disk"]'
@@ -964,46 +983,7 @@
                         if (saveBtn) saveBtn.click();
                     }
 
-                    const isLocalDockme = endpoint.toLowerCase() === 'actual';
-
-                    const fetchUrl = isLocalDockme
-                        ? '/api/update-self'
-                        : '/api/update-dockme';
-
-                    const fetchOptions = isLocalDockme
-                        ? { method: 'POST' }
-                        : {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ endpoint })
-                        };
-
-                    fetch(fetchUrl, fetchOptions)
-                        .then(res => (res.ok ? res.json() : null))
-                        .then(() => {
-                            if (isLocalDockme) {
-                                const overlay = document.createElement('div');
-                                overlay.id = 'dockme-update-overlay';
-                                overlay.innerHTML = `
-                                    <div class="dockme-update-box">
-                                        <h2>⚠️ Dockme se está actualizando</h2>
-                                        <p>El servicio se reiniciará para aplicar la actualización.</p>
-                                        <p>
-                                            La página debería recargarse automáticamente en unos segundos.
-                                            Si no ocurre, puedes recargarla manualmente.
-                                        </p>
-                                    </div>
-                                `;
-                                document.body.appendChild(overlay);
-                            } else {
-                                window.history.pushState({}, '', '/');
-                                window.dispatchEvent(new Event('popstate'));
-                                setTimeout(() => {
-                                    showMetricsAlert(`⏳ Actualizando y reconectando Dockme remoto...`, 20000);
-                                }, 2000);
-                            }
-                        });
-
+                    this.updateDockme(endpoint);
                     return;
                 }
 
@@ -1058,6 +1038,47 @@
                         }
                     }, 300);
                 });
+        },
+
+        updateDockme(endpoint) {
+            if (window.dockmeUpdateInProgress) return;
+            window.dockmeUpdateInProgress = true;
+            // Eliminar update del updates.json
+            if (Array.isArray(State.updatesDataGlobal)) {
+                const hostEntry = State.updatesDataGlobal.find(
+                    h => h.endpoint?.toLowerCase() === endpoint.toLowerCase()
+                );
+                if (hostEntry?.hostname) {
+                    API.removeUpdate('dockme', hostEntry.hostname)
+                        .then(() => API.loadUpdates())
+                        .then(updatesData => {
+                            State.setUpdatesData(updatesData);
+                        });
+                }
+            }
+            
+            const isLocalDockme = endpoint.toLowerCase() === 'actual';
+            const fetchUrl = isLocalDockme ? '/api/update-self' : '/api/update-dockme';
+            const fetchOptions = isLocalDockme
+                ? { method: 'POST' }
+                : {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ endpoint })
+                };
+
+            fetch(fetchUrl, fetchOptions)
+                .then(res => (res.ok ? res.json() : null))
+                .then(() => {
+                    // Navegar a raíz y mostrar mensaje de reconectando
+                    window.history.pushState({}, '', '/');
+                    window.dispatchEvent(new Event('popstate'));
+                    
+                    const serverName = isLocalDockme ? 'este servidor' : 'Dockme remoto';
+                    setTimeout(() => {
+                        showMetricsAlert(`⏳ Actualizando y reconectando ${serverName}...`, 20000);
+                    }, 1000);
+                });
         }
     };
     // ==================== MENÚ MÓVIL ====================
@@ -1095,6 +1116,474 @@
             lista?.classList.remove('mobile-open');
         }
     };
+
+    // ==================== BULK UPDATE PANEL ====================
+    const BulkUpdatePanel = {
+        panel: null,
+        stacks: [],
+        isActive: false,
+        currentIndex: 0,
+        timers: {},
+        closeButtonShown: false,
+        isCancelling: false,
+        hasStarted: false,
+        isCompleted: false,
+        hasErrors: false,
+        
+        open(stacks) {
+            this.isActive = true;
+            this.stacks = stacks;
+            this.currentIndex = 0;
+            this.timers = {};
+            this.closeButtonShown = false;
+            this.isCompleted = false;
+            this.startTime = null;
+            this.totalTimer = null;
+            this.hasErrors = false;
+            this.createPanel();
+            this.updateButton();
+            this.setupStackListListener();
+        },
+        
+        createPanel() {
+            // Si ya existe, no crear otro
+            if (this.panel) return;
+            
+            this.panel = document.createElement('div');
+            this.panel.className = 'bulk-update-panel';
+            // Agrupar por servidor
+            const grouped = {};
+            this.stacks.forEach(s => {
+                const endpoint = s.endpoint || 'Actual';
+                if (!grouped[endpoint]) grouped[endpoint] = [];
+                grouped[endpoint].push(s);
+            });
+
+            // Generar HTML
+            let bodyHTML = '';
+            for (const [endpoint, stacks] of Object.entries(grouped)) {
+                const host = State.updatesDataGlobal?.find(h => 
+                    h.endpoint.toLowerCase() === endpoint.toLowerCase()
+                );
+                const hostname = host?.hostname || endpoint;
+                
+                bodyHTML += `<div class="server-group-title">${hostname}</div>`;
+                stacks.forEach(s => {
+                    const iconUrl = getStackIconUrl(s.name);
+                    bodyHTML += `
+                        <div class="stack-update-row" data-stack="${s.name}" data-endpoint="${s.endpoint}">
+                            <img src="${iconUrl}" class="stack-update-icon" alt="${s.name}">
+                            <span class="stack-update-name">${s.name}</span>
+                            <span class="stack-update-status">⏳ Pendiente</span>
+                        </div>
+                    `;
+                });
+            }
+
+            this.panel.innerHTML = `
+                <div class="panel-header">
+                    <button class="btn-start-updates">🚀 Comenzar Actualizaciones</button>
+                    <h3 class="panel-title" style="display: none;">🔄 Actualizando stacks</h3>
+                    <button class="btn-close-panel">×</button>
+                </div>
+                <div class="panel-body">
+                    ${bodyHTML}
+                </div>
+            `;
+            
+            document.body.appendChild(this.panel);
+            
+            // Listener cerrar
+            this.panel.querySelector('.btn-close-panel').addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                
+                // Si no ha empezado, cerrar directamente
+                if (!this.hasStarted) {
+                    this.close();
+                    return;
+                }
+                
+                // Si ya está cancelando, completado, o inactivo, cerrar
+                if (this.isCancelling || this.isCompleted || !this.isActive) {
+                    this.close();
+                    return;
+                }
+                
+                // Si está actualizando, cancelar
+                if (this.isActive && this.hasStarted) {
+                    this.cancel();
+                    
+                    // En móvil solo minimizar
+                    if (window.innerWidth <= 700) {
+                        this.panel.classList.remove('open');
+                    }
+                }
+            });
+            // Listener botón comenzar
+            const btnStart = this.panel.querySelector('.btn-start-updates');
+            btnStart?.addEventListener('click', () => {
+                btnStart.style.display = 'none';
+                const title = this.panel.querySelector('.panel-title');
+                if (title) title.style.display = '';
+                this.startTotalTimer();
+                this.runUpdates();
+            });
+            // Swipe derecha para cerrar en móvil
+            if (window.innerWidth <= 700) {
+                let startX = 0;
+                this.panel.addEventListener('touchstart', (e) => {
+                    startX = e.touches[0].clientX;
+                });
+                this.panel.addEventListener('touchmove', (e) => {
+                    const currentX = e.touches[0].clientX;
+                    const diff = currentX - startX;
+                    if (diff > 0) {
+                        this.panel.style.transform = `translateX(${diff}px)`;
+                    }
+                });
+                this.panel.addEventListener('touchend', (e) => {
+                    const currentX = e.changedTouches[0].clientX;
+                    const diff = currentX - startX;
+                    if (diff > 100) {
+                        // Solo minimizar, no cerrar
+                        this.panel.classList.remove('open');
+                        this.panel.style.transform = '';
+                    } else {
+                        this.panel.style.transform = 'translateX(0)';
+                    }
+                });
+            }
+            // Abrir en móvil
+            setTimeout(() => this.panel.classList.add('open'), 10);
+        },
+        
+        startTotalTimer() {
+            this.startTime = Date.now();
+            const header = this.panel?.querySelector('.panel-header h3, .panel-header .panel-title');
+            
+            this.totalTimer = setInterval(() => {
+                if (!this.isActive && !this.isCancelling) {
+                    clearInterval(this.totalTimer);
+                    return;
+                }
+                
+                const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+                
+                if (header) {
+                    if (this.isCancelling) {
+                        header.textContent = `⚠️ Cancelando... (${timeStr})`;
+                    } else {
+                        header.textContent = `🔄 Actualizando stacks (${timeStr})`;
+                    }
+                }
+            }, 1000);
+        },
+
+        updateButton() {
+            const btn = document.querySelector('.btn-update-selected');
+            if (!btn) return;
+            
+            if (this.isActive) {
+                btn.textContent = '📋 Ver actualizaciones';
+                btn.onclick = (e) => {
+                    e.preventDefault();
+                    if (this.panel) {
+                        this.panel.classList.add('open');
+                    }
+                };
+            } else {
+                btn.textContent = 'Actualizar seleccionadas';
+                // Restaurar listener original (se hace en addUpdateButtons)
+            }
+        },
+
+        async runUpdates() {
+            this.hasStarted = true;
+            
+            for (let i = 0; i < this.stacks.length; i++) {
+                this.currentIndex = i;
+                const stack = this.stacks[i];
+                
+                // Actualizar este stack
+                await this.updateStack(stack);
+                
+                // Después de terminar, comprobar si se canceló
+                if (this.isCancelling) {
+                    const header = this.panel?.querySelector('.panel-header h3, .panel-header .panel-title');
+                    if (header) {
+                        header.textContent = '⚠️ Proceso cancelado';
+                    }
+                    this.isActive = false;
+                    break;
+                }
+            }
+        },
+
+        async updateStack(stack) {
+            return new Promise((resolve) => {
+                const row = this.panel.querySelector(`[data-stack="${stack.name}"][data-endpoint="${stack.endpoint}"]`);
+                if (!row) return resolve();
+                
+                const statusEl = row.querySelector('.stack-update-status');
+                
+                // Iniciar contador
+                let seconds = 0;
+                statusEl.textContent = '🔄 0s';
+                
+                this.timers[stack.name] = setInterval(() => {
+                    seconds++;
+                    statusEl.textContent = `🔄 ${seconds}s`;
+                }, 1000);
+                
+                const socket = document.querySelector("#app")?._vnode?.component?.root?.proxy?.getSocket();
+                const endpoint = (stack.endpoint === 'Actual' || !stack.endpoint) ? '' : stack.endpoint;
+                socket.emit("agent", endpoint, "updateStack", stack.name, (res) => {
+                    clearInterval(this.timers[stack.name]);
+                    
+                    if (res.ok) {
+                        statusEl.textContent = '🔄 Actualizando...';
+                        row.dataset.needsPolling = 'true'; 
+                        this.removeUpdatedStack(stack); 
+                    } else {
+                        statusEl.textContent = '❌ Error';
+                        this.hasErrors = true;
+                        this.panel?.classList.add('error');
+                    }
+                    resolve();
+                });
+            });
+        },
+
+        setupStackListListener() {
+            const socket = document.querySelector("#app")?._vnode?.component?.root?.proxy?.getSocket();
+            
+            // Escuchar actualizaciones de stackList
+                socket.on("agent", (event, data) => {
+                    if (event === "stackList" && data.stackList && (this.isActive || this.isCancelling)) {
+                    // Actualizar status de nuestros stacks
+                    this.stacks.forEach(stack => {
+                        const stackData = data.stackList[stack.name];
+                        if (stackData && stackData.endpoint === (stack.endpoint === 'Actual' ? '' : stack.endpoint)) {
+                            const row = this.panel?.querySelector(`[data-stack="${stack.name}"][data-endpoint="${stack.endpoint}"]`);
+                            if (!row) return;
+                            
+                            const statusEl = row.querySelector('.stack-update-status');
+                            const needsPolling = row.dataset.needsPolling === 'true';
+                            
+                            if (needsPolling) {
+                                if (stackData.status === 3) { // RUNNING
+                                    statusEl.textContent = '🔄 Verificando...';
+                                    row.dataset.needsPolling = 'false';
+                                    row.dataset.checkingServices = 'true';
+                                    this.checkServices(stack, row);
+                                } else if (stackData.status === 4) { // EXITED
+                                    statusEl.textContent = '⚠️ Exited';
+                                    row.removeAttribute('data-needs-polling');
+                                    this.hasErrors = true;
+                                    this.panel?.classList.add('error');    
+                                }
+                            }
+                        }
+                    });
+                    
+                    // Verificar si todos terminaron
+                    this.checkIfAllDone();
+                }
+            });
+        },
+
+        checkServices(stack, row) {
+            const socket = document.querySelector("#app")?._vnode?.component?.root?.proxy?.getSocket();
+            const endpoint = (stack.endpoint === 'Actual' || !stack.endpoint) ? '' : stack.endpoint;
+            const statusEl = row.querySelector('.stack-update-status');
+            
+            const checkInterval = setInterval(() => {
+                // Si ya no está en checking, detener
+                if (row.dataset.checkingServices !== 'true') {
+                    clearInterval(checkInterval);
+                    return;
+                }
+                
+                socket.emit("agent", endpoint, "serviceStatusList", stack.name, (res) => {
+                    if (!res.ok || !res.serviceStatusList) {
+                        clearInterval(checkInterval);
+                        statusEl.textContent = '❌ Error';
+                        row.removeAttribute('data-checking-services');
+                        this.hasErrors = true;
+                        this.panel?.classList.add('error');
+                        this.checkIfAllDone();
+                        return;
+                    }
+                    
+                    const services = Object.entries(res.serviceStatusList);
+                    const total = services.length;
+                    const healthy = services.filter(([name, status]) => 
+                        status.state === 'running' || status.state === 'healthy'
+                    ).length;
+                    const unhealthy = services.filter(([name, status]) => 
+                        status.state === 'unhealthy' || status.state === 'exited'
+                    ).length;
+                    
+                    // Todos OK
+                    if (healthy === total) {
+                        clearInterval(checkInterval);
+                        statusEl.textContent = `✅ Running (${healthy}/${total})`;
+                        row.removeAttribute('data-checking-services');
+                        this.checkIfAllDone();
+                    }
+                    // Alguno unhealthy
+                    else if (unhealthy > 0) {
+                        clearInterval(checkInterval);
+                        statusEl.textContent = `⚠️ Running (${healthy}/${total})`;
+                        row.removeAttribute('data-checking-services');
+                        this.hasErrors = true;
+                        this.panel?.classList.add('error');
+                        this.checkIfAllDone();
+                    }
+                    // Aún iniciando
+                    else {
+                        statusEl.textContent = `🔄 Iniciando (${healthy}/${total})`;
+                    }
+                });
+            }, 3000); // Cada 3 segundos
+        },
+
+        removeUpdatedStack(stack) {
+            // 1. Desmarcar checkbox
+            const checkbox = document.querySelector(
+                `.stack-checkbox[data-stack-name="${stack.name}"][data-endpoint="${stack.endpoint}"]`
+            );
+            if (checkbox) checkbox.checked = false;
+            
+            // 2. Eliminar tarjeta del DOM
+            const card = checkbox?.closest('.stack-card-link');
+            if (card) {
+                card.style.opacity = '0';
+                setTimeout(() => card.remove(), 300);
+            }
+            
+            // 3. Buscar hostname del endpoint
+            const endpoint = stack.endpoint === 'Actual' ? 'Actual' : stack.endpoint;
+            const hostEntry = State.updatesDataGlobal?.find(
+                h => h.endpoint?.toLowerCase() === endpoint.toLowerCase()
+            );
+            
+            if (hostEntry?.hostname) {
+                // 4. Usar API existente para eliminar update
+                API.removeUpdate(stack.name, hostEntry.hostname)
+                    .then(() => API.loadUpdates())
+                    .then(updatesData => {
+                        State.setUpdatesData(updatesData);
+                        
+                        // Ocultar sección si no quedan tarjetas
+                        setTimeout(() => {
+                            const remainingCards = document.querySelectorAll('.stack-card-horizontal.update');
+                            if (remainingCards.length === 0) {
+                                const updatesTitle = document.getElementById('updates-title');
+                                const updatesRow = document.getElementById('updates-row');
+                                if (updatesTitle) updatesTitle.style.display = 'none';
+                                if (updatesRow) updatesRow.style.display = 'none';
+                            }
+                        }, 400);
+                    });
+            }
+        },
+        
+        checkIfAllDone() {
+            // Contar solo los que YA empezaron a actualizar (tienen o tuvieron data-needs-polling)
+            const startedRows = this.panel?.querySelectorAll('.stack-update-row .stack-update-status');
+            let allDone = true;
+            
+            startedRows?.forEach(statusEl => {
+                const text = statusEl.textContent;
+                // Si aún está actualizando o iniciando
+                if (text.includes('🔄') || text.includes('⏳')) {
+                    allDone = false;
+                }
+            });
+            
+            if (allDone && startedRows && startedRows.length > 0) {
+                this.isCompleted = true;
+                this.isActive = false;
+                clearInterval(this.totalTimer);
+                // Cambiar título a completado
+                const header = this.panel?.querySelector('.panel-header h3, .panel-header .panel-title');
+                if (header) {
+                    header.textContent = '✅ Actualizaciones completadas';
+                        // const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
+                        // const mins = Math.floor(elapsed / 60);
+                        // const secs = elapsed % 60;
+                        // header.textContent = `✅ Completado (${mins}:${secs.toString().padStart(2, '0')})`;
+                }
+                if (!this.hasErrors && !this.isCancelling) {
+                    this.panel?.classList.add('success');
+                }
+                // En móvil, expandir panel para que se vea
+                if (window.innerWidth <= 700) {
+                    this.panel?.classList.add('open');
+                }
+            }
+        },
+
+        cancel() {
+            this.isCancelling = true;
+            
+            // Cambiar título
+            const header = this.panel?.querySelector('.panel-header h3, .panel-header .panel-title');
+            if (header) {
+                header.textContent = '⚠️ Cancelando actualizaciones...';
+            }
+            
+            // Marcar pendientes como cancelados
+            const rows = this.panel?.querySelectorAll('.stack-update-row');
+            rows?.forEach(row => {
+                const statusEl = row.querySelector('.stack-update-status');
+                const text = statusEl.textContent;
+                
+                // Si está pendiente (no ha empezado)
+                if (text.includes('⏳ Pendiente')) {
+                    statusEl.textContent = '⏭️ Cancelado';
+                    this.panel?.classList.add('error');
+                }
+            });
+        },
+
+        close() {
+            if (!this.panel) return;
+            this.isActive = false;
+            
+            // Desmarcar checkboxes de stacks cancelados o pendientes
+            this.stacks.forEach(stack => {
+                const checkbox = document.querySelector(
+                    `.stack-checkbox[data-stack-name="${stack.name}"][data-endpoint="${stack.endpoint}"]`
+                );
+                if (checkbox) checkbox.checked = false;
+            });
+            
+            // Resetear botón "Seleccionar todas"
+            const btnSelectAll = document.querySelector('.btn-select-all');
+            if (btnSelectAll) {
+                btnSelectAll.textContent = 'Seleccionar todas';
+            }
+            
+            this.panel.classList.remove('open');
+            setTimeout(() => {
+                this.panel?.remove();
+                this.panel = null;
+                this.isCancelling = false;
+                this.hasStarted = false;
+                this.isCompleted = false;
+                this.updateButton();
+            }, 300);
+        }
+
+    };
+
+
     // ==================== ROUTE OBSERVER ====================
     const RouteObserver = {
         lastRoute: null,
@@ -1751,6 +2240,17 @@
             return 'Activo 1 min';
         },
 
+        hasDockmeUpdate(endpoint) {
+            if (!Array.isArray(window.allUpdatesGlobal)) return false;
+            
+            return window.allUpdatesGlobal.some(item => {
+                const stackName = (item.stack || '').toLowerCase();
+                const itemEndpoint = (item.endpoint || '').toLowerCase();
+                const normalizedEndpoint = (endpoint || '').toLowerCase();
+                return stackName === 'dockme' && itemEndpoint === normalizedEndpoint;
+            });
+        },
+
         getColorClass(value, type) {
             if (type === 'cpu' || type === 'memory') {
                 if (value >= 85) return 'danger';
@@ -1765,7 +2265,7 @@
             return 'normal';
         },
 
-        createCard(hostname, metrics, status) {
+        createCard(hostname, metrics, status, endpoint) {
             const card = document.createElement('div');
             card.className = `metric-card${status === 'error' ? ' disconnected' : ''}`;
             card.dataset.hostname = hostname;
@@ -1789,10 +2289,17 @@
                 const cpuClass = this.getColorClass(metrics.cpu, 'cpu');
                 const memClass = this.getColorClass(metrics.memory, 'memory');
                 const tempClass = this.getColorClass(metrics.temp_cpu, 'temp');
+
+                // Comprobar si hay update de Dockme
+                const hasDockmeUpdate = this.hasDockmeUpdate(endpoint);
+                const uptimeOrUpdate = (hasDockmeUpdate && !window.dockmeUpdateInProgress)
+                    ? `<button class="btn-update-dockme" data-endpoint="${endpoint}">🚀 Actualizar</button>`
+                    : `<span class="metric-uptime ${uptimeClass}">${uptime}</span>`;
+
                 card.innerHTML = `
                     <div class="metric-header">
                         <span class="metric-hostname">${hostname}${versionDisplay}</span>
-                        <span class="metric-uptime ${uptimeClass}">${uptime}</span>
+                        ${uptimeOrUpdate}
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">CPU:</span>
@@ -1844,6 +2351,21 @@
                 const isActive = this.filterActive && this.currentFilter === hostname;
                 card.title = isActive ? 'Click para quitar filtro' : 'Click para filtrar';
             });
+
+            // Listener del botón actualizar Dockme
+            const btnUpdate = card.querySelector('.btn-update-dockme');
+            if (btnUpdate) {
+                btnUpdate.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    EventHandlers.updateDockme(endpoint);
+                });
+            
+                btnUpdate.addEventListener('mouseenter', (e) => {
+                    e.stopPropagation();
+                    btnUpdate.title = 'Actualizar Dockme en este servidor';
+                });
+            }
+
             return card;
         },
 
@@ -1874,7 +2396,8 @@
                 const card = this.createCard(
                     host.hostname,
                     host.metrics,
-                    host.status
+                    host.status,
+                    host.endpoint
                 );
                 cardsContainer.appendChild(card);
             });
@@ -1967,6 +2490,40 @@
                 const itemHostname = host?.hostname || endpoint;
                 item.style.display = itemHostname === hostname ? '' : 'none';
             });
+            
+            // Filtrar también tarjetas de updates
+            const updateCards = document.querySelectorAll('.stack-card-horizontal.update');
+            updateCards.forEach(card => {
+                const checkbox = card.querySelector('.stack-checkbox');
+                if (!checkbox) return;
+                
+                const cardEndpoint = checkbox.dataset.endpoint;
+                const host = State.updatesDataGlobal?.find(h =>
+                    h.endpoint.toLowerCase() === cardEndpoint.toLowerCase()
+                );
+                const cardHostname = host?.hostname || cardEndpoint;
+                
+                const link = card.closest('.stack-card-link');
+                if (link) {
+                    link.style.display = cardHostname === hostname ? '' : 'none';
+                }
+            });
+            
+            // Ocultar/mostrar sección de updates si no hay tarjetas visibles
+            const visibleUpdateCards = Array.from(updateCards).filter(card => {
+                const link = card.closest('.stack-card-link');
+                return link && link.style.display !== 'none';
+            });
+            
+            const updatesTitle = document.getElementById('updates-title');
+            const updatesRow = document.getElementById('updates-row');
+            if (visibleUpdateCards.length === 0) {
+                if (updatesTitle) updatesTitle.style.display = 'none';
+                if (updatesRow) updatesRow.style.display = 'none';
+            } else {
+                if (updatesTitle) updatesTitle.style.display = '';
+                if (updatesRow) updatesRow.style.display = '';
+            }
         },
 
         clearHostFilter() {
@@ -1978,6 +2535,20 @@
                 item.style.display = '';
             });
             ItemManager.reorder();
+            
+            // Mostrar todas las tarjetas de updates
+            const updateLinks = document.querySelectorAll('.stack-card-link');
+            updateLinks.forEach(link => {
+                if (link.querySelector('.stack-card-horizontal.update')) {
+                    link.style.display = '';
+                }
+            });
+            
+            // Mostrar sección de updates
+            const updatesTitle = document.getElementById('updates-title');
+            const updatesRow = document.getElementById('updates-row');
+            if (updatesTitle) updatesTitle.style.display = '';
+            if (updatesRow) updatesRow.style.display = '';
         },
 
         updateSelectedCard(hostname) {
@@ -2350,10 +2921,6 @@ function deleteAgent(endpoint) {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(updatedData)
-                        }).then(() => {
-                            console.log('[Dockme] Endpoint eliminado del updates.json');
-                        }).catch(err => {
-                            console.error('[Dockme] Error eliminando endpoint:', err);
                         });
                     }
                     readAgentsFromDockgeDOM();
@@ -2543,18 +3110,16 @@ function init() {
 // CARGAR AGENTES Y MÉTRICAS
 if (!dockmeWaitingForLogin && RouteManager.isRootPath()) {
     let attempts = 0;
-    const maxAttempts = 20; 
+    const maxAttempts = 30; 
     const checkAndLoadAgents = () => {
         const agentsExist = document.querySelectorAll('.first-row .agent').length > 0;
         attempts++;
         
         if (agentsExist) {
-            console.log('[Dockme] DOM de agentes encontrado en intento', attempts);
             readAgentsFromDockgeDOM();
             DataLoader.loadAndDisplay();
             MetricsManager.start();
         } else if (attempts < maxAttempts) {
-            console.log('[Dockme] Intento', attempts, '- Esperando DOM de agentes...');
             setTimeout(checkAndLoadAgents, 200);
         } else {
             console.error('[Dockme] No se pudo cargar el DOM de agentes después de', maxAttempts, 'intentos');
@@ -2562,7 +3127,7 @@ if (!dockmeWaitingForLogin && RouteManager.isRootPath()) {
             MetricsManager.start();
         }
     };
-    setTimeout(checkAndLoadAgents, 500);
+    setTimeout(checkAndLoadAgents, 800);
 }
 }
 
