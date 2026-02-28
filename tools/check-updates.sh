@@ -194,9 +194,25 @@ if [ ${#updates_list[@]} -gt 0 ]; then
         IFS='|' read -r stack service <<< "$item"
         printf "${YELLOW}%-25s${NC} | ${CYAN}%-25s${NC}\n" "$stack" "$service"
     done
-    stacks_formatted=$(printf "%s\n" "${updates_list[@]}" | cut -d'|' -f1 | sort -u | sed 's/^/- /')
-    msg="🐋 $HOSTNAME Updates:"$'\n'"$stacks_formatted"
-    send_notif "$msg"
+ # Formatear lista de stacks
+stacks_unique=$(printf "%s\n" "${updates_list[@]}" | cut -d'|' -f1 | sort -u)
+stacks_count=$(echo "$stacks_unique" | wc -l)
+
+# Construir mensaje
+msg="🐋 <b>${HOSTNAME}</b>: ${stacks_count} update"
+[ "$stacks_count" -gt 1 ] && msg+="s"
+msg+=$'\n'
+while IFS= read -r stack; do
+    msg+="<code>  • ${stack}</code>"$'\n'
+done <<< "$stacks_unique"
+
+# Añadir espacio liberado si hay
+if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
+    space=$(echo "$reclaimed" | sed 's/.*: //')
+    msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
+fi
+
+send_notif "$msg"
 
 # ============================
 #   FORMAT WEBHOOK
