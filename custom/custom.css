@@ -29,7 +29,7 @@ a.item .cp-badge {
     gap: 15px !important;
 }
 
-/* Tamaño de icono en lista de stacks */
+/* Tamano de icono en lista de stacks */
 a.item .cp-icon {
     width: 35px !important;
     height: 35px !important;
@@ -48,7 +48,7 @@ a.item .cp-circle {
     flex: 0 0 auto !important;
 }
 
-/* tamaño del nombre del stack en lista stacks*/
+/* tamano del nombre del stack en lista stacks*/
 a.item .title .cp-title {
     font-size: 1.15em !important;
 }
@@ -150,7 +150,7 @@ div.mb-3.col-xl-9.col-md-8.col-12 {
         max-width: 100% !important;
     }
     
-    /* Botón hamburguesa (lo creamos en JS) */
+    /* Boton hamburguesa (lo creamos en JS) */
     .mobile-menu-toggle {
         position: absolute;
         top: 60px;
@@ -176,7 +176,7 @@ div.mb-3.col-xl-9.col-md-8.col-12 {
     }
 }
 
-/* Tamaño de fuente en el editor y terminal */
+/* Tamano de fuente en el editor y terminal */
 div.editor-box.mb-3.shadow-box {
     font-size: 14px !important;
 }
@@ -190,11 +190,7 @@ div.xterm-rows {
     font-size: inherit;
 }
 
-/* Cambiar fondo de los botones normales a Azul oscuro */
-.btn-normal {
-    color: #b1b8c0 !important;
-    background-color: #214a83 !important;
-}
+/* Estilos de botones unificados al final del archivo */
 
 /* Fila superior con el logo y nombre mas estrecha (header) */
 .py-3 {
@@ -222,15 +218,15 @@ header {
     height: 55px;
 }
 
-/* Ocultar botón Consola del header */
+/* Ocultar boton Consola del header */
 header .nav-item.me-2 > a[href="/console"] {
     display: none !important;
 }
-/* Ocultar botón Inicio del header a la derecha */
+/* Ocultar boton Inicio del header a la derecha */
 header .nav-item.me-2 > a[href="/"] {
     display: none !important;
 }
-/* Ocultar título del header por defecto "Dockge" junto al logo */
+/* Ocultar titulo del header por defecto "Dockge" junto al logo */
 header .fs-4.title {
     visibility: hidden;
 }
@@ -254,11 +250,7 @@ body.settings-security .settings-content {
     display: none !important;
 }
 
-/* Boton primario sin degradado azul y con color solido */
-a.btn.btn-primary, button.btn.btn-primary {
-    background: none !important;
-    background-color: #0ca2f4 !important;
-}
+
 
 /* Bolas de estado de docker sin degradado */
 span.badge.bg-primary {
@@ -398,15 +390,11 @@ span.badge.bg-primary {
     border-width: 2px;
 }
 
-/* Controles de bulk update en título */
+/* Controles de bulk update en titulo */
 .bulk-update-controls {
     display: inline-flex;
     gap: 12px;
     margin-left: 20px;
-}
-
-.bulk-update-controls .dockme-manage-btn {
-    font-size: 0.75em;
 }
 
 /* ========================================
@@ -435,7 +423,7 @@ span.badge.bg-primary {
 .bulk-update-panel.error {
     border-color: #c23737; /* rojo error/cancelado */
 }
-/* Botón comenzar actualizaciones */
+/* Boton comenzar actualizaciones */
 .btn-start-updates {
     background: #22c55e;
     color: #fff;
@@ -526,7 +514,7 @@ span.badge.bg-primary {
     color: #ccc;
 }
 
-/* Título de grupo de servidor */
+/* Titulo de grupo de servidor */
 .server-group-title {
     font-size: 1.1em;
     font-weight: 800;
@@ -567,7 +555,7 @@ span.badge.bg-primary {
         top: 55px;
         right: 0;
         width: 100%;
-        height: calc(100vh - 55px);  /* ← ajustar altura también */
+        height: calc(100vh - 55px);  /* ← ajustar altura tambien */
         max-height: calc(100vh - 55px);
         border-radius: 0;
         transform: translateX(calc(100% - 14px));  /* ← 14px visible */
@@ -658,7 +646,7 @@ span.badge.bg-primary {
     font-weight: bold;
 }
 
-/* Botón actualizar Dockme en tarjeta de métricas */
+/* Boton actualizar Dockme en tarjeta de metricas */
 .btn-update-dockme {
     background: #22c55e;
     color: #fff;
@@ -675,7 +663,7 @@ span.badge.bg-primary {
     background: #16a34a;
 }
 
-/* Filas de métricas */
+/* Filas de metricas */
 .metric-row {
     display: flex;
     justify-content: space-between;
@@ -692,7 +680,7 @@ span.badge.bg-primary {
     font-weight: bold;
 }
 
-/* Colores según threshold */
+/* Colores segun threshold */
 .metric-value.normal {
     color: #2ecc71;
 }
@@ -715,14 +703,14 @@ span.badge.bg-primary {
     font-weight: bold;
 }
 
-/* Título de sección */
+/* Titulo de seccion */
 .metrics-section-title {
     font-size: 1.3em;
     font-weight: bold;
     padding-top: 10px;
 }
 
-/* Títulos de sección del dashboard */
+/* Titulos de seccion del dashboard */
 .dashboard-section-title {
     font-size: 1.4em;
     font-weight: bold;
@@ -737,12 +725,12 @@ span.badge.bg-primary {
     margin-bottom: 35px; /* igual que en metrics-container */
 }
 
-/* Grid de actualizaciones (tarjetas más anchas) */
+/* Grid de actualizaciones (tarjetas mas anchas) */
 .dashboard-grid-updates {
     grid-template-columns: repeat(auto-fill, minmax(600px, 1fr));
 }
 
-/* Grid de recientes (tarjetas más compactas) */
+/* Grid de recientes (tarjetas mas compactas) */
 .dashboard-grid-recientes {
     grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
 }
@@ -761,14 +749,14 @@ span.badge.bg-primary {
         height: 80px !important;
     }
     
-    /* Logo más pequeño */
+    /* Logo mas pequeño */
     .stack-logo-left {
         width: 60px !important;
         height: 60px !important;
         margin-right: 10px !important;
     }
     
-    /* Textos más pequeños */
+    /* Textos mas pequeños */
     .stack-name {
         font-size: 1.2em !important;
     }
@@ -812,8 +800,8 @@ span.badge.bg-primary {
     background-color: #2a3445;
 }
 .dockme-edit-stacks-icon.active {
-    background-color: #3a4b6b;      /* fondo más claro */
-    border-color: #6fa8ff;          /* azul más vivo */
+    background-color: #3a4b6b;      /* fondo mas claro */
+    border-color: #6fa8ff;          /* azul mas vivo */
     color: #ffffff;                 /* icono bien visible */
     opacity: 1;
     box-shadow: 0 0 0 2px rgba(111,168,255,0.25);
@@ -865,17 +853,8 @@ span.badge.bg-primary {
 }
 
 .dockme-icon-upload-btn {
-    padding: 8px 12px;
-    border-radius: 6px;
-    border: 1px solid #3a4557;
     margin-top: 30px;
-    background: #1f2937;
-    color: #fff;
     cursor: pointer;
-}
-
-.dockme-icon-upload-btn:hover {
-    background: #2a3445;
 }
 
 .dockme-icon-error {
@@ -962,25 +941,16 @@ span.badge.bg-primary {
     }
 }
 
-/* sección de gestión de agentes Dockge */
+/* seccion de gestion de agentes Dockge */
 .dockme-section-header {
     display: flex;
     align-items: center;
-    gap: 12px;              /* ≈ 1 cm visual */
+    gap: 12px;              /* aprox. 1 cm visual */
     margin-bottom: 10px;
 }
 .dockme-manage-btn {
     margin-left: 12px;
-    padding: 2px 5px;
-    font-size: 0.7em;
-    background-color: #1c2431;
-    border: 1px solid #3a465c;
-    border-radius: 3px;
-    color: #cbd5e1;
     cursor: pointer;
-}
-.dockme-manage-btn:hover {
-    background-color: #2a3446;
 }
 /* ========================================
    GESTIÓN DE AGENTES
@@ -1144,7 +1114,7 @@ span.badge.bg-primary {
     margin: 10px 0 15px 0;
     padding: 0;
 }
-/* Alerta temporal de actualización */
+/* Alerta temporal de actualizacion */
 .dockme-updating-alert {
     font-size: 1em;
     font-weight: 500;
@@ -1153,7 +1123,7 @@ span.badge.bg-primary {
     padding: 0;
     display: none;
 }
-/* Botón eliminar agente */
+/* Boton eliminar agente */
 .btn-delete-agent {
     background: none;
     border: none;
@@ -1168,7 +1138,7 @@ span.badge.bg-primary {
     opacity: 1;
     transform: scale(1.2);
 }
-/* Botón descartar servidor detectado */
+/* Boton descartar servidor detectado */
 .detected-server-header {
     display: flex;
     justify-content: space-between;
@@ -1194,4 +1164,81 @@ span.badge.bg-primary {
 .btn-discard-detected:hover {
     opacity: 1;
     transform: scale(1.2);
+}
+
+/* ========================================
+   BOTONES - NUEVO ESTILO DOCKME
+   ======================================== */
+
+/* Reset general de bordes redondeados en todos los botones */
+.btn {
+    border-radius: 3px !important;
+    font-weight: 400 !important;
+    letter-spacing: 0.3px !important;
+    transition: all 0.15s ease !important;
+    padding-left: 15px !important;
+    padding-right: 15px !important;
+    padding-top: 3px !important;
+    padding-bottom: 3px !important;
+}
+
+/* Boton primario — VERDE (Start, Deploy, Save, Connect) */
+a.btn.btn-primary,
+button.btn.btn-primary {
+    background-color: #0f3d25 !important;
+    background: #0f3d25 !important;
+    border: 1px solid #27ae60 !important;
+    color: #6dbf8a !important;
+}
+a.btn.btn-primary:hover,
+button.btn.btn-primary:hover {
+    background-color: #1a5c38 !important;
+    border-color: #2ecc71 !important;
+    color: #86efac !important;
+}
+
+/* Boton normal + secondary - AZUL (Stop, Restart, Edit, Back, Update, Cancel) */
+a.btn.btn-normal,
+button.btn.btn-normal,
+a.btn.btn-secondary,
+button.btn.btn-secondary {
+    background-color: #1a3a6b !important;
+    border: 1px solid #2563a8 !important;
+    color: #7eb8f7 !important;
+}
+a.btn.btn-normal:hover,
+button.btn.btn-normal:hover,
+a.btn.btn-secondary:hover,
+button.btn.btn-secondary:hover {
+    background-color: #2550a0 !important;
+    border-color: #5c9adf !important;
+    color: #bfdbfe !important;
+}
+
+/* Boton danger — ROJO (Delete) */
+a.btn.btn-danger,
+button.btn.btn-danger {
+    background-color: #3d0f0f !important;
+    border: 1px solid #c0392b !important;
+    color: #fca5a5 !important;
+}
+a.btn.btn-danger:hover,
+button.btn.btn-danger:hover {
+    background-color: #5c1a1a !important;
+    border-color: #e74c3c !important;
+    color: #fecaca !important;
+}
+
+/* badge de running y puertos de docker sin bordes redondeados */
+.badge {
+    border-radius: 5px !important;
+}
+
+.profile-pic {
+    background-color: #2385d2 !important;
+}
+
+/* ocultar el boton "componer" hasta que cambia el texto */
+a.btn.btn-primary[href="/compose"] {
+    visibility: hidden;
 }

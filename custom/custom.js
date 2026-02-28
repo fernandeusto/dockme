@@ -515,6 +515,16 @@
     };
 
     // ==================== GESTIÓN DE BLOQUES DE STACKS ====================
+    const syncBulkButtons = () => {
+        const checkboxes = document.querySelectorAll('.stack-checkbox');
+        const btnSelectAll = document.querySelector('.btn-select-all');
+        const btnUpdate = document.querySelector('.btn-update-selected');
+        const anyChecked = Array.from(checkboxes).some(cb => cb.checked);
+        const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+        if (btnUpdate) btnUpdate.style.display = anyChecked ? '' : 'none';
+        if (btnSelectAll) btnSelectAll.textContent = allChecked ? 'Deseleccionar todas' : 'Seleccionar todas';
+    };
+    
     const StackBlockManager = {
         async create(contenedor, lista, idBase, titulo, status, sources = {}) {
             if (!Array.isArray(lista) || lista.length === 0) {
@@ -582,6 +592,7 @@
                         
                         // Si no → toggle
                         checkbox.checked = !checkbox.checked;
+                        syncBulkButtons();
                         return;
                     }
                 }
@@ -600,7 +611,9 @@
             } else if (idBase.startsWith('recientes')) {
                 this.setupRecentCard(card, item, displayName, iconoUrl, fechaFormateada);
             } 
-
+            if (idBase.startsWith('recientes')) {
+                link.dataset.endpoint = endpoint || 'Actual';
+            }
             link.appendChild(card);
             return link;
         },
@@ -608,33 +621,30 @@
         addUpdateButtons(blockTitle) {
             // Evitar duplicados
             if (blockTitle.querySelector('.bulk-update-controls')) return;
-            
+
             const controls = document.createElement('div');
             controls.className = 'bulk-update-controls';
             controls.innerHTML = `
-                <button class="dockme-manage-btn btn-select-all">Seleccionar todas</button>
-                <button class="dockme-manage-btn btn-update-selected">Actualizar seleccionadas</button>
+                <button class="btn btn-normal dockme-manage-btn btn-select-all">Seleccionar todas</button>
+                <button class="btn btn-normal dockme-manage-btn btn-update-selected" style="display:none">Actualizar seleccionadas</button>
             `;
-            
+
             blockTitle.appendChild(controls);
-            
-            // Listeners
+
             const btnSelectAll = controls.querySelector('.btn-select-all');
             const btnUpdate = controls.querySelector('.btn-update-selected');
-            
+
             btnSelectAll.addEventListener('click', () => {
                 const checkboxes = document.querySelectorAll('.stack-checkbox');
                 const allChecked = Array.from(checkboxes).every(cb => cb.checked);
                 checkboxes.forEach(cb => cb.checked = !allChecked);
                 btnSelectAll.textContent = allChecked ? 'Seleccionar todas' : 'Deseleccionar todas';
+                syncBulkButtons();
             });
-            
+
             btnUpdate.addEventListener('click', () => {
                 const selected = Array.from(document.querySelectorAll('.stack-checkbox:checked'));
-                if (selected.length === 0) {
-                    alert('Selecciona al menos un stack para actualizar');
-                    return;
-                }
+                if (selected.length === 0) return;
                 const stacks = selected.map(cb => ({
                     name: cb.dataset.stackName,
                     endpoint: cb.dataset.endpoint
@@ -727,6 +737,7 @@
             if (checkbox) {
                 checkbox.addEventListener('click', (e) => {
                     e.stopPropagation(); // Evitar que navegue al compose al hacer click
+                    syncBulkButtons();
                 });
             }
         },
@@ -892,6 +903,13 @@
                 next = next.nextElementSibling;
                 colContent.appendChild(current);
             }
+            const volverBtn = document.createElement('button');
+            volverBtn.className = 'btn btn-normal mt-2';
+            volverBtn.innerHTML = '⬅️ Volver';
+            volverBtn.addEventListener('click', () => {
+                document.querySelector('header .fs-4.title')?.click();
+            });
+            colContent.appendChild(volverBtn);
             row.appendChild(colLogo);
             row.appendChild(colContent);
             container.insertBefore(row, container.firstChild);
@@ -1578,6 +1596,8 @@
             const btnSelectAll = document.querySelector('.btn-select-all');
             if (btnSelectAll) {
                 btnSelectAll.textContent = 'Seleccionar todas';
+                const btnUpdate = document.querySelector('.btn-update-selected');
+                if (btnUpdate) btnUpdate.style.display = 'none';
             }
             
             this.panel.classList.remove('open');
@@ -1942,7 +1962,7 @@
                     />
                     <span class="dockme-icon-status url"></span>
                 </div>
-                <button class="dockme-icon-upload-btn">
+                <button class="btn btn-normal dockme-icon-upload-btn">
                     Subir icono local (SVG)
                 </button>
                 <span class="dockme-icon-status upload"></span>
@@ -2230,6 +2250,13 @@
                 contenedor.appendChild(frag);
             }
         }
+        // 3. Renombrar boton "Componer" de Dockge
+        const btnComponer = document.querySelector('a.btn.btn-primary[href="/compose"]');
+        if (btnComponer && !btnComponer.dataset.renamed) {
+            btnComponer.lastChild.textContent = ' Crear nuevo servicio';
+            btnComponer.style.visibility = 'visible';
+            btnComponer.dataset.renamed = 'true';
+        }
     }
 
 
@@ -2438,7 +2465,7 @@
             
             if (shouldShowBtn && !manageBtn) {
                 manageBtn = document.createElement('button');
-                manageBtn.className = 'dockme-manage-btn';
+                manageBtn.className = 'btn btn-normal dockme-manage-btn';
                 manageBtn.textContent = '⚙️ Gestionar';
                 manageBtn.addEventListener('click', showAgentsManager);
                 const title = header.querySelector('.metrics-section-title');
@@ -2475,7 +2502,7 @@
             title.className = 'metrics-section-title mb-3';
             title.textContent = '🖥️  Servidores conectados';
             const manageBtn = document.createElement('button');
-            manageBtn.className = 'dockme-manage-btn';
+            manageBtn.className = 'btn btn-normal dockme-manage-btn';
             manageBtn.textContent = '⚙️ Gestionar';
             manageBtn.addEventListener('click', showAgentsManager);
             header.appendChild(title);
@@ -2530,7 +2557,7 @@
                 const link = card.closest('.stack-card-link');
                 return link && link.style.display !== 'none';
             });
-            
+
             const updatesTitle = document.getElementById('updates-title');
             const updatesRow = document.getElementById('updates-row');
             if (visibleUpdateCards.length === 0) {
@@ -2539,6 +2566,29 @@
             } else {
                 if (updatesTitle) updatesTitle.style.display = '';
                 if (updatesRow) updatesRow.style.display = '';
+            }
+
+            // Filtrar tarjetas de recientes
+            const recentLinks = document.querySelectorAll('#recientes-row .stack-card-link');
+            recentLinks.forEach(link => {
+                const cardEndpoint = link.dataset.endpoint || 'Actual';
+                const host = State.updatesDataGlobal?.find(h =>
+                    h.endpoint.toLowerCase() === cardEndpoint.toLowerCase()
+                );
+                const cardHostname = host?.hostname || cardEndpoint;
+                link.style.display = cardHostname === hostname ? '' : 'none';
+            });
+
+            // Ocultar/mostrar sección de recientes si no hay tarjetas visibles
+            const visibleRecentCards = Array.from(recentLinks).filter(l => l.style.display !== 'none');
+            const recientesTitle = document.getElementById('recientes-title');
+            const recientesRow = document.getElementById('recientes-row');
+            if (visibleRecentCards.length === 0) {
+                if (recientesTitle) recientesTitle.style.display = 'none';
+                if (recientesRow) recientesRow.style.display = 'none';
+            } else {
+                if (recientesTitle) recientesTitle.style.display = '';
+                if (recientesRow) recientesRow.style.display = '';
             }
         },
 
@@ -2565,6 +2615,15 @@
             const updatesRow = document.getElementById('updates-row');
             if (updatesTitle) updatesTitle.style.display = '';
             if (updatesRow) updatesRow.style.display = '';
+
+            // Mostrar todas las tarjetas de recientes
+            document.querySelectorAll('#recientes-row .stack-card-link').forEach(link => {
+                link.style.display = '';
+            });
+            const recientesTitle = document.getElementById('recientes-title');
+            const recientesRow = document.getElementById('recientes-row');
+            if (recientesTitle) recientesTitle.style.display = '';
+            if (recientesRow) recientesRow.style.display = '';
         },
 
         updateSelectedCard(hostname) {
