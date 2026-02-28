@@ -1043,20 +1043,30 @@
         updateDockme(endpoint) {
             if (window.dockmeUpdateInProgress) return;
             window.dockmeUpdateInProgress = true;
-            // Eliminar update del updates.json
+            // Eliminar update del updates.json Y de la variable global
             if (Array.isArray(State.updatesDataGlobal)) {
                 const hostEntry = State.updatesDataGlobal.find(
                     h => h.endpoint?.toLowerCase() === endpoint.toLowerCase()
                 );
                 if (hostEntry?.hostname) {
+                    // Eliminar de la variable global inmediatamente
+                    if (Array.isArray(window.allUpdatesGlobal)) {
+                        window.allUpdatesGlobal = window.allUpdatesGlobal.filter(item => {
+                            const isSameStack = 
+                                (item.stack || '').toLowerCase() === 'dockme' &&
+                                (item.endpoint || '').toLowerCase() === endpoint.toLowerCase();
+                            return !isSameStack;
+                        });
+                    }
+                    
+                    // Y del servidor
                     API.removeUpdate('dockme', hostEntry.hostname)
                         .then(() => API.loadUpdates())
                         .then(updatesData => {
                             State.setUpdatesData(updatesData);
                         });
                 }
-            }
-            
+            }            
             const isLocalDockme = endpoint.toLowerCase() === 'actual';
             const fetchUrl = isLocalDockme ? '/api/update-self' : '/api/update-dockme';
             const fetchOptions = isLocalDockme
@@ -2292,14 +2302,14 @@
 
                 // Comprobar si hay update de Dockme
                 const hasDockmeUpdate = this.hasDockmeUpdate(endpoint);
-                const uptimeOrUpdate = (hasDockmeUpdate && !window.dockmeUpdateInProgress)
-                    ? `<button class="btn-update-dockme" data-endpoint="${endpoint}">🚀 Actualizar</button>`
-                    : `<span class="metric-uptime ${uptimeClass}">${uptime}</span>`;
+                const isUpdating = window.dockmeUpdatesInProgress?.[endpoint];
+                const showUpdateBtn = hasDockmeUpdate && !isUpdating;
 
                 card.innerHTML = `
                     <div class="metric-header">
                         <span class="metric-hostname">${hostname}${versionDisplay}</span>
-                        ${uptimeOrUpdate}
+                        <button class="btn-update-dockme" data-endpoint="${endpoint}" style="display: ${showUpdateBtn ? '' : 'none'}">🚀 Actualizar</button>
+                        <span class="metric-uptime ${uptimeClass}" style="display: ${showUpdateBtn ? 'none' : ''}">${uptime}</span>
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">CPU:</span>
@@ -2357,6 +2367,12 @@
             if (btnUpdate) {
                 btnUpdate.addEventListener('click', (e) => {
                     e.stopPropagation();
+
+                    // Ocultar este botón específico y mostrar uptime
+                    btnUpdate.style.display = 'none';
+                    const uptimeSpan = card.querySelector('.metric-uptime');
+                    if (uptimeSpan) uptimeSpan.style.display = '';
+                    
                     EventHandlers.updateDockme(endpoint);
                 });
             
