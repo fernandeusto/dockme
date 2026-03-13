@@ -52,17 +52,22 @@ services:
 
 #### **🐧 NOTA: Instalación en Synology**
 
-Los NAS Synology aunque esten en la última version de DSM 7.3.2, utilizan versiones de Docker Engine desactualizadas más de un año (Docker 24.x), cuando Docker ya esta en la version 29.x en marzo de 2026, lo que puede causar incompatibilidades con el cliente Docker incluido en DockMe. Los síntomas más comunes son:
+Los NAS Synology utilizan versiones de Docker Engine desactualizadas, lo que puede causar incompatibilidades con el cliente Docker incluido en DockMe. Los síntomas más comunes son:
 
 - Los stacks existentes no se muestran
 - Al crear un nuevo stack aparece `Process exited with code 1`
+- Las métricas muestran 0 contenedores
 
-**Solución:** añadir la variable `DOCKER_API_VERSION=1.43` al compose de DockMe:
-
+**Solución:** añadir las siguientes variables al compose de DockMe:
 ```yaml
 environment:
-  - HOSTNAME=NombreDeServidor
   - DOCKER_API_VERSION=1.43
+  - DOCKER_GID=0
+```
+
+El valor `1.43` corresponde a DSM 7.3.2 con Docker 24.x. Para obtener el valor exacto de tu instalación, ejecuta en el terminal de DSM:
+```bash
+docker version --format '{{.Server.APIVersion}}'
 ```
 
 ---
