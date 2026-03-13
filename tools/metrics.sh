@@ -12,11 +12,16 @@ round() { printf "%.0f" "$1"; }
 HOSTNAME="${HOSTNAME:-$(hostname)}"
 
 # ========================
+# DOCKER API VERSION (para sistemas con Docker Engine antiguo)
+# ========================
+export DOCKER_API_VERSION="${DOCKER_API_VERSION:-}"
+
+# ========================
 # DOCKME VERSION
 # ========================
 VERSION="unknown"
-if [ -f /dockme-agent/version.json ]; then
-  VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /dockme-agent/version.json)
+if [ -f /tools/version.json ]; then
+  VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tools/version.json)
 fi
 # Detectar si es imagen dev
 CONTAINER_IMAGE=$(docker inspect dockme --format='{{.Config.Image}}' 2>/dev/null || echo "")
