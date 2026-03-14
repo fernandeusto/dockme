@@ -2348,7 +2348,7 @@
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">Temp:</span>
-                        <span class="metric-value ${tempClass}">${metrics.temp_cpu}°C</span>
+                        <span class="metric-value ${tempClass}">${metrics.temp_cpu != null ? metrics.temp_cpu + '°C' : '----'}</span>
                     </div>
                     <div class="metric-row">
                         <span class="metric-label">🐋 Contenedores:</span>
@@ -3182,28 +3182,30 @@ function init() {
     setInterval(() => RouteObserver.observe(), CONFIG.ROUTE_CHECK_INTERVAL);
     setInterval(reasignarIconos, 500);
 
-// CARGAR AGENTES Y MÉTRICAS
-if (!dockmeWaitingForLogin && RouteManager.isRootPath()) {
-    let attempts = 0;
-    const maxAttempts = 30; 
-    const checkAndLoadAgents = () => {
-        const agentsExist = document.querySelectorAll('.first-row .agent').length > 0;
-        attempts++;
-        
-        if (agentsExist) {
-            readAgentsFromDockgeDOM();
+    // CARGAR AGENTES Y MÉTRICAS
+    if (!dockmeWaitingForLogin && RouteManager.isRootPath()) {
+        let attempts = 0;
+        const maxAttempts = 50;
+        const checkAndLoadAgents = () => {
+            attempts++;
+
+            // Esperar a que Vue haya renderizado el DOM de Dockge
+            const root = ensureDockmeRoot();
+            if (!root) {
+                if (attempts < maxAttempts) setTimeout(checkAndLoadAgents, 200);
+                return;
+            }
+
+            const agentsExist = document.querySelectorAll('.first-row .agent').length > 0;
+            if (agentsExist) {
+                readAgentsFromDockgeDOM();
+            }
+
             DataLoader.loadAndDisplay();
             MetricsManager.start();
-        } else if (attempts < maxAttempts) {
-            setTimeout(checkAndLoadAgents, 200);
-        } else {
-            console.error('[Dockme] No se pudo cargar el DOM de agentes después de', maxAttempts, 'intentos');
-            DataLoader.loadAndDisplay();
-            MetricsManager.start();
-        }
-    };
-    setTimeout(checkAndLoadAgents, 800);
-}
+        };
+        setTimeout(checkAndLoadAgents, 300);
+    }
 }
 
     // ==================== START ====================

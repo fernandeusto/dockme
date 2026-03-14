@@ -18,23 +18,7 @@ prune)
         echo "🗑️  $reclaimed"
     fi
     ;;
-```
 
----
-
-## 🧪 **SALIDA AHORA:**
-
-**Con limpieza:**
-```
-[dockme] Limpiando imágenes huérfanas...
-🗑️  Espacio recuperado: 45.2MB
-```
-
-**Sin limpieza:**
-```
-[dockme] Limpiando imágenes huérfanas...
-✅ Nada que limpiar.
-    
   test-telegram)
     if [ -z "$TELEGRAM_TOKEN" ] || [ -z "$TELEGRAM_CHATID" ]; then
         echo "❌ Error: Telegram no configurado"

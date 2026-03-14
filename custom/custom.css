@@ -564,6 +564,7 @@ span.badge.bg-primary {
     
     .bulk-update-panel.open {
         transform: translateX(0);
+        z-index: 1000;
     }
     
     body:has(.bulk-update-panel.open) {

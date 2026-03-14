@@ -139,7 +139,7 @@ for stack_path in "${stack_dirs[@]}"; do
     docker compose pull -q 2>/dev/null
     services=$(docker compose ps --services 2>/dev/null)
     if [ -z "$services" ]; then
-        echo -e "${RED}Inactive (Saltando)${NC}"
+        echo -e "${RED}Inactivo (Saltando)${NC}"
         cd "$STACKS_DIR" || exit
         continue
     fi
@@ -184,6 +184,22 @@ else
 fi
 
 # ============================
+#   FORMAT SPACE
+# ============================
+format_space() {
+    echo "$1" | awk '{
+        n = $0; gsub(/[A-Z]+/, "", n)
+        u = $0; gsub(/[0-9.]+/, "", u)
+        if (u == "GB") {
+            dec = n - int(n)
+            if (dec == 0) printf "%d GB\n", int(n)
+            else printf "%.1f GB\n", n
+        }
+        else printf "%d %s\n", int(n + 0.5), u
+    }' | sed 's/\.\([0-9]\)/,\1/'
+}
+
+# ============================
 #   SUMMARY
 # ============================
 if [ ${#updates_list[@]} -gt 0 ]; then
@@ -208,7 +224,7 @@ done <<< "$stacks_unique"
 
 # Añadir espacio liberado si hay
 if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
-    space=$(echo "$reclaimed" | sed 's/.*: //')
+    space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
     msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
 fi
 
@@ -244,5 +260,12 @@ send_notif "$msg"
     fi
 else
     echo -e "${GREEN}No hay actualizaciones. Todos los stacks están actualizados!${NC}"
+    # Notificar si se libero espacio aunque no haya updates
+    if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
+        space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
+        msg="🐋 <b>${HOSTNAME}</b>: Todo actualizado"$'\n'
+        msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
+        send_notif "$msg"
+    fi
 fi
 echo "🕒 Última comprobación: $(date '+%d-%m-%Y %H:%M')"
