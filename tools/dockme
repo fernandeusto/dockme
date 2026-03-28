@@ -4,7 +4,7 @@ set -e
 case "$1" in
   checkupdates)
     echo "[dockme] Ejecutando chequeo de actualizaciones..."
-    exec bash /tools/check-updates.sh
+    exec bash /tools/check-updates.sh manual
     ;;
     
 prune)

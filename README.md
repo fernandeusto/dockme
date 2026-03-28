@@ -4,22 +4,18 @@
   <img src="https://raw.githubusercontent.com/fernandeusto/dockme/main/custom/icons/dockme.svg" width="120">
 </p>
 
-**Dockme** es una solución completa para administrar tus docker-compose desde una interfaz web moderna.
-Basado en el conocido Dockge, añade nuevas funcionalidades y mejora su diseño.
+**Dockme** es una solución completa para administrar tus docker-compose desde una interfaz web moderna, con iconos y sistema de actualizaciones integrado. Además, desde la v2, Dockme puede funcionar también como homepage personal: lanza tanto las webs de tus servicios como otros links externos, organizados en categorías reorganizables y redimensionables con distintos layouts para cada uno de tus dispositivos.
 
 ---
 
 ## 🌟 Características destacadas
 
-- 🎨 **Interfaz web intuitiva** - Gestiona tus Compose con editor en pantalla completa y Terminal con portapapeles
-- 🎯 **Iconos personalizados por stack** - Sube tus propios iconos SVG desde URL o local
-- ⚡ **Ordenación inteligente** - Stacks activos primero, inactivos al final y filtrado por servidor
-- 🎯 **Acceso rápido** - Tarjetas con últimos stacks visitados y con actualizaciones pendientes
-- 🔔 **Detección de actualizaciones** - Chequeo automático programable de actualizaciones
-- 📱 **Notificaciones** - Alertas por Telegram cuando hay actualizaciones disponibles
-- 🌐 **Multi-servidor** - Gestiona múltiples hosts desde un panel centralizado
-- 📊 **Métricas en tiempo real** - CPU, RAM, temperatura y más de cada servidor
-- 🔄 **Auto-actualización** - Sistema integrado para actualizarse Dockme a si mismo
+- 🎨 **Gestión de Compose mejorada** - Editor, logs y terminal a pantalla completa; terminal con portapapeles
+- 🏠 **Homepage personal** - Organiza links y servicios docker en categorías con sus iconos, y márcalos como favoritos para tenerlos anclados en el dashboard. Tanto desde las tarjetas favoritas como desde la lista de stacks puedes abrir el compose o lanzar el servicio si el click es en el icono.
+- 📐 **Layouts por dispositivo** - Arrastra y redimensiona los bloques a tu gusto y guarda distintas disposiciones del dashboard para cada uno de tus dispositivos o tamaños de pantalla.
+- 🔔 **Detección de actualizaciones** - Chequeo automático programable y manual con notificaciones por Telegram, prune de imágenes antiguas para recuperar espacio en disco, sincronizado entre dispositivos y actualización masiva de todos los pendientes en múltiples servidores con un solo click.
+- 🌐 **Multi-servidor** - Gestiona múltiples hosts desde un panel centralizado con métricas en tiempo real, editando o desplegando nuevos compose en remoto. Ademas puedes asignar un icono a cada servidor para identificarlos y lanzar su interfaz web.
+- 🔄 **Auto-actualización** - Dockme puede actualizarse a sí mismo desde la tarjeta de métricas, incluso en los host remotos sin perder el control de sus docker.
 
 ---
 
@@ -113,27 +109,38 @@ environment:
 ```
 
 1. **Levanta el Dockme remoto** con las variables `ENDPOINT` y `WEBHOOK_URL`
-2. **En el central**, recarga la página (F5) o espera unos segundos
-3. **Aparecerá una alerta** indicando que hay servidores detectados
-4. **Click en "Gestionar"** junto a "🖥️ Servidores conectados"
-5. **Introduce usuario y contraseña** del Dockme remoto en la tabla de servidores detectados
-6. **Click en "Conectar agente"**
+2. **En el central**, espera unos segundos o recarga la página 
+3. **Aparecerá una alerta** indicando que hay servidores detectados — haz click en ella para ir al panel de configuración
+4. En la pestaña **Servidores**, introduce usuario y contraseña del login remoto y haz click en **"Conectar agente"**
+5. Opcionalmente asigna un icono y la URL de su interfaz web
 
-¡Listo! El servidor remoto ya está sincronizado, ahora se podrán gestionar remotamente sus compose, desplegar nuevos stack, ver sus métricas, recibir sus actualizaciones disponibles, y actualizarlas desde el central.
+¡Listo! El servidor remoto ya está sincronizado, ahora se podrán gestionar remotamente sus compose, desplegar nuevos stack, ver sus métricas, recibir sus actualizaciones pendientes, y actualizarlas desde el central de forma masiva.
 
-👉 Haciendo click en cada una de las tarjetas de metricas se pueden filtrar la lista de stack para mostrar solo los stack de ese servidor, y volver a mostrar todos haciendo click de nuevo en la que esta seleccionada.
+👉 Haciendo click en cada una de las tarjetas de métricas se pueden filtrar la lista de stack para mostrar solo los stack de ese servidor, sus favoritos y sus actualizaciones pendientes, y volver a mostrar todos haciendo click de nuevo en la que esta seleccionada.
 
 ---
 
-## 🎨 Personalización de iconos
+## ✏️ Modo edición
 
-Puedes personalizar los iconos de tus stacks directamente desde la interfaz web:
+Desde el botón **✏️** del header accedes al panel de configuración unificado con varias pestañas:
 
-1. Click en el botón **✏️** junto al buscador (modo edición)
-2. Selecciona el stack que quieres personalizar de la lista de la izquierda
-3. Asigna un SVG desde su URL o desde un archivo local
+- **Stacks** - Asigna iconos SVG a tus stacks desde URL o archivo local, y configura la URL de su servicio para lanzarlo con un click, y marcalos como favoritos para anclarlos en el dashboard
+- **Links** - Crea y organiza categorías de links con iconos autodetectados o personalizados
+- **Servidores** - Conecta y gestiona hosts remotos, asignales un icono y la url de su interfaz web
 
-💡 **Tip:** Encuentra iconos SVG en [Simple Icons](https://simpleicons.org/)
+💡 **Tip:** Encuentra iconos en [Self-Hosted Dashboard Icons](https://selfh.st/icons/)
+
+## 📐 Modo organizar
+
+Desde el botón **⠿** del header accedes al modo organizar donde puedes personalizar el dashboard:
+
+- Arrastra los bloques (métricas, favoritos, categorías) para reordenarlos
+- Redimensiona el ancho de cada bloque desde la esquina superior derecha y su altura se ajustara para mostrar todo su contenido
+- Tambien puedes ajustar el ancho de la columna de stacks de la izquierda
+- Guarda la disposición como un perfil con nombre para recuperarla cuando quieras
+- Crea distintos perfiles para cada dispositivo o tamaño de pantalla — Dockme recuerda automáticamente cuál usar en cada uno
+
+👉 Los perfiles se guardan en el servidor, por lo que están disponibles desde cualquier navegador.
 
 ---
 

@@ -15,8 +15,8 @@ HOSTNAME="${HOSTNAME:-$(hostname)}"
 # DOCKME VERSION
 # ========================
 VERSION="unknown"
-if [ -f /dockme-agent/version.json ]; then
-  VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /dockme-agent/version.json)
+if [ -f /tools/version.json ]; then
+  VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tools/version.json)
 fi
 # Detectar si es imagen dev
 CONTAINER_IMAGE=$(docker inspect dockme --format='{{.Config.Image}}' 2>/dev/null || echo "")
@@ -132,10 +132,43 @@ else
 fi
 
 # ========================
+# CHECK PROGRESS
+# ========================
+check_status="idle"
+check_percent=0
+check_updates=0
+check_last=""
+if [ -f /app/data/config/check-progress.json ]; then
+    check_status=$(sed -n 's/.*"status":"\([^"]*\)".*/\1/p' /app/data/config/check-progress.json)
+    check_percent=$(sed -n 's/.*"percent":\([0-9]*\).*/\1/p' /app/data/config/check-progress.json)
+    check_updates=$(sed -n 's/.*"updates":\([0-9]*\).*/\1/p' /app/data/config/check-progress.json)
+    check_last=$(sed -n 's/.*"lastCheck":"\([^"]*\)".*/\1/p' /app/data/config/check-progress.json)
+    prune_space=$(sed -n 's/.*"pruneSpace":"\([^"]*\)".*/\1/p' /app/data/config/check-progress.json)
+fi
+
+# ========================
 # UPTIME, TIMESTAMP
 # ========================
 uptime_seconds=$(awk '{print int($1)}' /proc/uptime)
 timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# ========================
+# UPDATES PENDIENTES
+# ========================
+updates_pending=0
+if [ -f /app/data/config/updates.json ]; then
+    updates_pending=$(python3 -c "
+import json
+with open('/app/data/config/updates.json') as f:
+    data = json.load(f)
+for host in data:
+    if host.get('endpoint', '').lower() == 'actual':
+        print(len(host.get('updates', [])))
+        break
+else:
+    print(0)
+")
+fi
 
 # ========================
 # JSON FINAL
@@ -151,7 +184,12 @@ json=$(cat <<EOF
   "temp_cpu": ${temp_cpu},
   "temp_board": ${temp_board},
   "docker_running": $docker_running,
-  "docker_stopped": $docker_stopped
+  "docker_stopped": $docker_stopped,
+  "check_status": "$check_status",
+  "check_percent": ${check_percent:-0},
+  "check_updates": ${updates_pending:-0},
+  "check_last": "$check_last",
+  "prune_space": "${prune_space:-}"
 }
 EOF
 )

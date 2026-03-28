@@ -10,6 +10,23 @@
     transform: scale(1.25);
 }
 
+/* Layout de la lista de stacks: cada item en bloque con su altura, no en linea */
+.stack-list .item {
+    display: block ruby;
+    overflow: hidden;
+}
+a.item .title {
+    overflow: hidden;
+    min-width: 0;
+}
+
+a.item .cp-title,
+a.item .endpoint {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+}
 /* convierte los estados de badge "activo" en bolas verdes/rojas/grises en lista de stacks */
 a.item .cp-badge {
     display: inline-flex !important;
@@ -27,6 +44,7 @@ a.item .cp-badge {
     white-space: nowrap !important;
     overflow: visible !important;
     gap: 15px !important;
+    flex-shrink: 0;
 }
 
 /* Tamano de icono en lista de stacks */
@@ -117,37 +135,89 @@ div.col-xl-3.col-md-4.col-12 {
     flex: 0 0 auto !important;
 }
 
+/* En móvil: forzar cero espacio en el flex row (fix iOS Safari bug) */
+@media (max-width: 700px) {
+    div.col-xl-3.col-md-4.col-12 {
+        flex: 0 0 0px !important;
+        min-width: 0 !important;
+        width: 0 !important;
+    }
+}
+
 div.mb-3.col-xl-9.col-md-8.col-12 {
-    width: calc(100% - 350px) !important;
+    width: auto !important;
     max-width: none !important;
-    flex: 1 1 auto !important;
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
 }
 
 /* Responsive móvil */
 @media (max-width: 700px) {
-    /* Lista oculta por defecto */
+    /* Sidebar: panel overlay desde la izquierda */
     div.col-xl-3.col-md-4.col-12 {
-        position: fixed;
-        left: -350px;
-        top: 105px;
-        width: 350px !important;
-        height: calc(100vh - 60px);
+        position: fixed !important;
+        left: 0 !important;
+        top: 55px !important;
+        width: 85vw !important;
+        max-width: 350px !important;
+        height: calc(100vh - 55px) !important;
         background: #090c0f;
         z-index: 999;
-        transition: left 0.3s ease;
         overflow-y: auto;
+        overflow-x: visible;
         box-shadow: 2px 0 10px rgba(0,0,0,0.5);
+        transform: translateX(-100%);
+        transition: transform 0.3s ease;
     }
-    
-    /* Lista visible cuando está abierta */
     div.col-xl-3.col-md-4.col-12.mobile-open {
-        left: 0;
+        transform: translateX(0) !important;
     }
-    
-    /* Contenido ocupa todo el ancho */
+
+    /* Handle: fijo en body, independiente del sidebar (no lo recorta overflow) */
+    #mobile-sidebar-handle {
+        position: fixed;
+        left: 0;
+        top: 190px;
+        transform: translateY(-50%);
+        width: 22px;
+        height: 60px;
+        background: #142d4f;
+        border-radius: 0 10px 10px 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        box-shadow: 2px 0 8px rgba(0,0,0,0.5);
+        touch-action: none;
+        -webkit-tap-highlight-color: transparent;
+        transition: left 0.3s ease;
+    }
+
+    /* Dashboard ocupa todo el ancho en móvil */
     div.mb-3.col-xl-9.col-md-8.col-12 {
         width: 100% !important;
         max-width: 100% !important;
+        padding-left: 10px !important;
+    }
+
+    /* Ocultar categorías de links en móvil */
+    #dockme-blocks-row [data-block-key^="category:"] {
+        display: none !important;
+    }
+
+    /* Ocultar iconos de editar y organizar en móvil */
+    .dockme-header-icons {
+        display: none !important;
+    }
+    
+    #dockme-dashboard {
+        margin-left: -25px !important;
+    }
+
+    /* Contenido ocupa todo el ancho */
+    div.mb-3.col-xl-9.col-md-8.col-12 .metric-card{
+        max-width: 98% !important;
+        min-width: 290px !important;
     }
     
     /* Boton hamburguesa (lo creamos en JS) */
@@ -264,6 +334,11 @@ span.badge.bg-primary {
     display: none !important;
 }
 
+/* Ajustar margen del dashboard para compensar el header mas pequeño */
+#dockme-dashboard {
+    margin-top: -12px !important;
+}
+
 /* ========================================
    TARJETAS DE RECIENTES Y UPDATES
    ======================================== */
@@ -282,7 +357,7 @@ span.badge.bg-primary {
     border-radius: 5px;
     padding: 15px;
     transition: background 0.2s;
-    height: 110px;
+    height: 98px;
 }
 
 .stack-card-horizontal:hover {
@@ -296,8 +371,8 @@ span.badge.bg-primary {
 
 /* Hueco del Logo */
 .stack-logo-left {
-    height: 96px;
-    width: 96px;
+    height: 80px;
+    width: 80px;
     margin-right: 20px;
     flex-shrink: 0;
     display: flex;
@@ -335,14 +410,13 @@ span.badge.bg-primary {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-
-    font-size: 1.7em;
+    font-size: 1.4em;
     color: #4f84c8;
 }
 
 /* Hostname */
 .stack-hostname {
-    font-size: 1.2em;
+    font-size: 1.05em;
     font-weight: bold;
     color: #bbb840;
     margin-top: -2px;
@@ -396,6 +470,10 @@ span.badge.bg-primary {
     gap: 12px;
     margin-left: 20px;
 }
+.bulk-update-controls .btn {
+    padding: 0px 8px !important;
+    font-size: 0.65em !important;
+}
 
 /* ========================================
    BULK UPDATE PANEL
@@ -412,7 +490,7 @@ span.badge.bg-primary {
     border: 3px solid #ab8f39;
     border-radius: 8px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-    z-index: 900;
+    z-index: 1001;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -423,6 +501,35 @@ span.badge.bg-primary {
 .bulk-update-panel.error {
     border-color: #c23737; /* rojo error/cancelado */
 }
+
+.stack-update-icon-wrap {
+    position: relative;
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+}
+
+.stack-update-icon-wrap .stack-icon-normal,
+.stack-update-icon-wrap .stack-icon-hover {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    transition: opacity 0.15s;
+}
+
+.stack-update-icon-wrap .stack-icon-hover {
+    opacity: 0;
+}
+
+.stack-update-icon-wrap:hover .stack-icon-normal {
+    opacity: 0;
+}
+
+.stack-update-icon-wrap:hover .stack-icon-hover {
+    opacity: 1;
+}
+
 /* Boton comenzar actualizaciones */
 .btn-start-updates {
     background: #22c55e;
@@ -576,10 +683,11 @@ span.badge.bg-primary {
    TARJETAS DE MÉTRICAS
    ======================================== */
 .metrics-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    display: flex;
+    flex-wrap: wrap;
     gap: 15px;
-    margin-bottom: 35px; /* igual que en dashboard-section-grid */
+    margin-bottom: 0px;
+    margin-right: -15px; /* compensa el gap para alinear a la derecha */
 }
 
 .metric-card {
@@ -589,6 +697,10 @@ span.badge.bg-primary {
     padding: 15px;
     cursor: pointer;
     transition: all 0.2s;
+    min-width: 300px;
+    max-width: 300px;
+    height: 210px;
+    flex: 1;
 }
 
 .metric-card.selected {
@@ -610,9 +722,11 @@ span.badge.bg-primary {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 8px;
     margin-bottom: 12px;
     padding-bottom: 8px;
     border-bottom: 1px solid #333;
+    height: 30px;
 }
 
 .metric-hostname {
@@ -653,15 +767,62 @@ span.badge.bg-primary {
     color: #fff;
     border: none;
     border-radius: 6px;
-    padding: 2px 5px;
+    padding: 2px 3px;
     font-size: 0.8em;
-    font-weight: 600;
+    font-weight: 400;
     cursor: pointer;
     transition: background 0.2s;
     white-space: nowrap;
 }
 .btn-update-dockme:hover {
     background: #16a34a;
+}
+.btn-novedades-dockme {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+    background: #2d6a4f;
+    color: #fff;
+    transition: background 0.2s;
+}
+.btn-novedades-dockme:hover {
+    background: #1b4332;
+}
+.metric-server-icon-wrap {
+    position: relative;
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.metric-server-icon {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    border-radius: 6px;
+    transition: opacity 0.15s;
+}
+
+.metric-server-icon.stack-icon-hover {
+    opacity: 0;
+}
+
+.metric-server-icon-wrap:hover .stack-icon-normal {
+    opacity: 0;
+}
+
+.metric-server-icon-wrap:hover .stack-icon-hover {
+    opacity: 1;
 }
 
 /* Filas de metricas */
@@ -679,6 +840,9 @@ span.badge.bg-primary {
 
 .metric-value {
     font-weight: bold;
+    min-width: 4ch;
+    display: inline-block;
+    text-align: right;
 }
 
 /* Colores segun threshold */
@@ -710,6 +874,19 @@ span.badge.bg-primary {
     font-weight: bold;
     padding-top: 10px;
 }
+#metrics-section .dockme-section-header {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #2a3441;
+}
+#metrics-section .links-cat-box-title {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
 
 /* Titulos de seccion del dashboard */
 .dashboard-section-title {
@@ -723,17 +900,17 @@ span.badge.bg-primary {
 .dashboard-section-grid {
     display: grid;
     gap: 15px;
-    margin-bottom: 35px; /* igual que en metrics-container */
 }
 
 /* Grid de actualizaciones (tarjetas mas anchas) */
 .dashboard-grid-updates {
-    grid-template-columns: repeat(auto-fill, minmax(600px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(450px, 100%), 1fr));
+    margin-bottom: 15px;
 }
 
 /* Grid de recientes (tarjetas mas compactas) */
 .dashboard-grid-recientes {
-    grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
 }
 
 /* Móvil: tarjetas fluidas que ocupan todo el ancho */
@@ -779,40 +956,48 @@ span.badge.bg-primary {
     display: flex;
     align-items: center;
 }
-.dockme-edit-stacks-icon {
+.dockme-header-icons {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin-right: 6px;
+}
+
+.dockme-edit-stacks-icon,
+.dockme-organize-icon {
     display: flex;
     align-items: center;
     justify-content: center;
-
-    height: 38px;              /* igual que el input */
-    padding: 0 10px;
-    margin-right: 6px;
-
-    border: 1px solid #3a4557;
+    width: 42px;
+    height: 42px;
     border-radius: 6px;
-
+    background: #1c2431;
+    border: 1px solid #2a3441;
     cursor: pointer;
-    font-size: 16px;
-    opacity: 0.8;
+    opacity: 0.85;
     user-select: none;
+    transition: background-color 0.2s, border-color 0.2s, opacity 0.2s;
 }
-.dockme-edit-stacks-icon:hover {
+
+.dockme-edit-stacks-icon:hover,
+.dockme-organize-icon:hover {
     opacity: 1;
-    background-color: #2a3445;
+    background-color: #2a3441;
+    border-color: #4f84c8;
 }
-.dockme-edit-stacks-icon.active {
-    background-color: #3a4b6b;      /* fondo mas claro */
-    border-color: #6fa8ff;          /* azul mas vivo */
-    color: #ffffff;                 /* icono bien visible */
+
+.dockme-edit-stacks-icon.active,
+.dockme-organize-icon.active {
+    background-color: #3a4b6b;
+    box-shadow: 0 0 0 2px rgba(111,168,255,0.5);
     opacity: 1;
-    box-shadow: 0 0 0 2px rgba(111,168,255,0.25);
 }
-.dockme-edit-stacks-icon.active:hover {
+
+.dockme-edit-stacks-icon.active:hover,
+.dockme-organize-icon.active:hover {
     background-color: #445a82;
 }
-#dockme-stack-editor {
-    margin-top: 55px;
-}
+
 /* Contenedor del editor de iconos */
 .dockme-icon-preview {
     margin-top: 15px;
@@ -834,7 +1019,6 @@ span.badge.bg-primary {
 }
 .dockme-icon-editor {
     margin-top: 20px;
-    max-width: 500px;
 }
 
 .dockme-icon-label {
@@ -844,7 +1028,8 @@ span.badge.bg-primary {
     color: #cfd6e4;
 }
 
-.dockme-icon-url-input {
+.dockme-icon-url-input,
+.dockme-service-url-input {
     width: 100%;
     padding: 8px;
     border-radius: 6px;
@@ -854,7 +1039,6 @@ span.badge.bg-primary {
 }
 
 .dockme-icon-upload-btn {
-    margin-top: 30px;
     cursor: pointer;
 }
 
@@ -875,11 +1059,37 @@ span.badge.bg-primary {
     gap: 16px;
     margin-bottom: 20px;
 }
+.dockme-stack-editor-container {
+    max-width: 700px;
+    margin-top: 48px;
+	padding: 20px;
+	background-color: #15263f !important;
+}
 
 .dockme-stack-name {
     font-size: 1.8em;
     font-weight: 600;
     color: #ffffff;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.dockme-favorite-star {
+    font-size: 2.5em;
+    color: #888;
+    cursor: pointer;
+    transition: color 0.2s, transform 0.15s;
+    user-select: none;
+    line-height: 1;
+    margin-left: 8px;
+    align-self: flex-start;
+    margin-top: -20px;
+}
+
+.dockme-favorite-star.active {
+    color: #f0c040;
+    -webkit-text-stroke: 0;
 }
 
 .dockme-editor-hint {
@@ -941,6 +1151,16 @@ span.badge.bg-primary {
         overflow-x: hidden;
     }
 }
+/* En modo edición de stacks, ocultar la lista lateral en pantallas medianas para dar mas espacio al editor */
+@media (max-width: 1100px) {
+    body.dockme-edit-mode div.col-xl-3.col-md-4.col-12 {
+        display: none;
+    }
+    body.dockme-edit-mode div.mb-3.col-xl-9.col-md-8.col-12 {
+        width: 100% !important;
+        max-width: 100% !important;
+    }
+}
 
 /* seccion de gestion de agentes Dockge */
 .dockme-section-header {
@@ -962,6 +1182,7 @@ span.badge.bg-primary {
 
 .dockme-agents-wrapper {
     margin-top: 20px;
+    overflow-x: auto;
 }
 
 .dockme-agents-table {
@@ -1010,6 +1231,71 @@ span.badge.bg-primary {
 .dockme-agents-table .text-center {
     text-align: center;
 }
+
+@media (max-width: 700px) {
+    .dockme-agents-table thead {
+        display: none;
+    }
+
+    .dockme-agents-table tr {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        grid-template-rows: auto auto;
+        padding: 10px;
+        gap: 6px;
+        border-bottom: 1px solid #2a3441;
+    }
+
+    .dockme-agents-table td:nth-child(1) {
+        grid-row: 1;
+        grid-column: 1;
+    }
+
+    .dockme-agents-table td:nth-child(2) {
+        grid-row: 1;
+        grid-column: 2;
+    }
+
+    .dockme-agents-table td:nth-child(3) {
+        grid-row: 2;
+        grid-column: 1 / -1;
+    }
+
+    .dockme-agents-table td:nth-child(4) {
+        grid-row: 1;
+        grid-column: 3;
+    }
+}
+
+.agent-server-icon {
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
+    cursor: pointer;
+    border-radius: 6px;
+    opacity: 0.9;
+    transition: transform 0.2s ease;
+}
+
+.agent-server-icon:hover {
+    opacity: 1;
+    transform: scale(1.2);
+}
+
+.agent-endpoint-small {
+    font-size: 0.8em;
+    color: #4f84c8;
+    margin-top: 2px;
+    font-family: monospace;
+}
+.agent-ui-url-input {
+    direction: ltr;
+    text-overflow: ellipsis;
+}
+.agent-ui-url-input:not(:focus) {
+    text-overflow: ellipsis;
+}
+
 /* Servidores detectados */
 .dockme-detected-servers {
     margin-top: 40px;
@@ -1054,8 +1340,9 @@ span.badge.bg-primary {
 .detected-server-form {
     display: grid;
     grid-template-columns: 1fr 1fr auto;
-    gap: 15px;
+    gap: 10px;
     align-items: end;
+    max-width: 100%;
 }
 
 .detected-server-form .form-field {
@@ -1087,6 +1374,11 @@ span.badge.bg-primary {
 
 .detected-server-form input::placeholder {
     color: #666;
+}
+
+.dockme-connect-agent-btn {
+    white-space: nowrap;
+    align-self: end;
 }
 
 /* Mensaje de error */
@@ -1243,3 +1535,471 @@ button.btn.btn-danger:hover {
 a.btn.btn-primary[href="/compose"] {
     visibility: hidden;
 }
+
+/* ========================================
+   EFECTO FLIP EN LOS ICONOS DE LOS STACKS AL PASAR EL RATON
+   ======================================== */
+.stack-logo-left.has-url {
+    position: relative;
+    cursor: pointer;
+    perspective: 600px;
+}
+
+.stack-logo-flip {
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+.logo-front,
+.logo-back {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backface-visibility: hidden;
+    transition: transform 0.4s ease;
+}
+
+.logo-front {
+    transform: rotateY(0deg);
+}
+
+.logo-back {
+    transform: rotateY(180deg);
+    background: transparent;
+    border-radius: 8px;
+}
+
+.stack-logo-left.has-url:hover .logo-front {
+    transform: rotateY(180deg);
+}
+
+.stack-logo-left.has-url:hover .logo-back {
+    transform: rotateY(360deg);
+}
+
+.logo-back::after {
+    content: '';
+    display: block;
+    width: 80%;
+    height: 80%;
+    background-image: url('/system-icons/open-external.svg');
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+}
+
+/* ========================================
+   PANEL DE CONFIGURACIÓN - TABS
+   ======================================== */
+.config-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #2a3441;
+    padding-bottom: 0;
+}
+
+.config-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: #888;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 0.95em;
+    margin-bottom: -1px;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.config-tab:hover {
+    color: #ccc;
+}
+
+.config-tab.active {
+    color: #fff;
+    border-bottom-color: #4f84c8;
+}
+
+.config-content {
+    display: none;
+}
+
+.config-content.active {
+    display: block;
+}
+
+.config-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.config-panel-close {
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 1.8em;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 4px;
+}
+
+.config-panel-close:hover {
+    color: #fff;
+}
+
+/* ========================================
+   EDITOR DE LINKS
+   ======================================== */
+.links-category-editor {
+    background: #1a2535;
+    border: 1px solid #2a3441;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
+.links-cat-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.links-drag-handle {
+    color: #555;
+    cursor: grab;
+    padding: 0 4px;
+    user-select: none;
+    font-size: 1.1em;
+}
+
+.links-drag-handle:active {
+    cursor: grabbing;
+}
+
+.links-item-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #121821;
+    border: 1px solid #2a3441;
+    border-radius: 6px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+}
+
+.links-item-icon-wrap {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+    cursor: pointer;
+    position: relative;
+}
+
+.links-item-icon {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+    border-radius: 4px;
+}
+
+.links-item-icon-wrap:hover .links-item-icon {
+    opacity: 0.7;
+    outline: 2px solid #4f84c8;
+    border-radius: 4px;
+}
+
+/* ========================================
+   SECCIÓN LINKS EN DASHBOARD
+   ======================================== */
+.links-cat-box {
+    background: #1c2431;
+    border: 1px solid #2a3441;
+    border-radius: 8px;
+    padding: 12px;
+    overflow: hidden;
+    position: relative;
+    min-width: 96px;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin-right: -15px;
+}
+
+.links-cat-box-title {
+    font-size: 1.1em;
+    font-weight: 500;
+    color: #ccc;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #2a3441;
+    cursor: grab;
+    user-select: none;
+}
+
+.links-cat-box-title.dashboard-section-title {
+    font-size: 1.1em;
+    font-weight: bold;
+    color: #4f84c8;
+}
+
+/* Si el bloque no tiene un ancho específico, que ocupe todo el ancho disponible cuando no hay perfiles*/
+#dockme-blocks-row > .links-cat-box:not([style*="width"]) {
+    width: 100%;
+}
+
+.links-items-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    margin-right: -15px;
+}
+
+.links-item-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    background: #121821;
+    border: 1px solid #2a3441;
+    border-radius: 6px;
+    padding: 10px 3px;
+    cursor: pointer;
+    transition: border-color 0.2s;
+    width: 98px;
+    height: 98px;
+    box-sizing: border-box;
+}
+
+.links-item-card:hover {
+    border-color: #4f84c8;
+}
+
+.links-item-card img {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+    border-radius: 4px;
+}
+
+.links-item-card span {
+    font-size: 11px;
+    color: #aaa;
+    text-align: center;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    width: 100%;
+    min-height: 2.6em;
+    line-height: 1.3em;
+}
+
+/* ── Modo normal: bloques sin fondo ─────────────────────────────────────── */
+#dockme-blocks-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 0;
+    align-items: stretch;
+}
+
+#dockme-blocks-row > .links-cat-box {
+    background: transparent;
+    border-color: transparent;
+    resize: none;
+}
+
+#metrics-box .dockme-section-header {
+    display: flex;
+}
+
+#dockme-blocks-row:not(.organizing) > .links-cat-box .links-cat-box-title {
+    cursor: default;
+}
+
+/* ── Modo organización: bloques visibles y arrastrables ──────────────────── */
+#dockme-blocks-row.organizing > .links-cat-box {
+    background: #1c2431;
+    border-color: #2a3441;
+}
+
+#dockme-blocks-row.organizing > .links-cat-box .dockme-section-header {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #2a3441;
+}
+
+#dockme-blocks-row.organizing > .links-cat-box .links-cat-box-title {
+    cursor: grab;
+}
+
+/* Título en métricas va dentro de dockme-section-header, sin borde propio */
+#dockme-blocks-row.organizing > #metrics-box .links-cat-box-title {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+}
+
+#metrics-box .links-cat-box{
+    min-width: 300px;
+    height: 280px;
+}
+
+/* ── Barra de perfiles en modo organizar ─────────────────────────────────── */
+#dockme-profile-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    background: #1c2431;
+    border: 1px solid #2a3441;
+    border-radius: 8px;
+    justify-content: flex-end;
+}
+
+.profile-bar-name {
+    display: flex;
+    align-items: center;
+}
+
+.profile-bar-name-label {
+    font-size: 0.9em;
+    color: #ccc;
+    font-weight: 500;
+    padding: 0 4px;
+    margin-right: auto;
+}
+
+.profile-bar-input {
+    background: #121821;
+    border: 1px solid #169c56;
+    border-radius: 6px;
+    color: #ccc;
+    font-size: 0.95em;
+    font-weight: 500;
+    padding: 4px 10px;
+    width: 200px;
+}
+
+.profile-bar-input:focus {
+    outline: none;
+}
+
+.profile-bar-dropdown {
+    position: relative;
+}
+
+.profile-bar-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background: #1c2431;
+    border: 1px solid #2a3441;
+    border-radius: 8px;
+    min-width: 200px;
+    z-index: 500;
+    padding: 4px 0;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+.profile-bar-dropdown-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 12px;
+    gap: 8px;
+    font-size: 0.9em;
+    color: #ccc;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.profile-bar-dropdown-item:hover {
+    background: #2a3441;
+}
+
+.profile-bar-dropdown-item.active {
+    color: #4f84c8;
+    font-weight: 500;
+}
+
+.profile-bar-btn-del {
+    padding: 1px 6px !important;
+    font-size: 0.78em !important;
+    opacity: 0.7;
+}
+
+.profile-bar-btn-del:hover {
+    opacity: 1;
+}
+
+/* ── Handle de resize custom (esquina superior derecha) ─────────────────── */
+.dockme-resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 32px;
+    height: 32px;
+    cursor: ew-resize;
+    z-index: 10;
+    display: none;
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding: 5px;
+}
+
+.dockme-resize-handle::after {
+    content: '';
+    display: block;
+    width: 14px;
+    height: 14px;
+    border-top: 3px solid #4f84c8;
+    border-right: 3px solid #4f84c8;
+    border-radius: 0 5px 0 0;
+    opacity: 0.7;
+}
+
+.dockme-resize-handle:hover::after {
+    opacity: 1;
+}
+
+#dockme-blocks-row.organizing .dockme-resize-handle {
+    display: flex;
+}
+
+#dockme-sidebar-handle {
+    position: absolute;
+    top: 50px;
+    right: 0;
+    height: calc(100% - 50px);
+    width: 8px;
+    cursor: default;
+    z-index: 10;
+    opacity: 0;
+    transition: opacity 0.2s, background-color 0.2s;
+    background: linear-gradient(to bottom, transparent 40%, #4f84c8 40%, #4f84c8 60%, transparent 60%);
+    background-size: 2px 20px;
+    background-repeat: repeat-y;
+    background-position: center;
+}
+
+body.dockme-organizing #dockme-sidebar-handle:hover {
+    opacity: 1;
+    background-color: rgba(79, 132, 200, 0.3);
+}
+
+body.dockme-organizing #dockme-sidebar-handle {
+    opacity: 1;
+    background-color: rgba(79, 132, 200, 0.15);
+    cursor: ew-resize;
+}
+

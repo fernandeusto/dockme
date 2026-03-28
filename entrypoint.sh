@@ -97,9 +97,17 @@ if [ ! -f "$INIT_FLAG" ]; then
     HOSTNAME_VALUE="${HOSTNAME:-Dockme}"
     printf '[{"hostname":"%s","endpoint":"Actual","updates":[]}]' "$HOSTNAME_VALUE" \
         > /app/data/config/updates.json
-
     touch "$INIT_FLAG"
     echo "✅ Configuración inicializada"
+fi
+
+# Crear stacks.json inicial
+if [ ! -f "/app/data/config/stacks.json" ]; then
+    printf '[]' > /app/data/config/stacks.json
+fi
+# Crear links.json si no existe
+if [ ! -f "/app/data/config/links.json" ]; then
+    printf '[]' > /app/data/config/links.json
 fi
 
 # Verificar que tenemos permisos de lectura en metadata
@@ -133,6 +141,7 @@ CHECK_TIMES="${CHECK_TIMES:-09:00}"
 echo "🤖  Programando actualizaciones: $CHECK_TIMES"
 
 # Crear script del scheduler
+
 cat > /tmp/scheduler.sh << 'SCHEDULER_SCRIPT'
 #!/bin/bash
 CHECK_TIMES="$1"

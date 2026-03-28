@@ -101,6 +101,33 @@ EOF
 }
 
 # ============================
+#   CHECK 12H COOLDOWN
+# ============================
+PROGRESS_FILE="/app/data/config/check-progress.json"
+MANUAL="${1:-}"
+if [ -z "$MANUAL" ] && [ -f "$PROGRESS_FILE" ]; then
+    lastCheck=$(python3 -c "
+import json, sys
+try:
+    data = json.load(open('$PROGRESS_FILE'))
+    print(data.get('lastCheck', ''))
+except:
+    print('')
+")
+    if [ -n "$lastCheck" ]; then
+        last_ts=$(date -d "$lastCheck" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$lastCheck" +%s 2>/dev/null)
+        now_ts=$(date +%s)
+        diff=$(( now_ts - last_ts ))
+        if [ "$diff" -lt 43200 ]; then
+            hours=$(( diff / 3600 ))
+            mins=$(( (diff % 3600) / 60 ))
+            echo "⏭️ Chequeo omitido — último hace ${hours}h ${mins}min (cooldown 12h)"
+            exit 0
+        fi
+    fi
+fi
+
+# ============================
 #   START
 # ============================
 echo "🕒 Lanzando chequeo $(date '+%d-%m-%Y %H:%M')"
@@ -120,6 +147,13 @@ if [ ${#stack_dirs[@]} -eq 0 ]; then
     exit 0
 fi
 valid_stack_found=false
+total_stacks=${#stack_dirs[@]}
+processed_stacks=0
+
+# Escribir estado inicial
+cat > /app/data/config/check-progress.json << EOF
+{"status":"checking","percent":0,"lastCheck":null}
+EOF
 
 # ============================
 #   MAIN LOOP
@@ -140,6 +174,11 @@ for stack_path in "${stack_dirs[@]}"; do
     services=$(docker compose ps --services 2>/dev/null)
     if [ -z "$services" ]; then
         echo -e "${RED}Inactivo (Saltando)${NC}"
+        processed_stacks=$((processed_stacks + 1))
+        percent=$((processed_stacks * 100 / total_stacks))
+        cat > /app/data/config/check-progress.json << EOF
+{"status":"checking","percent":${percent},"lastCheck":null}
+EOF
         cd "$STACKS_DIR" || exit
         continue
     fi
@@ -163,6 +202,11 @@ for stack_path in "${stack_dirs[@]}"; do
     if [ "$local_has_update" = false ]; then
         echo -e "${GREEN}OK${NC}"
     fi
+    processed_stacks=$((processed_stacks + 1))
+    percent=$((processed_stacks * 100 / total_stacks))
+    cat > /app/data/config/check-progress.json << EOF
+{"status":"checking","percent":${percent},"lastCheck":null}
+EOF
     cd "$STACKS_DIR" || exit
 done
 if [ "$valid_stack_found" = false ]; then
@@ -268,4 +312,20 @@ else
         send_notif "$msg"
     fi
 fi
+# Guardar estado final en progress
+updates_count=${#updates_list[@]}
+# Contar stacks únicos con updates
+if [ $updates_count -gt 0 ]; then
+    stacks_with_updates=$(printf "%s\n" "${updates_list[@]}" | cut -d'|' -f1 | sort -u | wc -l)
+else
+    stacks_with_updates=0
+fi
+lastCheck=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+prune_space=""
+if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
+    prune_space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
+fi
+cat > /app/data/config/check-progress.json << EOF
+{"status":"idle","percent":100,"lastCheck":"${lastCheck}","pruneSpace":"${prune_space}"}
+EOF
 echo "🕒 Última comprobación: $(date '+%d-%m-%Y %H:%M')"

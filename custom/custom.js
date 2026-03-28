@@ -3,14 +3,221 @@
     let dockmeWaitingForLogin = false;
     let dockmeLoginWasVisible = false;
     let dockmeEditMode = false;
+    let dockmeEditModeFilterBackup = null;
     let dockmeUpdateInProgress = false;
     let dockmeIconVersion = localStorage.getItem('dockmeIconVersion') || Date.now();
+    let stacksConfig = [];
+    const loadStacksConfig = () => {
+        return fetch('/config/stacks.json')
+            .then(r => r.json())
+            .then(data => { if (Array.isArray(data)) stacksConfig = data; })
+            .catch(() => { stacksConfig = []; });
+    };
+    let linksConfig = [];
+    let currentLayoutProfile = 'default';
+    let currentDeviceId = localStorage.getItem('dockme-device-id') || 'default';
+    const loadLinksConfig = () => {
+        return fetch('/api/get-links')
+            .then(r => r.json())
+            .then(data => {
+                if (Array.isArray(data.links)) {
+                    linksConfig = data.links
+                        .map(cat => {
+                            const { order, width, height, ...rest } = cat;
+                            return {
+                                ...rest,
+                                links: (cat.links || []).filter(l => l.url && l.url.trim() !== '')
+                            };
+                        })
+                        .filter(cat => 
+                            cat.type === 'favoritos' || 
+                            cat.type === 'recientes' ||
+                            cat.type === 'metrics' ||
+                            (cat.links.length > 0 || (cat.category && cat.category !== 'Nueva categoría'))
+                        );
+                }
+            })
+            .catch(() => { linksConfig = []; });
+    };
+
+// ==================== GESTIÓN DE LAYOUTS ====================
+    const LayoutManager = {
+        layouts: {},
+
+        async load() {
+            const r = await fetch('/api/get-layouts');
+            const data = await r.json();
+            this.layouts = data.layouts || {};
+            // Buscar perfil por deviceId
+            const match = Object.entries(this.layouts).find(([, v]) => v.deviceId === currentDeviceId);
+            if (match) {
+                currentLayoutProfile = match[0];
+            } else {
+                currentLayoutProfile = 'default';
+            }
+            return this.getActiveBlocks();
+        },
+
+        getSidebarWidth() {
+            const localWidths = JSON.parse(localStorage.getItem(`dockme-widths-${currentDeviceId}`) || '{}');
+            return localWidths['sidebar'] ?? (this.layouts[currentLayoutProfile]?.sidebarWidth ?? 350);
+        },
+
+        getActiveBlocks() {
+            return this.layouts[currentLayoutProfile]?.blocks || [];
+        },
+
+        applyToLinksConfig(blocks) {
+            if (!blocks.length) return;
+            // Leer anchos guardados localmente para este dispositivo
+            const localWidths = JSON.parse(localStorage.getItem(`dockme-widths-${currentDeviceId}`) || '{}');
+            blocks.forEach(b => {
+                const sep = b.key.indexOf(':');
+                const keyType = b.key.slice(0, sep);
+                const keyVal  = b.key.slice(sep + 1);
+                let entry;
+                if (keyType === 'type') {
+                    entry = linksConfig.find(c => c.type === keyVal);
+                } else if (keyType === 'category') {
+                    entry = linksConfig.find(c => c.category === keyVal);
+                }
+                if (entry) {
+                    if (b.order != null) entry.order = b.order;
+                    const localW = localWidths[b.key];
+                    const finalW = localW ?? b.width;
+                    if (finalW != null) entry.width = finalW;
+                    if (b.height != null) entry.height = localWidths[`${b.key}_h`] ?? b.height;
+
+                    // Aplicar ancho directamente al DOM si el elemento ya existe
+                    const el = document.querySelector(`[data-block-key="${b.key}"]`);
+                    if (el && finalW) el.style.width = finalW + 'px';
+                }
+            });
+        },
+
+        collectBlocks() {
+            const blocksRow = document.querySelector('#dockme-blocks-row');
+            if (!blocksRow) return [];
+            const localWidths = {};
+            const blocks = [...blocksRow.children].map((el, i) => {
+                const key = el.dataset.blockKey;
+                if (!key) return null;
+                const block = { key, order: i };
+                if (el.offsetWidth) {
+                    block.width = el.offsetWidth;
+                    localWidths[key] = el.offsetWidth;
+                }
+                if (el.offsetHeight) {
+                    block.height = el.offsetHeight;
+                    localWidths[`${key}_h`] = el.offsetHeight;
+                }
+                return block;
+            }).filter(Boolean);
+            // Capturar ancho del sidebar
+            const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
+            if (sidebar) {
+                const sw = sidebar.offsetWidth;
+                localWidths['sidebar'] = sw;
+                // Guardar también en el perfil del servidor
+                if (this.layouts[currentLayoutProfile]) {
+                    this.layouts[currentLayoutProfile].sidebarWidth = sw;
+                }
+            }
+            // Guardar anchos localmente
+            localStorage.setItem(`dockme-widths-${currentDeviceId}`, JSON.stringify(localWidths));
+            return blocks;
+        },
+
+        async save() {
+            if (currentLayoutProfile === 'default') return;
+            const blocks = this.collectBlocks(); // ya guarda en localStorage
+            await fetch('/api/set-layout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    profileName: currentLayoutProfile,
+                    deviceId: currentDeviceId,
+                    blocks
+                })
+            });
+            const r = await fetch('/api/get-layouts');
+            const data = await r.json();
+            this.layouts = data.layouts || {};
+        },
+
+        async rename(oldName, newName) {
+            await fetch('/api/rename-layout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ oldName, newName })
+            });
+            currentLayoutProfile = newName;
+            const r = await fetch('/api/get-layouts');
+            const data = await r.json();
+            this.layouts = data.layouts || {};
+        },
+
+        async deleteProfile(name) {
+            // Buscar el deviceId del perfil antes de borrarlo
+            const profileToDelete = this.layouts[name];
+            await fetch(`/api/delete-layout/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            // Limpiar localStorage del dispositivo de ese perfil
+            if (profileToDelete?.deviceId) {
+                localStorage.removeItem(`dockme-widths-${profileToDelete.deviceId}`);
+                if (localStorage.getItem('dockme-device-id') === profileToDelete.deviceId) {
+                    localStorage.removeItem('dockme-device-id');
+                }
+            }
+            currentLayoutProfile = 'default';
+            currentDeviceId = 'default';
+            const r = await fetch('/api/get-layouts');
+            const data = await r.json();
+            this.layouts = data.layouts || {};
+            // Mantener modo organizar activo
+            const row = document.querySelector('#dockme-blocks-row');
+            if (row) row.classList.add('organizing');
+            document.querySelector('.dockme-organize-icon')?.classList.add('active');
+            document.body.classList.add('dockme-organizing');
+        },
+
+async switchTo(profileName) {
+            const profile = this.layouts[profileName];
+            if (!profile) return;
+            currentLayoutProfile = profileName;
+            currentDeviceId = profile.deviceId;
+            localStorage.setItem('dockme-device-id', currentDeviceId);
+            this.applyToLinksConfig(profile.blocks);
+
+            // Actualizar ancho del sidebar inmediatamente (CSS rule + inline style)
+            const newSidebarW = this.getSidebarWidth();
+            DynamicStyles.updateForRoute(State.lastPath);
+            const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
+            if (sidebar) sidebar.style.setProperty('width', newSidebarW + 'px', 'important');
+
+            await Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
+                this.applyToLinksConfig(profile.blocks);
+                DataLoader.loadAndDisplay();
+                // Restaurar modo organizar tras recargar
+                setTimeout(() => {
+                    const row = document.querySelector('#dockme-blocks-row');
+                    if (row) {
+                        row.classList.add('organizing');
+                        row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
+                            el.draggable = true;
+                        });
+                    }
+                    document.querySelector('.dockme-organize-icon')?.classList.add('active');
+                    renderProfileBar();
+                }, 100);
+            });
+        }
+    };
 
     // ==================== CONSTANTES ====================
     const CONFIG = {
         DEBOUNCE_MS: 150,
         BASE_URL: window.location.origin,
-        ICON_DEFAULT: `${window.location.origin}/icons/no-icon.svg`,
+        ICON_DEFAULT: `${window.location.origin}/system-icons/no-icon.svg`,
         REORDER_INTERVAL: 1000,
         ROUTE_CHECK_INTERVAL: 250,
         STATS_UPDATE_INTERVAL: 5000,
@@ -339,12 +546,12 @@
                 }
             });
         },
-
         async ensureIcon(badge, item) {
             let img = badge.querySelector('img.cp-icon');
             const href = item.getAttribute('href') || '';
             const match = href.match(/^\/compose\/([^/]+)/);
             const nombreOriginal = match ? match[1] : null;
+            const endpointOriginal = href.match(/\/compose\/[^/]+\/(.+)$/)?.[1] || 'Actual';
             if (!nombreOriginal) return;
             const iconoUrl = getStackIconUrl(nombreOriginal);
             if (!img) {
@@ -354,6 +561,8 @@
                 img.style.height = '96px';
                 img.style.width = 'auto';
                 img.style.marginRight = '8px';
+                img.dataset.stackName = nombreOriginal;
+                img.dataset.stackEndpoint = endpointOriginal;
                 badge.insertBefore(img, badge.firstChild);
             }
             const finalUrl = await Utils.loadImage(
@@ -367,7 +576,6 @@
                 delete img.dataset.iconoFallback;
             }
         },
-
         ensureCircle(badge) {
             let circulo = badge.querySelector('span.cp-circle');
             if (!circulo) {
@@ -488,6 +696,10 @@
             const frag = document.createDocumentFragment();
             ordenados.forEach(el => frag.appendChild(el));
             contenedor.appendChild(frag);
+            // Reaplicar filtro activo tras reordenar si no esta en modo edición
+            if (!dockmeEditMode && MetricsManager.filterActive && MetricsManager.currentFilter) {
+                MetricsManager.applyHostFilter(MetricsManager.currentFilter);
+            }
         },
 
         processAll() {
@@ -520,9 +732,8 @@
         const btnSelectAll = document.querySelector('.btn-select-all');
         const btnUpdate = document.querySelector('.btn-update-selected');
         const anyChecked = Array.from(checkboxes).some(cb => cb.checked);
-        const allChecked = Array.from(checkboxes).every(cb => cb.checked);
         if (btnUpdate) btnUpdate.style.display = anyChecked ? '' : 'none';
-        if (btnSelectAll) btnSelectAll.textContent = allChecked ? 'Deseleccionar todas' : 'Seleccionar todas';
+        if (btnSelectAll) btnSelectAll.textContent = anyChecked ? 'Deseleccionar todas' : 'Seleccionar todas';
     };
     
     const StackBlockManager = {
@@ -531,29 +742,51 @@
                 this.remove(contenedor, idBase);
                 return;
             }
-            let blockTitle = contenedor.querySelector(`#${idBase}-title`);
+
+            const isFavOrRecent = idBase.startsWith('favoritos') || idBase.startsWith('recientes');
+
+            // Wrapper box para favoritos/recientes
+            let wrapper = document.querySelector(`#${idBase}-wrapper`);
+            const targetContainer = isFavOrRecent ? (() => {
+                if (!wrapper) {
+                    wrapper = document.createElement('div');
+                    wrapper.id = `${idBase}-wrapper`;
+                    wrapper.className = 'links-cat-box';
+                    wrapper.dataset.blockKey = 'type:favoritos';
+                    // Añadir al blocksRow
+                    const blocksRow = document.querySelector('#dockme-blocks-row') || contenedor;
+                    blocksRow.appendChild(wrapper);
+                    // Drag & drop
+                    setupBlockDrag(wrapper, blocksRow);
+                    setupResizeHandle(wrapper, (newWidth) => {
+                        saveBlockOrder();
+                    });
+                }
+                return wrapper;
+            })() : contenedor;
+
+            let blockTitle = targetContainer.querySelector(`#${idBase}-title`);
             if (!blockTitle) {
-                blockTitle = document.createElement('h2');
+                blockTitle = document.createElement('div');
                 blockTitle.id = `${idBase}-title`;
-                blockTitle.className = 'dashboard-section-title mb-3';
+                blockTitle.className = isFavOrRecent ? 'links-cat-box-title' : 'dashboard-section-title mb-3';
                 blockTitle.textContent = titulo;
-                contenedor.appendChild(blockTitle);
-                // Añadir botones si es sección de updates
+                targetContainer.appendChild(blockTitle);
                 if (idBase.startsWith('updates')) {
                     this.addUpdateButtons(blockTitle);
                 }
             }
-            let blockRow = contenedor.querySelector(`#${idBase}-row`);
+            let blockRow = targetContainer.querySelector(`#${idBase}-row`);
             if (!blockRow) {
                 blockRow = document.createElement('div');
                 blockRow.id = `${idBase}-row`;
                 blockRow.classList.add('dashboard-section-grid');
-                if (idBase.startsWith('recientes')) {
+                if (idBase.startsWith('recientes') || idBase.startsWith('favoritos')) {
                     blockRow.classList.add('dashboard-grid-recientes');
                 } else if (idBase.startsWith('updates')) {
                     blockRow.classList.add('dashboard-grid-updates');
                 }
-                contenedor.appendChild(blockRow);
+                targetContainer.appendChild(blockRow);
             }
             blockRow.innerHTML = '';
             lista.forEach(item => {
@@ -572,6 +805,17 @@
             link.className = 'stack-card-link';
 
             link.addEventListener('click', e => {
+                // Click en icono con URL → abrir servicio
+                if (e.target.closest('.stack-logo-left.has-url')) {
+                    const stackData = stacksConfig.find(s =>
+                        s.name?.toLowerCase() === nombre?.toLowerCase() &&
+                        s.endpoint?.toLowerCase() === (endpoint || 'Actual').toLowerCase()
+                    );
+                    e.preventDefault();
+                    if (stackData?.url) window.open(stackData.url, '_blank');
+                    return;
+                }
+
                 if (e.target.closest('a[target="_blank"]')) return;
                 
                 // Gestionar checkbox en updates (todas las pantallas)
@@ -610,9 +854,75 @@
                 this.setupUpdateCard(card, item, nombre, displayName, iconoUrl, sources, endpoint, blockTitle, blockRow);
             } else if (idBase.startsWith('recientes')) {
                 this.setupRecentCard(card, item, displayName, iconoUrl, fechaFormateada);
-            } 
-            if (idBase.startsWith('recientes')) {
+            } else if (idBase.startsWith('favoritos')) {
+                this.setupFavoriteCard(card, item, displayName, iconoUrl, endpoint);
+            }
+            if (idBase.startsWith('recientes') || idBase.startsWith('favoritos')) {
                 link.dataset.endpoint = endpoint || 'Actual';
+            }
+            if (idBase.startsWith('favoritos')) {
+                link.draggable = false;
+                link.dataset.favNombre = nombre;
+                link.dataset.favEndpoint = endpoint || 'Actual';
+
+                link.addEventListener('dragstart', (e) => {
+                    if (!document.querySelector('#dockme-blocks-row')?.classList.contains('organizing')) {
+                        e.preventDefault();
+                        return;
+                    }
+                    e.dataTransfer.setData('text/plain', JSON.stringify({ nombre, endpoint: endpoint || 'Actual' }));
+                    link.style.opacity = '0.4';
+                });
+                link.addEventListener('dragend', () => {
+                    link.style.opacity = '';
+                });
+                link.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    link.style.outline = '2px dashed #4f84c8';
+                });
+                link.addEventListener('dragleave', () => {
+                    link.style.outline = '';
+                });
+                link.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    link.style.outline = '';
+                    const draggedData = JSON.parse(e.dataTransfer.getData('text/plain'));
+                    if (draggedData.nombre === nombre && draggedData.endpoint === (endpoint || 'Actual')) return;
+
+                    const row = document.getElementById('favoritos-row');
+                    if (!row) return;
+                    const allLinks = Array.from(row.querySelectorAll('.stack-card-link'));
+                    const draggedEl = allLinks.find(l =>
+                        l.dataset.favNombre === draggedData.nombre &&
+                        l.dataset.favEndpoint === draggedData.endpoint
+                    );
+                    if (!draggedEl) return;
+
+                    // Reordenar en el DOM
+                    const targetIndex = allLinks.indexOf(link);
+                    const draggedIndex = allLinks.indexOf(draggedEl);
+                    if (draggedIndex < targetIndex) {
+                        link.after(draggedEl);
+                    } else {
+                        link.before(draggedEl);
+                    }
+
+                    // Guardar nuevo orden en stacks.json
+                    const newOrder = Array.from(row.querySelectorAll('.stack-card-link'));
+                    newOrder.forEach((l, i) => {
+                        fetch('/api/set-stack', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                name: l.dataset.favNombre,
+                                endpoint: l.dataset.favEndpoint,
+                                order: i
+                            })
+                        }).catch(() => {});
+                    });
+                    // Actualizar stacksConfig en memoria
+                    loadStacksConfig();
+                });
             }
             link.appendChild(card);
             return link;
@@ -635,10 +945,10 @@
             const btnUpdate = controls.querySelector('.btn-update-selected');
 
             btnSelectAll.addEventListener('click', () => {
-                const checkboxes = document.querySelectorAll('.stack-checkbox');
-                const allChecked = Array.from(checkboxes).every(cb => cb.checked);
-                checkboxes.forEach(cb => cb.checked = !allChecked);
-                btnSelectAll.textContent = allChecked ? 'Seleccionar todas' : 'Deseleccionar todas';
+                const checkboxes = Array.from(document.querySelectorAll('.stack-checkbox'))
+                    .filter(cb => cb.closest('.stack-card-link')?.style.display !== 'none');
+                const anyChecked = checkboxes.some(cb => cb.checked);
+                checkboxes.forEach(cb => cb.checked = !anyChecked);
                 syncBulkButtons();
             });
 
@@ -656,7 +966,7 @@
         extractCardData(item, idBase) {
             let nombre, displayName, endpoint, dockerExtra = '', fechaFormateada = '';
 
-            if (idBase.startsWith('recientes')) {
+            if (idBase.startsWith('recientes') || idBase.startsWith('favoritos')) {
                 nombre = item.name;
                 endpoint = item.endpoint || 'Actual';
                 fechaFormateada = Utils.formatDate(item.visited);
@@ -748,14 +1058,58 @@
                 State.hostnameLocal &&
                 item.hostname !== State.hostnameLocal;
 
+            const stackServiceData = stacksConfig.find(s =>
+                s.name?.toLowerCase() === item.name?.toLowerCase() &&
+                s.endpoint?.toLowerCase() === (item.endpoint || 'Actual').toLowerCase()
+            );
+            const hasUrl = !!stackServiceData?.url;
+
             card.innerHTML = `
-                <div class="stack-logo-left">    
-                    <img src="${iconoUrl}" alt="${displayName} logo">
+                <div class="stack-logo-left${hasUrl ? ' has-url' : ''}">
+                    ${hasUrl ? `
+                    <div class="stack-logo-flip">
+                        <div class="logo-front"><img src="${iconoUrl}" alt="${displayName} logo"></div>
+                        <div class="logo-back"></div>
+                    </div>` : `<img src="${iconoUrl}" alt="${displayName} logo">`}
                 </div>
                 <div class="stack-info">
                     <div class="stack-name">${displayName}</div>
                     <div class="stack-hostname">${mostrarHostname ? item.hostname : '&nbsp;'}</div>
                     <div class="stack-status">${fechaFormateada}</div>
+                </div>
+            `;
+            const img = card.querySelector('img');
+            if (img) {
+                img.onerror = () => {
+                    if (img.src !== CONFIG.ICON_DEFAULT) {img.src = CONFIG.ICON_DEFAULT;}
+                };
+            }
+        },
+
+        setupFavoriteCard(card, item, displayName, iconoUrl, endpoint) {
+            const mostrarHostname = 
+                item.hostname &&
+                State.hostnameLocal &&
+                item.hostname !== State.hostnameLocal;
+
+            const stackServiceData = stacksConfig.find(s =>
+                s.name?.toLowerCase() === item.name?.toLowerCase() &&
+                s.endpoint?.toLowerCase() === (item.endpoint || 'Actual').toLowerCase()
+            );
+            const hasUrl = !!stackServiceData?.url;
+
+            card.innerHTML = `
+                <div class="stack-logo-left${hasUrl ? ' has-url' : ''}">
+                    ${hasUrl ? `
+                    <div class="stack-logo-flip">
+                        <div class="logo-front"><img src="${iconoUrl}" alt="${displayName} logo"></div>
+                        <div class="logo-back"></div>
+                    </div>` : `<img src="${iconoUrl}" alt="${displayName} logo">`}
+                </div>
+                <div class="stack-info">
+                    <div class="stack-name">${displayName}</div>
+                    <div class="stack-hostname">${mostrarHostname ? item.hostname : '&nbsp;'}</div>
+                    <div class="stack-status">&nbsp;</div>
                 </div>
             `;
             const img = card.querySelector('img');
@@ -778,7 +1132,19 @@
     const DataLoader = {
         async loadAndDisplay() {
             if (!RouteManager.isRootPath()) return;
-            
+            await loadStacksConfig();
+            await loadLinksConfig();
+            const layoutBlocks = await LayoutManager.load();
+            // Garantizar entradas especiales ANTES de aplicar perfil
+            if (!linksConfig.find(b => b.type === 'metrics')) {
+                linksConfig.push({ type: 'metrics', links: [] });
+            }
+            if (!linksConfig.find(b => b.type === 'favoritos')) {
+                const recEntry = linksConfig.find(b => b.type === 'recientes');
+                if (recEntry) recEntry.type = 'favoritos';
+                else linksConfig.push({ type: 'favoritos', links: [] });
+            }
+            LayoutManager.applyToLinksConfig(layoutBlocks);
             const detected = getDetectedServers();
             const hasDetected = detected.length > 0;
             const updatesData = State.updatesDataGlobal;
@@ -825,37 +1191,609 @@
                 item.stack.toLowerCase() !== 'dockme'
             );
 
-            await StackBlockManager.create(
-                col7,
-                updatesForDashboard,
-                'updates',
-                '⬆️ Actualizaciones disponibles',
-                'Actualización',
-                sources
-            );
-
-            // Recientes
-            const recientesRaw = RecentManager.getAll();
+            // Preparar datos favoritos/recientes
             const endpointToHost = {};
             updatesData.forEach(h => {
                 endpointToHost[h.endpoint] = h.hostname;
             });
+            const favoritosRaw = stacksConfig.filter(s => s.favorite);
 
-            const recientesPlano = recientesRaw.map(item => ({
-                ...item,
-                hostname: endpointToHost[item.endpoint] || item.endpoint
-            }));
+            // Crear/encontrar contenedor compartido de bloques
+            let blocksRow = col7.querySelector('#dockme-blocks-row');
+            if (!blocksRow) {
+                blocksRow = document.createElement('div');
+                blocksRow.id = 'dockme-blocks-row';
+                col7.appendChild(blocksRow);
+            }
+            // Limpiar solo los boxes de categorías, no métricas ni favoritos
+            [...blocksRow.children].forEach(el => {
+                const key = el.dataset.blockKey;
+                if (!key || key.startsWith('category:')) el.remove();
+            });
 
-            await StackBlockManager.create(
-                col7,
-                recientesPlano,
-                'recientes',
-                '🕘 Últimos visitados',
-                '',
-                sources
-            );
+            // Orden por defecto si no hay perfil activo
+            if (currentLayoutProfile === 'default') {
+                const metricsEntry = linksConfig.find(b => b.type === 'metrics');
+                const favEntry = linksConfig.find(b => b.type === 'favoritos');
+                if (metricsEntry) metricsEntry.order = 0;
+                if (favEntry) favEntry.order = 1;
+                linksConfig.filter(b => b.category).forEach((b, i) => { b.order = 2 + i; });
+            } else {
+                // Aplicar orden del perfil primero, luego normalizar los que falten
+                const maxProfileOrd = layoutBlocks.reduce((m, b) => Math.max(m, b.order ?? 0), -1);
+                let maxOrd = maxProfileOrd;
+                linksConfig.forEach(b => {
+                    if (b.order == null) b.order = ++maxOrd;
+                });
+            }
+
+            // Renderizar bloques en orden guardado
+            const sortedBlocks = [...linksConfig].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+
+            for (const block of sortedBlocks) {
+                if (block.type === 'metrics') {
+                    MetricsManager.ensureContainer();
+
+                } else if (block.type === 'favoritos') {
+                    StackBlockManager.remove(col7, 'recientes');
+                    StackBlockManager.remove(col7, 'favoritos');
+
+                    const hasUpdates = updatesForDashboard.length > 0;
+                    const favoritosOrdenados = favoritosRaw.length > 0
+                        ? favoritosRaw
+                            .sort((a, b) => {
+                                if (a.order === null && b.order === null) return 0;
+                                if (a.order === null) return 1;
+                                if (b.order === null) return -1;
+                                return a.order - b.order;
+                            })
+                            .map(s => ({
+                                name: s.name,
+                                endpoint: s.endpoint || 'Actual',
+                                hostname: endpointToHost[s.endpoint] || s.endpoint
+                            }))
+                        : null;
+                    const recientesPlano = !favoritosOrdenados
+                        ? RecentManager.getAll().map(item => ({
+                            ...item,
+                            hostname: endpointToHost[item.endpoint] || item.endpoint
+                        }))
+                        : null;
+
+                    // Determinar lista secundaria y título
+                    const secLista = favoritosOrdenados || recientesPlano || [];
+                    const secId = favoritosOrdenados ? 'favoritos' : 'recientes';
+                    const secTitulo = hasUpdates
+                        ? (favoritosOrdenados ? '⭐ Favoritos y actualizaciones' : '🕘 Recientes y actualizaciones')
+                        : (favoritosOrdenados ? '⭐ Favoritos' : '🕘 Últimos visitados');
+
+                    // Crear wrapper con título correcto
+                    if (hasUpdates || secLista.length > 0) {
+                        await StackBlockManager.create(col7, secLista.length > 0 ? secLista : [secLista[0] || {}], secId, secTitulo, '', sources);
+                    }
+
+                    // Obtener wrapper ya creado
+                    const favWrapper = document.querySelector(`#${secId}-wrapper`);
+                    if (favWrapper) {
+                        // Limpiar siempre el updates-row previo, haya o no updates ahora
+                        favWrapper.querySelector('#updates-row')?.remove();
+
+                        // Actualizar título
+                        const titleEl = favWrapper.querySelector(`#${secId}-title`);
+                        if (titleEl) {
+                            titleEl.textContent = secTitulo;
+                            if (hasUpdates) StackBlockManager.addUpdateButtons(titleEl);
+                        }
+
+                        // Añadir updates antes del separador si los hay
+                        if (hasUpdates) {
+                            // (updates-row ya eliminado arriba)
+
+                            // Grid de updates
+                            const updatesRow = document.createElement('div');
+                            updatesRow.id = 'updates-row';
+                            updatesRow.classList.add('dashboard-section-grid', 'dashboard-grid-updates');
+                            updatesForDashboard.forEach(item => {
+                                const card = StackBlockManager.createCard(item, 'updates', sources, titleEl, updatesRow);
+                                updatesRow.appendChild(card);
+                            });
+                            favWrapper.insertBefore(updatesRow, favWrapper.querySelector(`#${secId}-row`) || null);
+                        }
+                    }
+
+                } else if (block.category) {
+                    if (block.links?.length > 0) {
+                        renderCategoryBox(block, blocksRow);
+                    }
+                }
+            }
+            // Reordenar elementos del blocksRow según el orden del perfil
+            sortedBlocks.forEach(block => {
+                const key = block.type ? `type:${block.type}` : `category:${block.category}`;
+                const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
+                if (el) blocksRow.appendChild(el);
+            });
+            // Aplicar anchos del perfil al DOM una vez renderizados los boxes
+            const activeBlocks = LayoutManager.getActiveBlocks();
+            const localWidths = JSON.parse(localStorage.getItem(`dockme-widths-${currentDeviceId}`) || '{}');
+            activeBlocks.forEach(b => {
+                const finalW = localWidths[b.key] ?? b.width;
+                if (!finalW) return;
+                const el = document.querySelector(`[data-block-key="${b.key}"]`);
+                if (el) el.style.width = finalW + 'px';
+            });
+            // Reaplicar filtro activo si existe
+            if (MetricsManager.filterActive && MetricsManager.currentFilter) {
+                MetricsManager.applyHostFilter(MetricsManager.currentFilter);
+            }
+
+            // Resetear modo organizar al recargar dashboard
+            document.querySelector('#dockme-blocks-row')?.classList.remove('organizing');
+            document.querySelector('.dockme-organize-icon')?.classList.remove('active');
         }
     };
+
+    // ── Guarda el orden actual de todos los bloques en #dockme-blocks-row ──────
+    function saveBlockOrder() {
+        markLayoutDirty();
+    }
+
+    // ── Barra de perfiles en modo organizar ───────────────────────────────────
+let layoutDirty = false;
+
+    function markLayoutDirty() {
+        layoutDirty = true;
+        const bar = document.querySelector('#dockme-profile-bar');
+        if (bar) renderProfileBar();
+    }
+
+    // ── Barra de perfiles en modo organizar ───────────────────────────────────
+    function renderProfileBar() {
+        const existing = document.querySelector('#dockme-profile-bar');
+        if (existing) existing.remove();
+
+        const bar = document.createElement('div');
+        bar.id = 'dockme-profile-bar';
+
+        // ── Nombre del perfil activo (solo si no hay cambios pendientes) ──────
+        if (currentLayoutProfile !== 'default' && !layoutDirty) {
+            const nameLabel = document.createElement('span');
+            nameLabel.className = 'profile-bar-name-label';
+            nameLabel.textContent = currentLayoutProfile;
+            bar.appendChild(nameLabel);
+        }
+
+        // ── Input nombre + botón guardar (solo si hay cambios) ────────────────
+        if (layoutDirty) {
+            const nameInput = document.createElement('input');
+            nameInput.className = 'profile-bar-input';
+            nameInput.value = currentLayoutProfile === 'default' ? 'Mi layout' : currentLayoutProfile;
+            nameInput.placeholder = 'Nombre del perfil';
+            nameInput.addEventListener('keydown', async e => {
+                if (e.key !== 'Enter') return;
+                const name = nameInput.value.trim();
+                if (!name) { nameInput.style.borderColor = 'red'; return; }
+                nameInput.style.borderColor = '';
+                const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+                nameInput.value = capitalized;
+                nameInput.select();
+            });
+
+            const btnSave = document.createElement('button');
+            btnSave.className = 'btn btn-primary';
+            btnSave.textContent = '💾 Guardar';
+            btnSave.addEventListener('click', async () => {
+                const name = nameInput.value.trim();
+                if (!name) { nameInput.style.borderColor = 'red'; return; }
+                nameInput.style.borderColor = '';
+                const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+                if (currentLayoutProfile === 'default') {
+                    currentLayoutProfile = capitalized;
+                    currentDeviceId = 'device-' + Math.random().toString(36).slice(2, 10);
+                    localStorage.setItem('dockme-device-id', currentDeviceId);
+                } else if (capitalized !== currentLayoutProfile) {
+                    await LayoutManager.rename(currentLayoutProfile, capitalized);
+                }
+                await LayoutManager.save();
+                layoutDirty = false;
+                // Cerrar modo organizar
+                const row = document.querySelector('#dockme-blocks-row');
+                if (row) {
+                    row.classList.remove('organizing');
+                    row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
+                        el.draggable = false;
+                    });
+                }
+                document.querySelector('.dockme-organize-icon')?.classList.remove('active');
+                document.body.classList.remove('dockme-organizing');
+                document.querySelector('#dockme-profile-bar')?.remove();
+            });
+
+            bar.appendChild(nameInput);
+            bar.appendChild(btnSave);
+        }
+        // ── Botón nuevo perfil ─────────────────────────────────────────────────
+        const btnNew = document.createElement('button');
+        btnNew.className = 'btn btn-normal';
+        btnNew.textContent = '+ Nuevo';
+        btnNew.addEventListener('click', async () => {
+            // Generar nombre por defecto único
+            const baseName = 'Mi layout';
+            const existing = Object.keys(LayoutManager.layouts).filter(n => n !== 'default');
+            let newName = baseName;
+            let idx = 2;
+            while (existing.includes(newName)) {
+                newName = `${baseName} ${idx++}`;
+            }
+
+            // Nuevo deviceId y limpiar localStorage
+            currentLayoutProfile = newName;
+            currentDeviceId = 'device-' + Math.random().toString(36).slice(2, 10);
+            localStorage.setItem('dockme-device-id', currentDeviceId);
+            localStorage.removeItem(`dockme-widths-${currentDeviceId}`);
+
+            // Resetear órdenes a default
+            const metricsEntry = linksConfig.find(b => b.type === 'metrics');
+            const favEntry = linksConfig.find(b => b.type === 'favoritos');
+            if (metricsEntry) { metricsEntry.order = 0; delete metricsEntry.width; delete metricsEntry.height; }
+            if (favEntry) { favEntry.order = 1; delete favEntry.width; delete favEntry.height; }
+            linksConfig.filter(b => b.category).forEach((b, i) => {
+                b.order = 2 + i;
+                delete b.width;
+                delete b.height;
+            });
+
+            // Redibujar paneles en orden default sin salir del modo organizar
+            layoutDirty = true;
+            await DataLoader.loadAndDisplay();
+
+            // Mantener modo organizar activo tras redibujar
+            const row = document.querySelector('#dockme-blocks-row');
+            if (row) row.classList.add('organizing');
+            document.body.classList.add('dockme-organizing');
+
+            // Redibujar barra (mostrará input con newName y botón guardar)
+            renderProfileBar();
+        });
+
+        // ── Dropdown perfiles (a la derecha del todo) ─────────────────────────
+        const btnList = document.createElement('div');
+        btnList.className = 'profile-bar-dropdown';
+
+        const btnListToggle = document.createElement('button');
+        btnListToggle.className = 'btn btn-normal';
+        btnListToggle.textContent = '⋯ Perfiles';
+
+        const dropdown = document.createElement('div');
+        dropdown.className = 'profile-bar-dropdown-menu';
+        dropdown.style.display = 'none';
+
+        Object.entries(LayoutManager.layouts)
+            .filter(([name]) => name !== 'default')
+            .forEach(([name]) => {
+                const item = document.createElement('div');
+                item.className = 'profile-bar-dropdown-item' + (name === currentLayoutProfile ? ' active' : '');
+                item.style.cursor = 'pointer';
+
+                const itemName = document.createElement('span');
+                itemName.textContent = name;
+                itemName.style.flex = '1';
+
+                item.addEventListener('click', async (e) => {
+                    if (e.target.closest('.profile-bar-btn-del')) return;
+                    dropdown.style.display = 'none';
+                    layoutDirty = false;
+                    await LayoutManager.switchTo(name);
+                    renderProfileBar();
+                });
+
+                const btnDel = document.createElement('button');
+                btnDel.className = 'btn btn-danger profile-bar-btn-del';
+                btnDel.textContent = '🗑';
+                btnDel.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (!confirm(`¿Eliminar perfil "${name}"?`)) return;
+                    await LayoutManager.deleteProfile(name);
+                    layoutDirty = false;
+                    localStorage.removeItem('dockme-widths-default');
+                    window.location.reload();
+                });
+
+                item.appendChild(itemName);
+                item.appendChild(btnDel);
+                dropdown.appendChild(item);
+            });
+
+        let hideTimer = null;
+        btnList.addEventListener('mouseenter', () => {
+            clearTimeout(hideTimer);
+            dropdown.style.display = 'block';
+        });
+        btnList.addEventListener('mouseleave', () => {
+            hideTimer = setTimeout(() => { dropdown.style.display = 'none'; }, 1500);
+        });
+        dropdown.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+        dropdown.addEventListener('mouseleave', () => {
+            hideTimer = setTimeout(() => { dropdown.style.display = 'none'; }, 1500);
+        });
+
+        btnList.appendChild(btnListToggle);
+        btnList.appendChild(dropdown);
+
+        bar.appendChild(btnNew);
+        bar.appendChild(btnList);
+
+        const dashboard = document.querySelector('#dockme-dashboard');
+        if (dashboard) dashboard.insertBefore(bar, dashboard.firstChild);
+    }
+
+    // ── Drag & drop unificado para cualquier bloque del row ───────────────────
+    function setupBlockDrag(box, blocksRow) {
+        // ── Mouse drag ────────────────────────────────────────────────────────
+        box.addEventListener('mousedown', e => {
+            if (e.target.closest('.links-cat-box-title')?.closest('.links-cat-box') === box) {
+                box.draggable = true;
+            }
+        });
+        box.addEventListener('dragstart', e => {
+            if (e.target !== box && !e.target.closest('.links-cat-box-title')) return;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('block-drag', '1');
+            box.style.opacity = '0.4';
+        });
+        box.addEventListener('dragend', () => {
+            box.style.opacity = '';
+            box.draggable = false;
+            saveBlockOrder();
+        });
+        box.addEventListener('dragover', e => {
+            if (!e.dataTransfer.types.includes('block-drag')) return;
+            e.preventDefault();
+            const dragging = [...blocksRow.children].find(el => el.style.opacity === '0.4');
+            if (dragging && dragging !== box) {
+                const rect = box.getBoundingClientRect();
+                if (e.clientX < rect.left + rect.width / 2) {
+                    blocksRow.insertBefore(dragging, box);
+                } else {
+                    blocksRow.insertBefore(dragging, box.nextSibling);
+                }
+            }
+        });
+
+        // ── Touch drag (iPad / móvil) ─────────────────────────────────────────
+        let touchDragging = false;
+        let touchClone = null;
+        let touchOffsetX = 0;
+        let touchOffsetY = 0;
+        let touchStartTimer = null;
+
+        box.addEventListener('touchstart', e => {
+            if (!document.querySelector('#dockme-blocks-row')?.classList.contains('organizing')) return;
+            if (e.target.closest('.links-item-card') || e.target.closest('.stack-card-link')) return;
+            const title = e.target.closest('.links-cat-box-title');
+            if (!title || title.closest('.links-cat-box') !== box) return;
+
+            const touch = e.touches[0];
+            const rect = box.getBoundingClientRect();
+            touchOffsetX = touch.clientX - rect.left;
+            touchOffsetY = touch.clientY - rect.top;
+
+            // Retrasar inicio para dar tiempo a stopPropagation de hijos
+            touchStartTimer = setTimeout(() => {
+                touchDragging = true;
+                touchClone = box.cloneNode(true);
+                touchClone.style.cssText = `
+                    position: fixed;
+                    pointer-events: none;
+                    opacity: 0.7;
+                    z-index: 9999;
+                    width: ${rect.width}px;
+                    left: ${touch.clientX - touchOffsetX}px;
+                    top: ${touch.clientY - touchOffsetY}px;
+                    margin: 0;
+                `;
+                document.body.appendChild(touchClone);
+                box.style.opacity = '0.3';
+            }, 50);
+        }, { passive: true });
+
+        box.addEventListener('touchmove', e => {
+            if (!touchDragging || !touchClone) return;
+            e.preventDefault();
+            const touch = e.touches[0];
+            touchClone.style.left = (touch.clientX - touchOffsetX) + 'px';
+            touchClone.style.top  = (touch.clientY - touchOffsetY) + 'px';
+
+            const els = [...blocksRow.children].filter(el => el !== box);
+            for (const target of els) {
+                const rect = target.getBoundingClientRect();
+                if (touch.clientX >= rect.left && touch.clientX <= rect.right &&
+                    touch.clientY >= rect.top  && touch.clientY <= rect.bottom) {
+                    if (touch.clientX < rect.left + rect.width / 2) {
+                        blocksRow.insertBefore(box, target);
+                    } else {
+                        blocksRow.insertBefore(box, target.nextSibling);
+                    }
+                    break;
+                }
+            }
+        }, { passive: false });
+
+        const endTouch = () => {
+            clearTimeout(touchStartTimer);
+            if (!touchDragging) return;
+            touchDragging = false;
+            if (touchClone) { touchClone.remove(); touchClone = null; }
+            box.style.opacity = '';
+            saveBlockOrder();
+        };
+        box.addEventListener('touchend', endTouch, { passive: true });
+        box.addEventListener('touchcancel', endTouch, { passive: true });
+    }
+
+// ── Handle de resize custom (esquina superior derecha) ────────────────────
+    function setupResizeHandle(box, onResizeEnd) {
+        const handle = document.createElement('div');
+        handle.className = 'dockme-resize-handle';
+        box.appendChild(handle);
+
+        let startX = 0;
+        let startW = 0;
+        let resizing = false;
+
+        const onMove = (clientX) => {
+            if (!resizing) return;
+            const diff = clientX - startX;
+            const newW = Math.max(96, startW + diff);
+            box.style.width = newW + 'px';
+        };
+
+        const onEnd = () => {
+            if (!resizing) return;
+            resizing = false;
+            document.removeEventListener('mousemove', mouseMove);
+            document.removeEventListener('mouseup', mouseUp);
+            document.removeEventListener('touchmove', touchMove);
+            document.removeEventListener('touchend', touchEnd);
+            if (onResizeEnd) onResizeEnd(box.offsetWidth);
+        };
+
+        const mouseMove = e => onMove(e.clientX);
+        const mouseUp = () => onEnd();
+        const touchMove = e => { e.preventDefault(); e.stopPropagation(); onMove(e.touches[0].clientX); };
+        const touchEnd = () => onEnd();
+
+        const startResize = (clientX) => {
+            resizing = true;
+            startX = clientX;
+            startW = box.offsetWidth;
+            document.addEventListener('mousemove', mouseMove);
+            document.addEventListener('mouseup', mouseUp);
+            document.addEventListener('touchmove', touchMove, { passive: false });
+            document.addEventListener('touchend', touchEnd);
+        };
+
+        handle.addEventListener('mousedown', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            startResize(e.clientX);
+        });
+
+        handle.addEventListener('touchstart', e => {
+            e.stopPropagation();
+            startResize(e.touches[0].clientX);
+        }, { passive: true });
+    }
+
+    // ── Renderiza un box de categoría de links en el blocksRow ────────────────
+    function renderCategoryBox(cat, blocksRow) {
+        const catBox = document.createElement('div');
+        catBox.className = 'links-cat-box';
+        catBox.dataset.blockKey = `category:${cat.category}`;
+        if (cat.width) catBox.style.width = cat.width + 'px';
+
+        setupResizeHandle(catBox, (newWidth) => {
+            saveBlockOrder();
+        });
+
+        const catTitle = document.createElement('div');
+        catTitle.className = 'links-cat-box-title';
+        catTitle.textContent = cat.category;
+        catBox.appendChild(catTitle);
+
+        const linksGrid = document.createElement('div');
+        linksGrid.className = 'links-items-grid';
+        catBox.appendChild(linksGrid);
+        linksGrid.addEventListener('dragover', e => {
+            if (!document.querySelector('#dockme-blocks-row')?.classList.contains('organizing')) return;
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        linksGrid.addEventListener('drop', e => {
+            if (!document.querySelector('#dockme-blocks-row')?.classList.contains('organizing')) return;
+            e.preventDefault();
+            e.stopPropagation();
+        });
+
+        cat.links
+            .filter(l => l.url)
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+            .forEach(link => {
+                const iconSrc = link.icon ? `/icons/${link.icon}` : '/system-icons/no-icon.svg';
+                const item = document.createElement('div');
+                item.className = 'links-item-card';
+                item.title = link.name;
+                item.dataset.linkName = link.name;
+                item.draggable = false;
+                item.innerHTML = `
+                    <img src="${iconSrc}" alt="${link.name}" onerror="this.src='/system-icons/no-icon.svg'">
+                    <span>${link.name}</span>
+                `;
+                item.addEventListener('click', () => window.open(link.url, '_blank'));
+
+                item.addEventListener('dragstart', e => {
+                    if (!document.querySelector('#dockme-blocks-row')?.classList.contains('organizing')) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return;
+                    }
+                    e.stopPropagation();
+                    e.dataTransfer.setData('text/plain', link.name);
+                    item.style.opacity = '0.4';
+                });
+                item.addEventListener('touchstart', e => {
+                    e.stopPropagation();
+                }, { passive: true });
+                item.addEventListener('dragend', () => {
+                    item.style.opacity = '';
+                });
+                item.addEventListener('dragover', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    item.style.outline = '2px dashed #4f84c8';
+                });
+                item.addEventListener('dragleave', () => {
+                    item.style.outline = '';
+                });
+                item.addEventListener('drop', e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    item.style.outline = '';
+                    const draggedName = e.dataTransfer.getData('text/plain');
+                    if (draggedName === link.name) return;
+
+                    const allItems = Array.from(linksGrid.querySelectorAll('.links-item-card'));
+                    const draggedEl = allItems.find(el => el.dataset.linkName === draggedName);
+                    if (!draggedEl) return;
+
+                    // Reordenar en el DOM
+                    const targetIdx = allItems.indexOf(item);
+                    const draggedIdx = allItems.indexOf(draggedEl);
+                    if (draggedIdx < targetIdx) {
+                        item.after(draggedEl);
+                    } else {
+                        item.before(draggedEl);
+                    }
+
+                    // Guardar nuevo orden en linksConfig
+                    const newOrder = Array.from(linksGrid.querySelectorAll('.links-item-card'));
+                    newOrder.forEach((el, i) => {
+                        const l = cat.links.find(x => x.name === el.dataset.linkName);
+                        if (l) l.order = i;
+                    });
+                    fetch('/api/set-links', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ links: linksConfig })
+                    }).catch(() => {});
+                });
+
+                linksGrid.appendChild(item);
+            });
+
+        blocksRow.appendChild(catBox);
+        setupBlockDrag(catBox, blocksRow);
+    }
 
     // ==================== UI COMPONENTS ====================
     const UIComponents = {
@@ -956,6 +1894,7 @@
                     }
                 }
             }
+
             if (dockmeEditMode) {
                 const stackItem = e.target.closest('a.item');
                 if (stackItem) {
@@ -1052,10 +1991,23 @@
                     State.setUpdatesData(updatesData);
                     setTimeout(() => {
                         if (RouteManager.isRootPath()) {
-                            DataLoader.loadAndDisplay();
+                            Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
                         }
                     }, 300);
                 });
+            // Limpiar stacks.json
+            const stackIdx = stacksConfig.findIndex(s =>
+                s.name?.toLowerCase() === parts.name?.toLowerCase() &&
+                s.endpoint?.toLowerCase() === (parts.endpoint || 'Actual').toLowerCase()
+            );
+            if (stackIdx >= 0) {
+                stacksConfig.splice(stackIdx, 1);
+                fetch('/api/set-stack', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: parts.name, endpoint: parts.endpoint || 'Actual', _delete: true })
+                }).catch(() => {});
+            }
         },
 
         updateDockme(endpoint) {
@@ -1112,36 +2064,91 @@
     // ==================== MENÚ MÓVIL ====================
     const MobileMenu = {
         ensureToggle() {
-            const existingBtn = document.querySelector('.mobile-menu-toggle');
-            
-            // Si no estamos en root → eliminar botón si existe
-            if (!RouteManager.isRootPath()) {
-                existingBtn?.remove();
-                return;
-            }
-            
-            // Si no es móvil → eliminar botón si existe
-            if (window.innerWidth > 700) {
-                existingBtn?.remove();
-                return;
-            }
-            
-            // Si ya existe → no crear otro
-            if (existingBtn) return;
-            
-            const toggleBtn = document.createElement('button');
-            toggleBtn.className = 'mobile-menu-toggle';
-            toggleBtn.innerHTML = '☰';
-            toggleBtn.onclick = () => {
-                const lista = document.querySelector('div.col-xl-3.col-md-4.col-12');
-                lista?.classList.toggle('mobile-open');
+            document.querySelector('.mobile-menu-toggle')?.remove();
+
+            if (!RouteManager.isRootPath() || window.innerWidth > 700) return;
+            if (document.querySelector('#mobile-sidebar-handle')) return;
+
+            const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
+            if (!sidebar) return;
+
+            // Handle fijo en body — no le afecta el overflow del sidebar
+            const handle = document.createElement('div');
+            handle.id = 'mobile-sidebar-handle';
+            handle.innerHTML = '<span style="color:#5fb8ed;font-size:20px;line-height:1;pointer-events:none;">›</span>';
+            document.body.appendChild(handle);
+
+            let startX = 0;
+            let isOpen = false;
+
+            const setOpen = (open) => {
+                isOpen = open;
+                sidebar.style.transform = '';
+                if (open) {
+                    sidebar.classList.add('mobile-open');
+                    handle.style.left = (sidebar.offsetWidth || Math.round(window.innerWidth * 0.85)) + 'px';
+                    handle.innerHTML = '<span style="color:#5fb8ed;font-size:20px;line-height:1;pointer-events:none;">‹</span>';
+                } else {
+                    sidebar.classList.remove('mobile-open');
+                    handle.style.left = '0';
+                    handle.innerHTML = '<span style="color:#5fb8ed;font-size:20px;line-height:1;pointer-events:none;">›</span>';
+                }
             };
-            document.body.appendChild(toggleBtn);
+
+            const onTouchStart = (e) => {
+                e.preventDefault(); // bloquea el gesto de "volver atrás" de iOS
+                startX = e.touches[0].clientX;
+                sidebar.style.transition = 'none';
+            };
+
+            const onTouchMove = (e) => {
+                e.preventDefault(); // bloquea scroll de página durante el drag
+                const diff = e.touches[0].clientX - startX;
+                const sidebarW = sidebar.offsetWidth || Math.round(window.innerWidth * 0.85);
+                if (!isOpen && diff > 0) {
+                    const offset = Math.min(diff - sidebarW, 0);
+                    sidebar.style.transform = `translateX(${offset}px)`;
+                } else if (isOpen && diff < 0) {
+                    const offset = Math.max(diff, -sidebarW);
+                    sidebar.style.transform = `translateX(${offset}px)`;
+                }
+            };
+
+            const onTouchEnd = (e) => {
+                sidebar.style.transition = '';
+                handle.style.transition = '';
+                const diff = e.changedTouches[0].clientX - startX;
+                // Si el dedo apenas se movió → es un tap → toggle
+                if (Math.abs(diff) < 10) {
+                    setOpen(!isOpen);
+                    return;
+                }
+                const shouldOpen = isOpen ? diff >= -60 : diff >= 60;
+                setOpen(shouldOpen);
+            };
+
+            handle.addEventListener('touchstart', onTouchStart, { passive: false });
+            handle.addEventListener('touchmove', onTouchMove, { passive: false });
+            handle.addEventListener('touchend', onTouchEnd, { passive: true });
+            // Tap sin arrastre → toggle
+            handle.addEventListener('click', () => setOpen(!isOpen));
+
+            // Cerrar al tocar fuera del sidebar abierto
+            document.addEventListener('touchstart', (e) => {
+                if (isOpen && !sidebar.contains(e.target) && e.target.id !== 'mobile-sidebar-handle') {
+                    setOpen(false);
+                }
+            }, { passive: true });
         },
-        
+
         close() {
             const lista = document.querySelector('div.col-xl-3.col-md-4.col-12');
             lista?.classList.remove('mobile-open');
+            const handle = document.querySelector('#mobile-sidebar-handle');
+            if (handle) {
+                handle.style.left = '0';
+                handle.innerHTML = '<span style="color:#5fb8ed;font-size:20px;line-height:1;pointer-events:none;">›</span>';
+            }
         }
     };
 
@@ -1198,10 +2205,20 @@
                 bodyHTML += `<div class="server-group-title">${hostname}</div>`;
                 stacks.forEach(s => {
                     const iconUrl = getStackIconUrl(s.name);
+                    const stackData = stacksConfig.find(sc =>
+                        sc.name?.toLowerCase() === s.name?.toLowerCase() &&
+                        sc.endpoint?.toLowerCase() === (s.endpoint || 'Actual').toLowerCase()
+                    );
+                    const iconHtml = stackData?.url
+                        ? `<span class="stack-update-icon-wrap has-url" onclick="window.open('${stackData.url}', '_blank')">
+                            <img src="${iconUrl}" class="stack-update-icon stack-icon-normal" alt="${s.name}">
+                            <img src="/system-icons/open-external.svg" class="stack-update-icon stack-icon-hover" alt="abrir">
+                           </span>`
+                        : `<img src="${iconUrl}" class="stack-update-icon" alt="${s.name}">`;
                     bodyHTML += `
                         <div class="stack-update-row" data-stack="${s.name}" data-endpoint="${s.endpoint}">
-                            <img src="${iconUrl}" class="stack-update-icon" alt="${s.name}">
-                            <span class="stack-update-name">${s.name}</span>
+                            ${iconHtml}
+                            <span class="stack-update-name">${Utils.capitalizeFirst(s.name)}</span>
                             <span class="stack-update-status">⏳ Pendiente</span>
                         </div>
                     `;
@@ -1234,17 +2251,31 @@
                 
                 // Si ya está cancelando, completado, o inactivo, cerrar
                 if (this.isCancelling || this.isCompleted || !this.isActive) {
+                    // Parar cualquier verificación pendiente
+                    this.panel?.querySelectorAll('[data-checking-services="true"]').forEach(row => {
+                        row.dataset.checkingServices = 'false';
+                    });
                     this.close();
                     return;
                 }
                 
-                // Si está actualizando, cancelar
+                // Si está actualizando, cancelar (o cerrar si solo queda verificando)
                 if (this.isActive && this.hasStarted) {
-                    this.cancel();
-                    
-                    // En móvil solo minimizar
-                    if (window.innerWidth <= 700) {
-                        this.panel.classList.remove('open');
+                    const rows = this.panel?.querySelectorAll('[data-stack]');
+                    const allUpdated = rows && [...rows].every(r => 
+                        r.dataset.checkingServices === 'true' || 
+                        r.querySelector('.status-done, .status-error, .status-skipped')
+                    );
+                    if (allUpdated) {
+                        this.panel?.querySelectorAll('[data-checking-services="true"]').forEach(r => {
+                            r.dataset.checkingServices = 'false';
+                        });
+                        this.close();
+                    } else {
+                        this.cancel();
+                        if (window.innerWidth <= 700) {
+                            this.panel.classList.remove('open');
+                        }
                     }
                 }
             });
@@ -1314,18 +2345,11 @@
         updateButton() {
             const btn = document.querySelector('.btn-update-selected');
             if (!btn) return;
-            
             if (this.isActive) {
-                btn.textContent = '📋 Ver actualizaciones';
-                btn.onclick = (e) => {
-                    e.preventDefault();
-                    if (this.panel) {
-                        this.panel.classList.add('open');
-                    }
-                };
+                btn.style.display = 'none';
             } else {
                 btn.textContent = 'Actualizar seleccionadas';
-                // Restaurar listener original (se hace en addUpdateButtons)
+                syncBulkButtons();
             }
         },
 
@@ -1491,7 +2515,7 @@
             const card = checkbox?.closest('.stack-card-link');
             if (card) {
                 card.style.opacity = '0';
-                setTimeout(() => card.remove(), 300);
+                setTimeout(() => { card.remove(); syncBulkButtons(); }, 300);
             }
             
             // 3. Buscar hostname del endpoint
@@ -1647,10 +2671,12 @@
                 hideDockgeHomeBlock();
                 ensureDockmeRoot();
                 readAgentsFromDockgeDOM();
-                MetricsManager.ensureContainer();  
                 setTimeout(() => {
-                    DataLoader.loadAndDisplay();
-                    MetricsManager.start();
+                    Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
+                        MetricsManager.ensureContainer();
+                        DataLoader.loadAndDisplay();
+                        MetricsManager.start();
+                    });
                 }, 100);
             } else {
                 MetricsManager.stop();
@@ -1698,19 +2724,20 @@
         
         updateForRoute(path) {
             const esRaiz = path === '/';
+            const esMobil = window.innerWidth <= 700;
+
+            // Handle móvil: visible solo en la raíz
+            const mobileHandle = document.querySelector('#mobile-sidebar-handle');
+            if (mobileHandle) mobileHandle.style.display = esRaiz ? '' : 'none';
+
             this.styleElement.textContent = esRaiz
-                ? `
-                    div.col-xl-3.col-md-4.col-12 {
+                ? (esMobil ? '' :
+                    `div.col-xl-3.col-md-4.col-12 {
                         display: block !important;
-                        width: 350px !important;
+                        width: ${LayoutManager.getSidebarWidth()}px !important;
                         flex: 0 0 auto !important;
-                    }
-                `
-                : `
-                    div.col-xl-3.col-md-4.col-12 {
-                        display: none !important;
-                    }
-                `;
+                    }`)
+                : `div.col-xl-3.col-md-4.col-12 { display: none !important; }`;
             if (esRaiz) {
                 setTimeout(() => {
                     const input = document.querySelector('.search-input');
@@ -1821,7 +2848,10 @@
     }
     function getStackIconUrl(stackName) {
         if (!stackName) {
-            return `${CONFIG.BASE_URL}/icons/no-icon.svg`;
+            return `${CONFIG.BASE_URL}/system-icons/no-icon.svg`;
+        }
+        if (stackName.toLowerCase() === 'dockme') {
+            return `${CONFIG.BASE_URL}/system-icons/dockme.svg`;
         }
         return `${CONFIG.BASE_URL}/icons/${stackName}.svg?v=${dockmeIconVersion}`;
     }
@@ -1850,19 +2880,221 @@
         const old = editor.querySelector('.dockme-icon-error, .dockme-icon-success');
         if (old) old.remove();
     }
+    function setupSidebarResizeHandle() {
+        if (document.querySelector('#dockme-sidebar-handle')) return;
+        const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
+        const sidebarW = sidebar.offsetWidth;
+        if (!sidebar) return;
+
+        sidebar.style.position = 'relative';
+        const handle = document.createElement('div');
+        handle.id = 'dockme-sidebar-handle';
+        handle.className = 'dockme-sidebar-handle-el';
+        handle.style.cssText = ''; // limpiar — el CSS del #mobile-sidebar-handle lo gestiona
+        handle.innerHTML = '<span style="color:#5fb8ed;font-size:18px;line-height:1">›</span>';
+        sidebar.appendChild(handle);
+
+        let startX = 0;
+        let startW = 0;
+
+        const onMove = (clientX) => {
+            const diff = clientX - startX;
+            const newW = Math.max(200, Math.min(600, startW + diff));
+            sidebar.style.setProperty('width', newW + 'px', 'important');
+            const styleEl = document.querySelector('#estilo-columna-dinamico');
+            if (styleEl) {
+                styleEl.textContent = styleEl.textContent.replace(/width:\s*\d+px\s*!important/, `width: ${newW}px !important`);
+            }
+        };
+
+        const onEnd = () => {
+            document.removeEventListener('mousemove', mouseMove);
+            document.removeEventListener('mouseup', mouseUp);
+            document.removeEventListener('touchmove', touchMove);
+            document.removeEventListener('touchend', touchEnd);
+            saveBlockOrder();
+        };
+
+        const mouseMove = e => onMove(e.clientX);
+        const mouseUp = () => onEnd();
+        const touchMove = e => { e.preventDefault(); onMove(e.touches[0].clientX); };
+        const touchEnd = () => onEnd();
+
+        handle.addEventListener('mousedown', e => {
+            if (!document.body.classList.contains('dockme-organizing')) return;
+            e.preventDefault();
+            startX = e.clientX;
+            startW = sidebar.offsetWidth;
+            document.addEventListener('mousemove', mouseMove);
+            document.addEventListener('mouseup', mouseUp);
+        });
+
+        handle.addEventListener('touchstart', e => {
+            if (!document.body.classList.contains('dockme-organizing')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            startX = e.touches[0].clientX;
+            startW = sidebar.offsetWidth;
+            document.addEventListener('touchmove', touchMove, { passive: false });
+            document.addEventListener('touchend', touchEnd);
+        }, { passive: false });
+    }
     function insertEditStacksIcon() {
         const headerTop = document.querySelector('.header-top');
         if (!headerTop) return;
-        if (headerTop.querySelector('.dockme-edit-stacks-icon')) return;
-        const icon = document.createElement('div');
-        icon.className = 'dockme-edit-stacks-icon';
-        icon.title = 'Editar stacks';
-        icon.textContent = '✏️';
-        icon.addEventListener('click', () => {
-            dockmeEditMode = !dockmeEditMode;
-            updateEditModeToggleUI();
+        if (document.querySelector('.dockme-header-icons')) return;
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'dockme-header-icons';
+
+        // Icono lápiz — edición de stacks
+        const editIcon = document.createElement('div');
+        editIcon.className = 'dockme-edit-stacks-icon';
+        editIcon.title = 'Configuración Dockme';
+        editIcon.innerHTML = '<img src="/system-icons/dockme-edit.svg" style="width:24px;height:24px;vertical-align:middle;">';
+        editIcon.addEventListener('click', () => {
+            // Cerrar modo organizar si está activo
+            const row = document.querySelector('#dockme-blocks-row');
+            if (row?.classList.contains('organizing')) {
+                row.classList.remove('organizing');
+                document.body.classList.remove('dockme-organizing');
+                organizeIcon.classList.remove('active');
+                row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => { el.draggable = false; });
+                document.querySelector('#dockme-profile-bar')?.remove();
+                layoutDirty = false;
+            }
+            if (!RouteManager.isRootPath()) {
+                window.history.pushState({}, '', '/');
+                window.dispatchEvent(new Event('popstate'));
+                setTimeout(() => {
+                    dockmeEditMode = true;
+                    updateEditModeToggleUI();
+                }, 400);
+            } else {
+                dockmeEditMode = !dockmeEditMode;
+                updateEditModeToggleUI();
+            }
         });
-        headerTop.prepend(icon);
+
+        // Icono reordenar — organizar dashboard
+        const organizeIcon = document.createElement('div');
+        organizeIcon.className = 'dockme-organize-icon';
+        organizeIcon.title = 'Organizar dashboard';
+        organizeIcon.innerHTML = '<img src="/system-icons/reordenar.svg" style="width:24px;height:24px;vertical-align:middle;">';
+        organizeIcon.addEventListener('click', () => {
+            // Cerrar modo edición si está activo y activar organizar
+            if (dockmeEditMode) {
+                dockmeEditMode = false;
+                updateEditModeToggleUI();
+                // Activar modo organizar tras cerrar edición
+                setTimeout(() => {
+                    const row = document.querySelector('#dockme-blocks-row');
+                    if (!row) return;
+                    row.classList.add('organizing');
+                    document.body.classList.add('dockme-organizing');
+                    organizeIcon.classList.add('active');
+                    row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => { el.draggable = true; });
+                    layoutDirty = false;
+                    renderProfileBar();
+                }, 300);
+                return;
+            }
+            if (!RouteManager.isRootPath()) {
+                window.history.pushState({}, '', '/');
+                window.dispatchEvent(new Event('popstate'));
+                setTimeout(() => {
+                    const row = document.querySelector('#dockme-blocks-row');
+                    if (row) {
+                        row.classList.add('organizing');
+                        organizeIcon.classList.add('active');
+                        row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
+                            el.draggable = true;
+                        });
+                    }
+                }, 600);
+            } else {
+                const row = document.querySelector('#dockme-blocks-row');
+                if (!row) return;
+                const isOrganizing = row.classList.toggle('organizing');
+                document.body.classList.toggle('dockme-organizing', isOrganizing);
+                organizeIcon.classList.toggle('active', isOrganizing);
+                row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
+                    el.draggable = isOrganizing;
+                });
+                if (isOrganizing) {
+                    layoutDirty = false;
+                    renderProfileBar();
+                } else {
+                    document.querySelector('#dockme-profile-bar')?.remove();
+                    if (layoutDirty) {
+                        // Recargar perfil guardado descartando cambios
+                        layoutDirty = false;
+                        const blocks = LayoutManager.getActiveBlocks();
+                        LayoutManager.applyToLinksConfig(blocks);
+                        DataLoader.loadAndDisplay();
+                    }
+                }
+            }
+        });
+
+        // Botón Novedades en header
+        const mostrarNovedades = (currentVersion, udata) => {
+            const hosts = Array.isArray(udata) ? udata : [];
+            const localHost = hosts.find(h => (h.endpoint || '').toLowerCase() === 'actual');
+            if (!currentVersion || !localHost) return;
+            if (localHost.release === currentVersion) return;
+            const novedadesIcon = document.createElement('button');
+            novedadesIcon.className = 'btn-novedades-dockme';
+            novedadesIcon.title = `Novedades v${currentVersion}`;
+            novedadesIcon.innerHTML = '📣 Novedades';
+            novedadesIcon.addEventListener('click', async () => {
+                window.open('https://github.com/fernandeusto/dockme/releases', '_blank');
+                localHost.release = currentVersion;
+                novedadesIcon.remove();
+                await fetch('/api/set-release-version', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ version: currentVersion })
+                });
+            });
+            if (window.innerWidth > 700) wrapper.prepend(novedadesIcon);
+        };
+        Promise.all([
+            fetch('/api/get-version').then(r => r.json()),
+            fetch('/config/updates.json').then(r => r.json())
+        ]).then(([vdata, udata]) => {
+            const hosts = Array.isArray(udata) ? udata : [];
+            const localHost = hosts.find(h => (h.endpoint || '').toLowerCase() === 'actual');
+            mostrarNovedades(vdata.version, udata);
+        }).catch(err => console.error('[Novedades] error:', err));
+
+        wrapper.appendChild(editIcon);
+        wrapper.appendChild(organizeIcon);
+        const isMobile = window.innerWidth <= 700;
+
+        if (isMobile) {
+            const insertAfterToggle = () => {
+                const mobileToggle = document.querySelector('.mobile-menu-toggle');
+                if (mobileToggle) {
+                    mobileToggle.after(wrapper);
+                } else {
+                    setTimeout(insertAfterToggle, 100);
+                }
+            };
+            insertAfterToggle();
+        } else {
+            const navPills = document.querySelector('header .nav.nav-pills');
+            const lastLi = navPills?.querySelector('li:last-child');
+            if (lastLi) {
+                const wrapperLi = document.createElement('li');
+                wrapperLi.className = 'nav-item me-2';
+                wrapperLi.appendChild(wrapper);
+                navPills.insertBefore(wrapperLi, lastLi);
+            } else {
+                headerTop.prepend(wrapper);
+            }
+        }
+        setTimeout(() => setupSidebarResizeHandle(), 500);
     } 
     function updateEditModeToggleUI() {
         const icon = document.querySelector('.dockme-edit-stacks-icon');
@@ -1870,15 +3102,35 @@
         if (dockmeEditMode) {
             icon.classList.add('active');
             icon.title = 'Salir de edición';
+            document.body.classList.add('dockme-edit-mode');
+            dockmeEditModeFilterBackup = MetricsManager.filterActive ? MetricsManager.currentFilter : null;
+            document.querySelectorAll('a.item').forEach(item => {
+                item.style.display = '';
+            });
             hideDashboardContainer();
-            showStackEditorPlaceholder();
+            MobileMenu.close();
+            showConfigPanel('stacks');
         } else {
             icon.classList.remove('active');
-            icon.title = 'Editar stacks';
+            icon.title = 'Configurar Dockme';
+            document.body.classList.remove('dockme-edit-mode');
+            // Restaurar filtro de servidor si estaba activo antes de editar
+            if (dockmeEditModeFilterBackup) {
+                MetricsManager.applyHostFilter(dockmeEditModeFilterBackup);
+            } else {
+                document.querySelectorAll('a.item').forEach(item => {
+                    item.style.display = '';
+                });
+            }
+            dockmeEditModeFilterBackup = null;
             hideStackEditor();
-            showDashboardContainer();
+            MobileMenu.close();
             RecentManager.add();
-            DataLoader.loadAndDisplay();
+            API.loadUpdates().then(data => State.setUpdatesData(data));
+            Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
+                showDashboardContainer();
+                DataLoader.loadAndDisplay();
+            });
             dockmeIconVersion = Date.now();
             localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
         }
@@ -1906,29 +3158,126 @@
         if (dashboard) dashboard.style.display = '';
         MetricsManager.start();
     }
-    function showStackEditorPlaceholder() {
-        let editor = document.querySelector('#dockme-stack-editor');
-        if (editor) return;
-        editor = document.createElement('div');
-        editor.id = 'dockme-stack-editor';
-        editor.innerHTML = `
-            <div class="shadow-box big-padding">
-                <h2>Editar stacks</h2>
+    function addFavFilterBtn(editor, active = false) {
+        if (!stacksConfig.some(s => s.favorite)) return;
+        const panel = document.querySelector('#dockme-stack-editor');
+        if (!panel) return;
+        const h2 = editor?.querySelector('h2');
+        if (!h2 || panel.querySelector('.dockme-fav-filter-btn')) return;
+        const btn = document.createElement('button');
+        btn.className = `btn dockme-fav-filter-btn ${active ? 'btn-primary' : 'btn-normal'}`;
+        btn.textContent = '⭐ Solo favoritos';
+        btn.style.marginLeft = '15px';
+        btn.dataset.active = active ? 'true' : 'false';
+        btn.addEventListener('click', () => {
+            const isActive = btn.dataset.active === 'true';
+            btn.dataset.active = String(!isActive);
+            btn.classList.toggle('btn-primary', !isActive);
+            btn.classList.toggle('btn-normal', isActive);
+            document.querySelectorAll('a.item').forEach(item => {
+                const href = item.getAttribute('href') || '';
+                const match = href.match(/^\/compose\/([^/]+)(?:\/([^/]+))?/);
+                if (!match) { item.style.display = isActive ? '' : 'none'; return; }
+                const nombre = match[1];
+                const endpoint = match[2] || 'Actual';
+                const esFav = stacksConfig.some(s =>
+                    s.name?.toLowerCase() === nombre.toLowerCase() &&
+                    s.endpoint?.toLowerCase() === endpoint.toLowerCase() &&
+                    s.favorite
+                );
+                item.style.display = (!isActive && !esFav) ? 'none' : '';
+            });
+        });
+        h2.appendChild(btn);
+    }
+    function showConfigPanel(defaultTab = 'stacks') {
+        let panel = document.querySelector('#dockme-stack-editor');
+        if (panel) {
+            // Ya existe, solo cambiar tab
+            switchConfigTab(defaultTab);
+            return;
+        }
+        panel = document.createElement('div');
+        panel.id = 'dockme-stack-editor';
+        panel.className = 'dockme-stack-editor-container shadow-box';
+        panel.innerHTML = `
+            <div class="config-panel-header">
+                <h2 class="dashboard-section-title"><img src="/system-icons/dockme-edit.svg" style="width:24px;height:24px;vertical-align:sub;margin-right:6px;">Configuración Dockme</h2>
+                <button class="config-panel-close" title="Cerrar">×</button>
+            </div>
+            <div class="config-tabs">
+                <button class="config-tab active" data-tab="stacks">⚙️ Stacks</button>
+                <button class="config-tab" data-tab="servidores">🖥️ Servidores</button>
+                <button class="config-tab" data-tab="links">🔗 Links</button>
+            </div>
+            <div class="config-content active" id="config-tab-stacks">
                 <p>Selecciona un stack de la lista izquierda para editar sus datos.</p>
             </div>
+            <div class="config-content" id="config-tab-servidores"></div>
+            <div class="config-content" id="config-tab-links">
+                <p>Próximamente...</p>
+            </div>
         `;
+
+        // Listeners de tabs
+        panel.querySelectorAll('.config-tab').forEach(btn => {
+            btn.addEventListener('click', () => {
+                switchConfigTab(btn.dataset.tab);
+            });
+        });
+        panel.querySelector('.config-panel-close').addEventListener('click', () => {
+            dockmeEditMode = false;
+            updateEditModeToggleUI();
+        });
         const dashboard = document.querySelector('#dockme-dashboard');
-        if (dashboard) {
-            dashboard.before(editor);
+        if (dashboard) dashboard.before(panel);
+
+        switchConfigTab(defaultTab);
+    }
+
+    function showStackEditorPlaceholder() {
+        showConfigPanel('stacks');
+    }
+
+    function switchConfigTab(tab) {
+        const panel = document.querySelector('#dockme-stack-editor');
+        if (!panel) return;
+        panel.querySelectorAll('.config-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tab === tab);
+        });
+        panel.querySelectorAll('.config-content').forEach(content => {
+            content.classList.toggle('active', content.id === `config-tab-${tab}`);
+        });
+        // Cargar contenido del tab si está vacío
+        if (tab === 'servidores') {
+            const container = panel.querySelector('#config-tab-servidores');
+            if (container && !container.dataset.loaded) {
+                container.dataset.loaded = 'true';
+                renderServidoresTab(container);
+            }
+        }
+        if (tab === 'links') {
+            const container = panel.querySelector('#config-tab-links');
+            if (container) {
+                container.dataset.loaded = 'true';
+                renderLinksTab(container);
+            }
         }
     }
-    function showStackEditorForStack(stackName) {
-        let editor = document.querySelector('#dockme-stack-editor');
-        if (!editor) {
-            showStackEditorPlaceholder();
-            editor = document.querySelector('#dockme-stack-editor');
-            if (!editor) return;
+    function showStackEditorForStack(stackName, endpoint = 'Actual') {
+        // Asegurar que el panel existe y el tab stacks está activo
+        if (!document.querySelector('#dockme-stack-editor')) {
+            showConfigPanel('stacks');
+        } else {
+            switchConfigTab('stacks');
         }
+        const editor = document.querySelector('#config-tab-stacks');
+        if (!editor) return;
+
+        // Guardar estado del botón favoritos antes de reemplazar HTML
+        const favBtn = document.querySelector('.dockme-fav-filter-btn');
+        const favBtnActive = favBtn?.dataset.active === 'true';
+
         if (stackName.toLowerCase() === 'dockme') {
             editor.innerHTML = `
                 <h2>Editar datos del stack</h2>
@@ -1940,21 +3289,47 @@
                     o salir del modo edición usando el botón ✏️.
                 </div>
             `;
+            addFavFilterBtn(editor, favBtnActive);
             return;
         }
         editor.innerHTML = `
             <h2>Editar datos del stack</h2>
+            <div class="dockme-editor-hint">
+                👉 Puedes seleccionar otro stack para seguir editando sus datos,
+                o salir del modo edición usando el botón ✏️.
+            </div>
             <div class="dockme-editor-header">
                 <div class="dockme-icon-preview">
                     <img src="${getStackIconUrl(stackName)}" alt="Icono de ${stackName}">
                 </div>
-                <div class="dockme-stack-name">
-                    ${Utils.capitalizeFirst(stackName)}
+                <div>
+                    <div class="dockme-stack-name">
+                        ${Utils.capitalizeFirst(stackName)}
+                        <span class="dockme-favorite-star" title="Marcar como favorito">★</span>
+                    </div>
+                    ${(() => {
+                        const serverHostname = State.updatesDataGlobal?.find(h =>
+                            h.endpoint?.toLowerCase() === endpoint.toLowerCase()
+                        )?.hostname || (endpoint === 'Actual' ? '' : endpoint);
+                        return serverHostname ? `<div class="stack-hostname">${serverHostname}</div>` : '';
+                    })()}
                 </div>
             </div>
             <div class="dockme-icon-editor">
+                <label class="dockme-icon-label">URL del servicio</label>
+                <div class="dockme-icon-input-row">
+                    <input
+                        type="text"
+                        class="dockme-service-url-input"
+                        placeholder="https://servicio.midominio.com"
+                    />
+                    <span class="dockme-icon-status service-url"></span>
+                </div>
+            </div>            
+            <div class="dockme-icon-editor">
                 <label class="dockme-icon-label">URL del icono (SVG)</label>
                 <div class="dockme-icon-input-row">
+                    <img src="/system-icons/subir-icono.svg" class="dockme-icon-upload-btn" title="Subir icono local (SVG)" style="height:32px;width:32px;cursor:pointer;margin-right:8px;flex-shrink:0;">
                     <input
                         type="text"
                         class="dockme-icon-url-input"
@@ -1962,89 +3337,155 @@
                     />
                     <span class="dockme-icon-status url"></span>
                 </div>
-                <button class="btn btn-normal dockme-icon-upload-btn">
-                    Subir icono local (SVG)
-                </button>
-                <span class="dockme-icon-status upload"></span>
                 <input
                     type="file"
                     class="dockme-icon-file-input"
                     accept=".svg"
                     style="display:none"
                 />
-            </div>
-            <div class="dockme-editor-hint">
+                <div class="dockme-editor-hint">
                 👉 Solo se admiten iconos en formato <strong>SVG</strong>.
                 Si lo tienes en otro formato, puedes convertirlo online en
                 <a href="https://www.freeconvert.com/es/png-to-svg" target="_blank" rel="noopener noreferrer">
                     freeconvert.com
                 </a>
+                 Tambien tienes un monton de iconos gratuitos para servicios autohospedados en
+                <a href="https://selfh.st/icons/" target="_blank" rel="noopener noreferrer">
+                    Self-Hosted Dashboard Icons
+                </a>
+                 que puedes usar directamente copiando la URL del SVG.
             </div>
-            <div class="dockme-editor-hint">
-                👉 Puedes seleccionar otro stack para seguir editando sus datos,
-                o salir del modo edición usando el botón ✏️.
             </div>
+
+
         `;
-//      URL SVG
+        addFavFilterBtn(editor, favBtnActive);
+//      Cargar datos actuales del stack
+        fetch(`/api/get-stack?name=${encodeURIComponent(stackName)}&endpoint=${encodeURIComponent(endpoint)}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.stack) {
+                    const serviceInput = editor.querySelector('.dockme-service-url-input');
+                    if (serviceInput && data.stack.url) serviceInput.value = data.stack.url;
+                    const star = editor.querySelector('.dockme-favorite-star');
+                    if (star) {
+                        star.classList.toggle('active', !!data.stack.favorite);
+                    }
+                }
+            })
+            .catch(() => {});
+//      Estrella favorito
+        const star = editor.querySelector('.dockme-favorite-star');
+        if (star) {
+            star.addEventListener('click', () => {
+                const isFav = star.classList.contains('active');
+                fetch('/api/set-stack', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: stackName, endpoint, favorite: !isFav })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        star.classList.toggle('active', !isFav);
+                        loadStacksConfig().then(() => {
+                            const favBtn = editor.querySelector('.dockme-fav-filter-btn');
+                            const wasActive = favBtn?.dataset.active === 'true';
+                            if (favBtn) favBtn.remove();
+                            addFavFilterBtn(editor, wasActive);
+                            // Reaplicar filtro de favoritos si estaba activo
+                            if (wasActive) {
+                                document.querySelectorAll('a.item').forEach(item => {
+                                    const href = item.getAttribute('href') || '';
+                                    const match = href.match(/^\/compose\/([^/]+)(?:\/([^/]+))?/);
+                                    if (!match) { item.style.display = 'none'; return; }
+                                    const nombre = match[1];
+                                    const endpoint = match[2] || 'Actual';
+                                    const esFav = stacksConfig.some(s =>
+                                        s.name?.toLowerCase() === nombre.toLowerCase() &&
+                                        s.endpoint?.toLowerCase() === endpoint.toLowerCase() &&
+                                        s.favorite
+                                    );
+                                    item.style.display = esFav ? '' : 'none';
+                                });
+                            }
+                        });
+                    }
+                })
+                .catch(() => {});
+            });
+        }
+        // URL del servicio
+        const serviceInput = editor.querySelector('.dockme-service-url-input');
+        const handleServiceUrlSave = () => {
+            let url = serviceInput.value.trim();
+            if (url && !url.match(/^https?:\/\//)) {
+                url = 'http://' + url;
+                serviceInput.value = url;
+            }
+            fetch('/api/set-stack', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: stackName, endpoint, url })
+            })
+            .then(r => r.json())
+            .then(data => {
+                setIconStatus(editor, 'service-url', data.success, data.success ? '' : 'Error al guardar');
+                if (data.success) {
+                    setTimeout(() => {
+                        const status = editor.querySelector('.dockme-icon-status.service-url');
+                        if (status) { status.textContent = ''; status.className = 'dockme-icon-status service-url'; }
+                    }, 2000);
+                }
+            })
+            .catch(() => {
+                setIconStatus(editor, 'service-url', false, 'Error de conexión');
+            });
+        };
+        serviceInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); handleServiceUrlSave(); }
+        });
+        serviceInput.addEventListener('paste', () => {
+            setTimeout(handleServiceUrlSave, 50);
+        });
+        // URL SVG
         const urlInput = editor.querySelector('.dockme-icon-url-input');
         const handleUrlApply = () => {
             const url = urlInput.value.trim();
             if (!url || !url.toLowerCase().endsWith('.svg')) {
-                setIconStatus(
-                    editor,
-                    'url',
-                    false,
-                    'La URL debe apuntar a un archivo SVG'
-                );
+                setIconStatus(editor, 'url', false, 'La URL debe apuntar a un archivo SVG');
                 return;
             }
             fetch('/api/stack-icon', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    stack: stackName,
-                    type: 'url',
-                    url
-                })
+                body: JSON.stringify({ stack: stackName, type: 'url', url })
             })
             .then(res => res.json())
             .then(data => {
                 if (!data.success) {
-                    setIconStatus(
-                        editor,
-                        'url',
-                        false,
-                        data.error || 'Error al actualizar el icono'
-                    );
+                    setIconStatus(editor, 'url', false, data.error || 'Error al actualizar el icono');
                     return;
                 }
                 setIconStatus(editor, 'url', true);
+                setTimeout(() => {
+                    const status = editor.querySelector('.dockme-icon-status.url');
+                    if (status) { status.textContent = ''; status.className = 'dockme-icon-status url'; }
+                }, 2000);
                 dockmeIconVersion = Date.now();
                 localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
                 const preview = editor.querySelector('.dockme-icon-preview');
                 if (preview) {
-                    preview.innerHTML = `
-                        <img src="${getStackIconUrl(stackName)}" alt="Icono de ${stackName}">
-                    `;
+                    preview.innerHTML = `<img src="${getStackIconUrl(stackName)}" alt="Icono de ${stackName}">`;
                 }
             })
             .catch(() => {
-                setIconStatus(
-                    editor,
-                    'url',
-                    false,
-                    'Error de conexión'
-                );
+                setIconStatus(editor, 'url', false, 'Error de conexión');
             });
         };
-        // Enter
         urlInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                handleUrlApply();
-            }
+            if (e.key === 'Enter') { e.preventDefault(); handleUrlApply(); }
         });
-        // Paste
         urlInput.addEventListener('paste', () => {
             setTimeout(handleUrlApply, 50);
         });
@@ -2088,9 +3529,10 @@
     function handleEditStackSelection(href) {
         const parts = href.split('/').filter(Boolean);
         const stackName = parts[1];
+        const endpoint  = parts[2] || 'Actual';
         if (!stackName) return;
         MobileMenu.close();
-        showStackEditorForStack(stackName);
+        showStackEditorForStack(stackName, endpoint);
     }
     function hideDockgeHomeBlock() {
         const h1s = document.querySelectorAll('h1.mb-3');
@@ -2266,15 +3708,25 @@
         intervalId: null,
         filterActive: false,
         currentFilter: null,
+        lastCheckStatus: {},
         formatUptime(seconds) {
             if (!seconds || seconds < 0) return 'Desconectado';
             const days = Math.floor(seconds / 86400);
             const hours = Math.floor((seconds % 86400) / 3600);
             const minutes = Math.floor((seconds % 3600) / 60);
-            if (days > 0) return `Activo ${days} día${days > 1 ? 's' : ''}`;
-            if (hours > 0) return `Activo ${hours}h`;
-            if (minutes > 0) return `Activo ${minutes} min`;
-            return 'Activo 1 min';
+            if (days > 0) return `${days} día${days > 1 ? 's' : ''}`;
+            if (hours > 0) return `${hours}h`;
+            if (minutes > 0) return `${minutes} min`;
+            return '1 min';
+        },
+
+        formatLastCheck(isoDate) {
+            if (!isoDate) return '';
+            const diff = Math.floor((Date.now() - new Date(isoDate).getTime()) / 1000);
+            if (diff < 60) return 'ahora';
+            if (diff < 3600) return `hace ${Math.floor(diff / 60)} min`;
+            if (diff < 86400) return `hace ${Math.floor(diff / 3600)}h`;
+            return `hace ${Math.floor(diff / 86400)} días`;
         },
 
         hasDockmeUpdate(endpoint) {
@@ -2320,9 +3772,7 @@
                 const uptime = this.formatUptime(metrics.uptime_seconds);
                 const uptimeClass = status === 'ok' ? 'active' : 'disconnected';
                 const version = metrics.version || 'unknown';
-                const versionDisplay = version !== 'unknown' 
-                    ? `<span class="metric-version">v${version}</span>` 
-                    : '';
+                if (endpoint.toLowerCase() === 'actual' && version !== 'unknown') window.lastMetricsVersion = version;
                 const cpuClass = this.getColorClass(metrics.cpu, 'cpu');
                 const memClass = this.getColorClass(metrics.memory, 'memory');
                 const tempClass = this.getColorClass(metrics.temp_cpu, 'temp');
@@ -2331,37 +3781,97 @@
                 const hasDockmeUpdate = this.hasDockmeUpdate(endpoint);
                 const isUpdating = window.dockmeUpdatesInProgress?.[endpoint];
                 const showUpdateBtn = hasDockmeUpdate && !isUpdating;
-
+                const versionDisplay = version !== 'unknown' && !showUpdateBtn
+                    ? `<span class="metric-version">v${version}</span>` 
+                    : '';
+                // Updates info
+                const checkStatus = metrics.check_status || 'idle';
+                const checkPercent = metrics.check_percent || 0;
+                const checkUpdates = metrics.check_updates || 0;
+                const pruneSpace = metrics.prune_space || '';
+                const checkLast = metrics.check_last || '';
+                const checkLastTooltip = checkLast ? (() => {
+                    const diff = Math.floor((Date.now() - new Date(checkLast).getTime()) / 60000);
+                    let t = '';
+                    if (diff < 60) t = `Último chequeo hace ${diff} min`;
+                    else if (diff < 1440) t = `Último chequeo hace ${Math.floor(diff / 60)}h`;
+                    else t = `Último chequeo hace ${Math.floor(diff / 1440)}d`;
+                    return t;
+                })() : '';
+                const updatesLabel = checkStatus === 'checking'
+                    ? `<span class="metric-value warning">Comprobando ${checkPercent}%</span>`
+                    : checkLast
+                        ? `<span class="metric-value ${checkUpdates > 0 ? 'danger' : 'normal'}" title="${checkLastTooltip}">${checkUpdates > 0 ? checkUpdates + ' pendientes' : '✓ Al día'}</span>`
+                        : `<span class="metric-value">--</span>`;
+                // Obtener uiUrl e icono del servidor
+                const serverEntry = State.updatesDataGlobal?.find(h =>
+                    h.endpoint?.toLowerCase() === endpoint.toLowerCase()
+                );
+                const uiUrl = serverEntry?.uiUrl || '';
+                const serverIconUrl = `/icons/server-${hostname}.svg`;
+                const serverIconHtml = `
+                    <span class="metric-server-icon-wrap${uiUrl ? ' has-url' : ''}" 
+                          title="${uiUrl ? 'Abrir UI del servidor' : 'Configurar servidor'}">
+                        <img src="${serverIconUrl}" class="metric-server-icon stack-icon-normal" alt="${hostname}"
+                            onerror="this.src='/system-icons/no-icon.svg'">
+                        <img src="${uiUrl ? '/system-icons/open-external.svg' : '/system-icons/dockme-edit.svg'}" 
+                            class="metric-server-icon stack-icon-hover" alt="acción">
+                    </span>
+                `;
                 card.innerHTML = `
                     <div class="metric-header">
-                        <span class="metric-hostname">${hostname}${versionDisplay}</span>
-                        <button class="btn-update-dockme" data-endpoint="${endpoint}" style="display: ${showUpdateBtn ? '' : 'none'}">🚀 Actualizar</button>
-                        <span class="metric-uptime ${uptimeClass}" style="display: ${showUpdateBtn ? 'none' : ''}">${uptime}</span>
+                        <span style="display:flex;align-items:center;gap:8px;">
+                            ${serverIconHtml}
+                            <span class="metric-hostname">${hostname}${versionDisplay}</span>
+                        </span>
+                        <button class="btn-update-dockme" data-endpoint="${endpoint}" style="display: ${showUpdateBtn ? '' : 'none'}">Actualizar <img src="/system-icons/dockme.svg" style="width:20px;height:20px;vertical-align:text-top;"></button>
                     </div>
                     <div class="metric-row">
-                        <span class="metric-label">CPU:</span>
-                        <span class="metric-value ${cpuClass}">${metrics.cpu}%</span>
+                        <span class="metric-label">Activo:&nbsp;<span class="metric-uptime ${uptimeClass}">${uptime}</span></span>
+                        <span class="metric-label">CPU: <span class="metric-value ${cpuClass}">${metrics.cpu}%</span></span>
                     </div>
                     <div class="metric-row">
-                        <span class="metric-label">RAM:</span>
-                        <span class="metric-value ${memClass}">${metrics.memory}%</span>
+                        <span class="metric-label">Temp:&nbsp;<span class="metric-value ${tempClass}">${metrics.temp_cpu != null ? metrics.temp_cpu + '°C' : '----'}</span></span>
+                        <span class="metric-label">RAM: <span class="metric-value ${memClass}" >${metrics.memory}%</span></span>
                     </div>
                     <div class="metric-row">
-                        <span class="metric-label">Temp:</span>
-                        <span class="metric-value ${tempClass}">${metrics.temp_cpu != null ? metrics.temp_cpu + '°C' : '----'}</span>
-                    </div>
-                    <div class="metric-row">
-                        <span class="metric-label">🐋 Contenedores:</span>
-                        <span>
+                        <span class="metric-label">Contenedores:</span>
+                        <span style="display:flex;align-items:center;gap:6px;">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.5;flex-shrink:0"><polygon points="5,3 19,12 5,21"/></svg>
                             <span class="metric-docker">${metrics.docker_running}</span>
-                            ${
-                                metrics.docker_stopped > 0
-                                    ? ` / <span class="metric-stopped">${metrics.docker_stopped}</span>`
-                                    : ''
-                            }
+                            ${metrics.docker_stopped > 0 ? `
+                            / 
+                            <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.5;flex-shrink:0"><rect x="4" y="4" width="16" height="16"/></svg>
+                            <span class="metric-stopped">${metrics.docker_stopped}</span>` : ''}
                         </span>
                     </div>
+                    <div class="metric-row">
+                        <span class="metric-label">Actualizaciones:</span>
+                        <span style="display:flex;align-items:center;gap:6px;">
+                            ${updatesLabel}
+                            <img src="/system-icons/check-updates.svg" class="btn-check-now" data-endpoint="${endpoint}" title="Comprobar ahora" style="cursor:pointer;width:18px;height:18px;opacity:0.7;${checkStatus === 'checking' ? 'display:none;' : ''}" />
+                        </span>
+                    </div>
+                    ${pruneSpace ? `
+                    <div class="metric-row">
+                        <span class="metric-label">Limpieza de docker:</span>
+                        <span class="metric-value normal">${pruneSpace}&nbsp;&nbsp;🧹</span>
+                    </div>` : ''}
                 `;
+                const iconWrap = card.querySelector('.metric-server-icon-wrap');
+                if (iconWrap && !uiUrl) {
+                    iconWrap.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        dockmeEditMode = true;
+                        updateEditModeToggleUI();
+                        setTimeout(() => switchConfigTab('servidores'), 50);
+                    });
+                } else if (iconWrap && uiUrl) {
+                    iconWrap.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        window.open(uiUrl, '_blank');
+                    });
+                }
             }
 
             // Click para filtrar
@@ -2374,6 +3884,9 @@
                     this.clearHostFilter();
                     return;
                 }
+                // Deseleccionar todas al cambiar filtro
+                document.querySelectorAll('.stack-checkbox:checked').forEach(cb => cb.checked = false);
+                syncBulkButtons();
                 // Click sobre otro host → activar / cambiar filtro
                 this.applyHostFilter(hostname);
             });
@@ -2394,18 +3907,27 @@
             if (btnUpdate) {
                 btnUpdate.addEventListener('click', (e) => {
                     e.stopPropagation();
-
-                    // Ocultar este botón específico y mostrar uptime
                     btnUpdate.style.display = 'none';
-                    const uptimeSpan = card.querySelector('.metric-uptime');
-                    if (uptimeSpan) uptimeSpan.style.display = '';
-                    
                     EventHandlers.updateDockme(endpoint);
                 });
             
                 btnUpdate.addEventListener('mouseenter', (e) => {
                     e.stopPropagation();
                     btnUpdate.title = 'Actualizar Dockme en este servidor';
+                });
+            }
+            // Listener del botón comprobar actualizaciones ahora
+            const btnCheckNow = card.querySelector('.btn-check-now');
+            if (btnCheckNow) {
+                btnCheckNow.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    btnCheckNow.style.display = 'none';
+                    const targetUrl = endpoint.toLowerCase() === 'actual'
+                        ? '/api/run-check'
+                        : `http://${endpoint}/api/run-check`;
+                    try {
+                        await fetch(targetUrl, { method: 'POST' });
+                    } catch {}
                 });
             }
 
@@ -2425,11 +3947,10 @@
 
             const cardsContainer = this.container.querySelector('.metrics-container');
             if (!cardsContainer) return;
-
-            cardsContainer.innerHTML = '';
-
+            
             const connectedEndpoints = AgentsState.agents.map(a => a.endpoint.toLowerCase());
-
+            cardsContainer.innerHTML = '';
+            let needsReload = false;
             data.hosts.forEach(host => {
                 // Solo mostrar si está conectado en Dockge
                 if (!connectedEndpoints.includes(host.endpoint.toLowerCase())) {
@@ -2443,7 +3964,37 @@
                     host.endpoint
                 );
                 cardsContainer.appendChild(card);
+                // Quitar minHeight fijo una vez cargadas las tarjetas
+                const metricsBox = document.querySelector('#metrics-box');
+                if (metricsBox) metricsBox.style.minHeight = '';
+
+                // Detectar fin de check O bajada de updates pendientes → recargar dashboard
+                const prev = this.lastCheckStatus[host.endpoint] || { status: 'idle', updates: null };
+                const currStatus = host.metrics?.check_status || 'idle';
+                const currUpdates = host.metrics?.check_updates ?? null;
+
+                const checkFinished = prev.status === 'checking' && currStatus === 'idle';
+                const updatesChanged = prev.updates !== null && currUpdates !== null && currUpdates !== prev.updates;
+
+                if (checkFinished || updatesChanged) {
+                    needsReload = true;
+                }
+                this.lastCheckStatus[host.endpoint] = { status: currStatus, updates: currUpdates };
             });
+
+            // Recargar dashboard una sola vez si algún check terminó
+            if (needsReload) {
+                needsReload = false;
+                MetricsManager.stop();
+                MetricsManager.container = null;
+                API.loadUpdates().then(updatesData => {
+                    State.setUpdatesData(updatesData);
+                    Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
+                        DataLoader.loadAndDisplay();
+                        setTimeout(() => MetricsManager.start(), 500);
+                    });
+                });
+            }
             this.updateManageButton();
             if (this.filterActive && this.currentFilter) {
                 this.updateSelectedCard(this.currentFilter);
@@ -2459,29 +4010,24 @@
             const agents = AgentsState.getAgents();
             const detected = getDetectedServers();
             
-            const shouldShowBtn = agents.length > 1 || detected.length > 0;
-            
-            let manageBtn = header.querySelector('.dockme-manage-btn');
-            
-            if (shouldShowBtn && !manageBtn) {
-                manageBtn = document.createElement('button');
-                manageBtn.className = 'btn btn-normal dockme-manage-btn';
-                manageBtn.textContent = '⚙️ Gestionar';
-                manageBtn.addEventListener('click', showAgentsManager);
-                const title = header.querySelector('.metrics-section-title');
-                title.after(manageBtn);
-                
-            } else if (!shouldShowBtn && manageBtn) {
-                manageBtn.remove();
-            }
+            // Botón Gestionar eliminado — sustituido por tab Servidores en panel de edición
+            const manageBtn = header.querySelector('.dockme-manage-btn');
+            if (manageBtn) manageBtn.remove();
             
             // ALERTA DE DETECTADOS
-            let alert = header.querySelector('.dockme-detected-alert-simple');
+            let alert = this.container.querySelector('.dockme-detected-alert-simple');
             if (detected.length > 0 && !alert) {
-                alert = document.createElement('h3');
+                alert = document.createElement('div');
                 alert.className = 'dockme-detected-alert-simple';
                 alert.innerHTML = `⚠️ Hay ${detected.length} servidor${detected.length > 1 ? 'es' : ''} detectado${detected.length > 1 ? 's' : ''} sin conectar`;
-                header.appendChild(alert);
+                alert.style.cssText = 'cursor:pointer;font-size:0.82em;color:#f0a500;margin-top:4px;';
+                alert.addEventListener('click', () => {
+                    dockmeEditMode = true;
+                    updateEditModeToggleUI();
+                    setTimeout(() => switchConfigTab('servidores'), 50);
+                });
+                const cardsContainer = this.container.querySelector('.metrics-container');
+                cardsContainer.insertAdjacentElement('afterend', alert);
             } else if (detected.length === 0 && alert) {
                 alert.remove();
             } else if (detected.length > 0 && alert) {
@@ -2492,26 +4038,61 @@
         ensureContainer() {
             const dockmeBlocks = document.querySelector('#dockme-dashboard');
             if (!dockmeBlocks) return;
+
+            // Encontrar o crear el blocksRow
+            let blocksRow = dockmeBlocks.querySelector('#dockme-blocks-row');
+            if (!blocksRow) {
+                blocksRow = document.createElement('div');
+                blocksRow.id = 'dockme-blocks-row';
+                dockmeBlocks.appendChild(blocksRow);
+            }
+
             this.container = document.querySelector('#metrics-section');
             if (this.container) return;
+
+            // Box redimensionable
+            let metricsBox = document.querySelector('#metrics-box');
+            if (!metricsBox) {
+                metricsBox = document.createElement('div');
+                metricsBox.id = 'metrics-box';
+                metricsBox.className = 'links-cat-box';
+                metricsBox.dataset.blockKey = 'type:metrics';
+
+                // Aplicar ancho y alto guardados ANTES de insertar en el DOM
+                const metricsBlock = linksConfig.find(c => c.type === 'metrics');
+                if (metricsBlock?.width) metricsBox.style.width = metricsBlock.width + 'px';
+                metricsBox.style.minHeight = (metricsBlock?.height ?? 282) + 'px';
+
+                setupResizeHandle(metricsBox, (newWidth) => {
+                    let block = linksConfig.find(c => c.type === 'metrics');
+                    const newHeight = metricsBox.offsetHeight;
+                    if (!block) {
+                        block = { type: 'metrics', width: newWidth, height: newHeight };
+                        linksConfig.push(block);
+                    } else {
+                        block.width = newWidth;
+                        block.height = newHeight;
+                    }
+                    saveBlockOrder();
+                });
+
+                blocksRow.appendChild(metricsBox);
+                setupBlockDrag(metricsBox, blocksRow);
+            }
+
             this.container = document.createElement('div');
             this.container.id = 'metrics-section';
-             const header = document.createElement('div');
+            const header = document.createElement('div');
             header.className = 'dockme-section-header';
-            const title = document.createElement('h2');
-            title.className = 'metrics-section-title mb-3';
-            title.textContent = '🖥️  Servidores conectados';
-            const manageBtn = document.createElement('button');
-            manageBtn.className = 'btn btn-normal dockme-manage-btn';
-            manageBtn.textContent = '⚙️ Gestionar';
-            manageBtn.addEventListener('click', showAgentsManager);
+            const title = document.createElement('div');
+            title.className = 'links-cat-box-title';
+            title.textContent = '🖥️ Servidores';
             header.appendChild(title);
             this.container.appendChild(header);
             const cardsContainer = document.createElement('div');
             cardsContainer.className = 'metrics-container';
-            this.container.style.minHeight = '300px';
             this.container.appendChild(cardsContainer);
-            dockmeBlocks.insertBefore(this.container, dockmeBlocks.firstChild);
+            metricsBox.appendChild(this.container);
         },
 
         applyHostFilter(hostname) {
@@ -2569,6 +4150,7 @@
             }
 
             // Filtrar tarjetas de recientes
+// Filtrar recientes
             const recentLinks = document.querySelectorAll('#recientes-row .stack-card-link');
             recentLinks.forEach(link => {
                 const cardEndpoint = link.dataset.endpoint || 'Actual';
@@ -2578,8 +4160,6 @@
                 const cardHostname = host?.hostname || cardEndpoint;
                 link.style.display = cardHostname === hostname ? '' : 'none';
             });
-
-            // Ocultar/mostrar sección de recientes si no hay tarjetas visibles
             const visibleRecentCards = Array.from(recentLinks).filter(l => l.style.display !== 'none');
             const recientesTitle = document.getElementById('recientes-title');
             const recientesRow = document.getElementById('recientes-row');
@@ -2589,6 +4169,27 @@
             } else {
                 if (recientesTitle) recientesTitle.style.display = '';
                 if (recientesRow) recientesRow.style.display = '';
+            }
+
+            // Filtrar favoritos
+            const favoritoLinks = document.querySelectorAll('#favoritos-row .stack-card-link');
+            favoritoLinks.forEach(link => {
+                const cardEndpoint = link.dataset.endpoint || 'Actual';
+                const host = State.updatesDataGlobal?.find(h =>
+                    h.endpoint.toLowerCase() === cardEndpoint.toLowerCase()
+                );
+                const cardHostname = host?.hostname || cardEndpoint;
+                link.style.display = cardHostname === hostname ? '' : 'none';
+            });
+            const visibleFavCards = Array.from(favoritoLinks).filter(l => l.style.display !== 'none');
+            const favoritosTitle = document.getElementById('favoritos-title');
+            const favoritosRow = document.getElementById('favoritos-row');
+            if (visibleFavCards.length === 0) {
+                if (favoritosTitle) favoritosTitle.style.display = 'none';
+                if (favoritosRow) favoritosRow.style.display = 'none';
+            } else {
+                if (favoritosTitle) favoritosTitle.style.display = '';
+                if (favoritosRow) favoritosRow.style.display = '';
             }
         },
 
@@ -2624,6 +4225,15 @@
             const recientesRow = document.getElementById('recientes-row');
             if (recientesTitle) recientesTitle.style.display = '';
             if (recientesRow) recientesRow.style.display = '';
+
+            // Mostrar todas las tarjetas de favoritos
+            document.querySelectorAll('#favoritos-row .stack-card-link').forEach(link => {
+                link.style.display = '';
+            });
+            const favoritosTitle = document.getElementById('favoritos-title');
+            const favoritosRow = document.getElementById('favoritos-row');
+            if (favoritosTitle) favoritosTitle.style.display = '';
+            if (favoritosRow) favoritosRow.style.display = '';
         },
 
         updateSelectedCard(hostname) {
@@ -2641,6 +4251,9 @@
         start() {
             if (!RouteManager.isRootPath()) return;
             if (this.intervalId) return;
+            if (this.container && !document.contains(this.container)) {
+                this.container = null;
+            }
             this.ensureContainer();
             this.fetchAndUpdate();
             this.intervalId = setInterval(
@@ -2654,10 +4267,6 @@
                 clearInterval(this.intervalId);
                 this.intervalId = null;
             }
-            if (this.container) {
-                this.container.remove();
-                this.container = null;
-            }
         }
     };
     // ==================== ALERTA TEMPORAL EN MÉTRICAS ====================
@@ -2665,13 +4274,13 @@
         const metricsSection = document.querySelector('#metrics-section');
         if (!metricsSection) return;
         
-        const header = metricsSection.querySelector('.dockme-section-header');
-        if (!header) return;
-        let alert = header.querySelector('.dockme-updating-alert');
+        let alert = metricsSection.querySelector('.dockme-updating-alert');
         if (!alert) {
-            alert = document.createElement('h3');
+            alert = document.createElement('div');
             alert.className = 'dockme-updating-alert';
-            header.appendChild(alert);
+            alert.style.cssText = 'font-size:0.82em;color:#f0a500;margin-bottom:8px;';
+            const cardsContainer = metricsSection.querySelector('.metrics-container');
+            cardsContainer.insertAdjacentElement('afterend', alert);
         }
         
         alert.textContent = message;
@@ -2811,13 +4420,31 @@ function createAgentsTable() {
         `;
     }
 
-   const rows = agents.map(agent => {
+    const rows = agents.map(agent => {
         const isLocal = agent.endpoint.toLowerCase() === 'actual';
+        const iconUrl = `/icons/server-${agent.hostname}.svg`;
+        const endpointHtml = isLocal ? '' : `<div class="agent-endpoint-small">${agent.endpoint}</div>`;
         return `
             <tr>
-                <td class="text-center">${agent.isOnline ? '🟢' : '🔴'}</td>
-                <td><strong>${agent.hostname}</strong></td>
-                <td><code>${agent.endpoint}</code></td>
+                <td class="text-center">
+                    <img src="${iconUrl}" class="agent-server-icon" alt="${agent.hostname}"
+                        onerror="this.src='/system-icons/no-icon.svg'"
+                        data-endpoint="${agent.endpoint}" title="Click para cambiar icono">
+                    <input type="file" class="agent-icon-file-input" accept=".svg" style="display:none" data-endpoint="${agent.endpoint}">
+                </td>
+                <td>
+                    <strong>${agent.hostname}</strong>
+                    ${endpointHtml}
+                </td>
+                <td>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                        <input type="text" class="agent-ui-url-input dockme-service-url-input"
+                            placeholder="https://ip:puerto"
+                            data-endpoint="${agent.endpoint}"
+                            value="">
+                        <span class="agent-url-status" data-endpoint="${agent.endpoint}" style="font-size:18px;min-width:20px;"></span>
+                    </div>
+                </td>
                 <td class="text-center">
                     ${isLocal 
                         ? '-' 
@@ -2827,67 +4454,142 @@ function createAgentsTable() {
             </tr>
         `;
     }).join('');
+
     return `
         <div class="dockme-agents-wrapper">
-            <h3 style="font-size: 20px;">Agentes conectados</h3>
+        <h3 style="font-size: 20px;">Agentes conectados</h3>
             <table class="dockme-agents-table">
                 <thead>
                     <tr>
-                        <th style="width: 80px;">Estado</th>
-                        <th style="width: 200px;">Hostname</th>
-                        <th>Endpoint</th>
-                        <th style="width: 120px;">Acción</th>
+                        <th style="width: 48px;">Icono</th>
+                        <th>Servidor</th>
+                        <th>URL Interfaz web</th>
+                        <th style="width: 60px;">Acción</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${rows}
                 </tbody>
             </table>
+            <div class="dockme-editor-hint">
+                👉 Click en el icono del servidor para subir un nuevo icono, o edita la url a la que te llevara dicho icono desde la tarjeta de metricas para abrir la web del servidor.
+            </div>
         </div>
     `;
 }
 
 // ==================== MOSTRAR PANEL DE GESTIÓN ====================
-function showAgentsManager() {
-    AgentsState.isManaging = true;
-    hideDashboardContainer();
-    MetricsManager.stop();
+function renderServidoresTab(container) {
     readAgentsFromDockgeDOM();
-    const dashboard = document.querySelector('#dockme-dashboard');
-    if (!dashboard) {return;}
-    dashboard.style.display = '';
-    dashboard.innerHTML = `
-        <div class="dockme-agents-manager">
-            <div class="dockme-section-header" style="margin-bottom: 20px;">
-                <h2 class="dashboard-section-title">📡 Gestión de servidores</h2>
-                <button class="btn btn-normal dockme-manage-btn dockme-agents-back-btn">
-                    ⬅️ Volver
-                </button>
-            </div>
-            ${createAgentsTable()}
-            ${createDetectedServersSection()}
-        </div>
+    container.innerHTML = `
+        ${createAgentsTable()}
+        ${createDetectedServersSection()}
     `;
-    const backBtn = dashboard.querySelector('.dockme-agents-back-btn');
-    if (backBtn) {
-        backBtn.addEventListener('click', hideAgentsManager);
-    }
-    const deleteButtons = dashboard.querySelectorAll('.btn-delete-agent');
+
+    // Cargar uiUrl actuales desde updates.json
+    fetch('/config/updates.json?t=' + Date.now())
+        .then(r => r.json())
+        .then(data => {
+            container.querySelectorAll('.agent-ui-url-input').forEach(input => {
+                const ep = input.dataset.endpoint;
+                const entry = data.find(h => h.endpoint?.toLowerCase() === ep?.toLowerCase());
+                if (entry?.uiUrl) {
+                    input.value = entry.uiUrl;
+                    setTimeout(() => { input.scrollLeft = 0; }, 50);
+                    input.addEventListener('blur', () => {
+                        input.scrollLeft = 0;
+                    });
+                }
+            });
+        })
+        .catch(() => {});
+
+    // Listeners URL de UI
+    container.querySelectorAll('.agent-ui-url-input').forEach(input => {
+        const handleSave = () => {
+            let url = input.value.trim();
+            if (url && !url.match(/^https?:\/\//)) {
+                url = 'http://' + url;
+                input.value = url;
+            }
+            fetch('/api/set-server', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ endpoint: input.dataset.endpoint, uiUrl: url })
+            })
+            .then(r => r.json())
+            .then(data => {
+                const status = container.querySelector(`.agent-url-status[data-endpoint="${input.dataset.endpoint}"]`);
+                if (status) {
+                    status.textContent = data.success ? '✅' : '❌';
+                    setTimeout(() => status.textContent = '', 2000);
+                }
+            })
+            .catch(() => {});
+        };
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); handleSave(); }
+        });
+        input.addEventListener('paste', () => setTimeout(handleSave, 50));
+    });
+
+    // Listeners icono servidor
+    container.querySelectorAll('.agent-server-icon').forEach(img => {
+        img.addEventListener('click', () => {
+            const fileInput = img.nextElementSibling;
+            if (fileInput) fileInput.click();
+        });
+    });
+
+    container.querySelectorAll('.agent-icon-file-input').forEach(fileInput => {
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files[0];
+            if (!file) return;
+            if (file.type !== 'image/svg+xml' && !file.name.toLowerCase().endsWith('.svg')) {
+                alert('Solo se admiten iconos SVG');
+                fileInput.value = '';
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => {
+                const svgText = reader.result;
+                if (!svgText || !/<svg[\s>]/i.test(svgText)) {
+                    alert('El archivo no es un SVG válido');
+                    return;
+                }
+                fetch('/api/set-server', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ endpoint: fileInput.dataset.endpoint, svg: svgText })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        const img = container.querySelector(`.agent-server-icon[data-endpoint="${fileInput.dataset.endpoint}"]`);
+                        if (img) img.src = img.src.split('?')[0] + '?v=' + Date.now();
+                    }
+                })
+                .catch(() => {});
+                fileInput.value = '';
+            };
+            reader.readAsText(file);
+        });
+    });
+
+    const deleteButtons = container.querySelectorAll('.btn-delete-agent');
     deleteButtons.forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.preventDefault();
-            const endpoint = btn.dataset.endpoint;
-            deleteAgent(endpoint);
+            deleteAgent(btn.dataset.endpoint);
         });
     });
-    const connectButtons = dashboard.querySelectorAll('.dockme-connect-agent-btn');
+
+    const connectButtons = container.querySelectorAll('.dockme-connect-agent-btn');
     connectButtons.forEach(btn => {
         btn.addEventListener('click', async (e) => {
             e.preventDefault();
-            
             const row = btn.closest('.detected-server-row');
             const endpoint = btn.dataset.endpoint;
-            
             const username = row.querySelector('.agent-username').value.trim();
             const password = row.querySelector('.agent-password').value;
             const errorDiv = row.querySelector('.detected-server-error');
@@ -2897,47 +4599,285 @@ function showAgentsManager() {
                 return;
             }
             errorDiv.style.display = 'none';
-            const url = `http://${endpoint}`;
             btn.disabled = true;
             btn.textContent = 'Conectando...';
-            const success = await addAgentToDockge(url, username, password, endpoint, errorDiv);
+            const success = await addAgentToDockge(`http://${endpoint}`, username, password, endpoint, errorDiv);
             if (success) {
                 readAgentsFromDockgeDOM();
-                showAgentsManager();
+                container.dataset.loaded = '';
+                renderServidoresTab(container);
             } else {
                 btn.disabled = false;
                 btn.textContent = 'Conectar agente';
             }
         });
     });
-    const discardButtons = dashboard.querySelectorAll('.btn-discard-detected');
+
+    const discardButtons = container.querySelectorAll('.btn-discard-detected');
     discardButtons.forEach(btn => {
         btn.addEventListener('click', async (e) => {
             e.preventDefault();
-            
             const endpoint = btn.dataset.endpoint;
             const row = btn.closest('.detected-server-row');
             const hostname = row.querySelector('.detected-server-hostname').textContent;
-            
-            if (!confirm(`¿Descartar servidor "${hostname}"?\n\nSi se vuelve a iniciar hacia este central, volverá a aparecer.`)) {
-                return;
-            }
-            
+            if (!confirm(`¿Descartar servidor "${hostname}"?\n\nSi se vuelve a iniciar hacia este central, volverá a aparecer.`)) return;
             await discardDetectedServer(endpoint);
         });
     });
 }
-// ==================== OCULTAR PANEL DE GESTIÓN ====================
-function hideAgentsManager() {
-    AgentsState.isManaging = false;
-    const dashboard = document.querySelector('#dockme-dashboard');
-    if (!dashboard) return;
-    dashboard.innerHTML = '';
-    showDashboardContainer();
-    DataLoader.loadAndDisplay();
-    MetricsManager.stop();
-    MetricsManager.start();
-}  
+
+function renderLinksTab(container) {
+    const render = () => {
+        container.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <span style="font-size:1em;color:#aaa;">Añade y organiza tus enlaces</span>
+                <button class="btn btn-normal btn-add-category">+ Nueva categoría</button>
+            </div>
+            <div id="links-categories-list"></div>
+        `;
+
+        const list = container.querySelector('#links-categories-list');
+        renderCategories(list);
+
+        container.querySelector('.btn-add-category').addEventListener('click', () => {
+            linksConfig.push({ category: 'Nueva categoría', order: linksConfig.length, links: [] });
+            saveLinks().then(() => {
+                render();
+                setTimeout(() => {
+                    const inputs = container.querySelectorAll('.links-cat-name');
+                    const last = inputs[inputs.length - 1];
+                    if (last) { last.focus(); last.select(); }
+                }, 50);
+            });
+        });
+    };
+
+    const saveLinks = () => {
+        return fetch('/api/set-links', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ links: linksConfig })
+        }).then(r => r.json());
+    };
+
+    const renderCategories = (list) => {
+        list.innerHTML = '';
+        linksConfig
+            .filter(cat => cat.category)
+            .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+            .forEach((cat) => {
+                const catIdx = linksConfig.indexOf(cat);
+                const catEl = document.createElement('div');
+                catEl.className = 'links-category-editor';
+                catEl.dataset.catIdx = catIdx;
+                catEl.innerHTML = `
+                    <div class="links-cat-header">
+                        <input class="links-cat-name dockme-service-url-input" value="${cat.category}" style="flex:1;font-size:1em;font-weight:500;">
+                        <button class="btn btn-danger btn-delete-category" style="padding:2px 8px;">🗑</button>
+                    </div>
+                    <div class="links-items-list"></div>
+                    <button class="btn btn-normal btn-add-link" style="width:100%;margin-top:8px;">+ Añadir link</button>
+                `;
+
+                const itemsList = catEl.querySelector('.links-items-list');
+                renderLinks(itemsList, cat, catIdx, saveLinks, render);
+
+                catEl.querySelector('.links-cat-name').addEventListener('change', (e) => {
+                    linksConfig[catIdx].category = Utils.capitalizeFirst(e.target.value.trim());
+                    e.target.value = linksConfig[catIdx].category;
+                    saveLinks();
+                });
+                catEl.querySelector('.links-cat-name').addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        e.target.blur();
+                    }
+                });
+
+                catEl.querySelector('.btn-delete-category').addEventListener('click', () => {
+                    if (!confirm(`¿Eliminar categoría "${cat.category}" y todos sus links?`)) return;
+                    linksConfig.splice(catIdx, 1);
+                    linksConfig.forEach((c, i) => c.order = i);
+                    saveLinks().then(() => render());
+                });
+
+                catEl.querySelector('.btn-add-link').addEventListener('click', () => {
+                    linksConfig[catIdx].links.push({ name: 'Nuevo link', url: '', icon: '', order: linksConfig[catIdx].links.length });
+                    saveLinks().then(() => {
+                        render();
+                        setTimeout(() => {
+                            // Buscar por data-catIdx en lugar de por posición
+                            const thisCat = container.querySelector(`.links-category-editor[data-cat-idx="${catIdx}"]`);
+                            if (thisCat) {
+                                const rows = thisCat.querySelectorAll('.links-item-name');
+                                const last = rows[rows.length - 1];
+                                if (last) { last.focus(); last.select(); }
+                            }
+                        }, 100);
+                    });
+                });
+
+                list.appendChild(catEl);
+            });
+    };
+
+    render();
+}
+
+function renderLinks(container, cat, catIdx, saveLinks, rerender) {
+    container.innerHTML = '';
+    cat.links
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+        .forEach((link, linkIdx) => {
+            const iconSrc = link.icon
+                ? `/icons/${link.icon}`
+                : '/system-icons/no-icon.svg';
+            const row = document.createElement('div');
+            row.className = 'links-item-row';
+            row.dataset.linkIdx = linkIdx;
+            row.innerHTML = `
+                <span class="links-drag-handle">☰</span>
+                <span class="links-item-icon-wrap" title="Click para cambiar icono">
+                    <img src="${iconSrc}" class="links-item-icon" alt="${link.name}"
+                        onerror="this.src='/system-icons/no-icon.svg'">
+                    <input type="file" class="links-icon-file" accept=".svg,.png" style="display:none">
+                </span>
+                <input class="links-item-name dockme-service-url-input" value="${link.name}" placeholder="Nombre" style="flex:1;">
+                <input class="links-item-url dockme-service-url-input" value="${link.url}" placeholder="https://..." style="flex:2;">
+                <button class="btn btn-danger btn-delete-link" style="padding:2px 8px;">🗑</button>
+            `;
+
+            // Click icono → abrir file input
+            row.querySelector('.links-item-icon-wrap').addEventListener('click', () => {
+                row.querySelector('.links-icon-file').click();
+            });
+
+            // Subir icono
+            row.querySelector('.links-icon-file').addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    const iconName = `link-${link.name.toLowerCase().replace(/\s+/g, '-')}.${ext}`;
+                    fetch('/api/stack-icon', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ stack: `link-${link.name.toLowerCase().replace(/\s+/g, '-')}`, type: 'upload', svg: reader.result })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            linksConfig[catIdx].links[linkIdx].icon = iconName;
+                            saveLinks().then(() => rerender());
+                        }
+                    });
+                };
+                reader.readAsText(file);
+                e.target.value = '';
+            });
+
+            // Guardar nombre
+            row.querySelector('.links-item-name').addEventListener('change', (e) => {
+                linksConfig[catIdx].links[linkIdx].name = Utils.capitalizeFirst(e.target.value.trim());
+                e.target.value = linksConfig[catIdx].links[linkIdx].name;
+                saveLinks();
+            });
+            row.querySelector('.links-item-name').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    row.querySelector('.links-item-url').focus();
+                }
+            });
+
+            // Guardar URL + favicon automático
+            const urlInput = row.querySelector('.links-item-url');
+            const handleUrlSave = () => {
+                let url = urlInput.value.trim();
+                if (url && !url.match(/^https?:\/\//)) {
+                    url = 'http://' + url;
+                    urlInput.value = url;
+                }
+                linksConfig[catIdx].links[linkIdx].url = url;
+                saveLinks();
+                // Intentar favicon si no tiene icono
+                if (url && !linksConfig[catIdx].links[linkIdx].icon) {
+                    const name = linksConfig[catIdx].links[linkIdx].name.toLowerCase().replace(/\s+/g, '-');
+                    fetch('/api/fetch-favicon', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url, name })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            linksConfig[catIdx].links[linkIdx].icon = data.iconFile;
+                            saveLinks().then(() => rerender());
+                        }
+                    })
+                    .catch(() => {});
+                }
+            };
+            urlInput.addEventListener('keydown', (e) => { 
+                if (e.key === 'Enter') { 
+                    e.preventDefault(); 
+                    handleUrlSave();
+                    urlInput.blur();
+                } 
+            });
+            urlInput.addEventListener('paste', () => setTimeout(() => {
+                handleUrlSave();
+                urlInput.blur();
+            }, 50));
+
+            // Eliminar link
+            row.querySelector('.btn-delete-link').addEventListener('click', () => {
+                linksConfig[catIdx].links.splice(linkIdx, 1);
+                linksConfig[catIdx].links.forEach((l, i) => l.order = i);
+                saveLinks().then(() => rerender());
+            });
+
+            container.appendChild(row);
+        });
+
+    initLinkDragDrop(container, catIdx, saveLinks, rerender);
+}
+
+function initLinkDragDrop(container, catIdx, saveLinks, rerender) {
+    let dragEl = null;
+    container.querySelectorAll('.links-item-row').forEach(el => {
+        el.querySelector('.links-drag-handle').addEventListener('mousedown', () => {
+            el.draggable = true;
+        });
+        el.addEventListener('dragstart', (e) => {
+            dragEl = el;
+            e.dataTransfer.effectAllowed = 'move';
+            setTimeout(() => el.style.opacity = '0.4', 0);
+        });
+        el.addEventListener('dragend', () => {
+            el.style.opacity = '';
+            el.draggable = false;
+            dragEl = null;
+            const items = container.querySelectorAll('.links-item-row');
+            items.forEach((item, i) => {
+                linksConfig[catIdx].links[parseInt(item.dataset.linkIdx)].order = i;
+            });
+            saveLinks().then(() => rerender());
+        });
+        el.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            if (dragEl && dragEl !== el) {
+                const rect = el.getBoundingClientRect();
+                const mid = rect.top + rect.height / 2;
+                if (e.clientY < mid) {
+                    container.insertBefore(dragEl, el);
+                } else {
+                    container.insertBefore(dragEl, el.nextSibling);
+                }
+            }
+        });
+    });
+}
 
 // ==================== ELIMINAR AGENTE ====================
 function deleteAgent(endpoint) {
@@ -2999,7 +4939,12 @@ function deleteAgent(endpoint) {
                         });
                     }
                     readAgentsFromDockgeDOM();
-                    showAgentsManager();
+                    // Refrescar tab servidores del panel de configuración si está abierto
+                    const configContainer = document.querySelector('#config-tab-servidores');
+                    if (configContainer) {
+                        configContainer.dataset.loaded = '';
+                        renderServidoresTab(configContainer);
+                    }
                 }, 1000);
             }, { once: true });
         } else if (attempts < maxAttempts) {
@@ -3113,7 +5058,11 @@ async function discardDetectedServer(endpoint) {
         }
         
         State.setUpdatesData(updatedData);
-        showAgentsManager();
+        const configContainer = document.querySelector('#config-tab-servidores');
+        if (configContainer) {
+            configContainer.dataset.loaded = '';
+            renderServidoresTab(configContainer);
+        }
         
     } catch (err) {
         console.error('[Dockme] Error descartando servidor:', err);
@@ -3162,7 +5111,7 @@ function init() {
             if (RouteManager.isRootPath()) {
                 hideDockgeHomeBlock();
                 ensureDockmeRoot();
-                DataLoader.loadAndDisplay();
+                Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
                 MetricsManager.stop();
                 MetricsManager.start();
             }
@@ -3201,8 +5150,50 @@ function init() {
                 readAgentsFromDockgeDOM();
             }
 
-            DataLoader.loadAndDisplay();
+            Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
+            // Interceptar navegación Vue para iconos con URL
+            let lastMousePos = { x: 0, y: 0 };
+            document.addEventListener('mousemove', (e) => {
+                lastMousePos = { x: e.clientX, y: e.clientY };
+            }, true);
+            const vueRouter = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$router;
+            if (vueRouter) {
+                vueRouter.beforeEach((to, from, next) => {
+                    if (to.path?.startsWith('/compose/')) {
+                        const allIcons = document.querySelectorAll('img.cp-icon');
+                        let img = null;
+                        for (const icon of allIcons) {
+                            const rect = icon.getBoundingClientRect();
+                            if (lastMousePos.x >= rect.left && lastMousePos.x <= rect.right &&
+                                lastMousePos.y >= rect.top  && lastMousePos.y <= rect.bottom) {
+                                img = icon;
+                                break;
+                            }
+                        }
+                        if (img) {
+                            const stackData = stacksConfig.find(s =>
+                                s.name?.toLowerCase() === img.dataset.stackName?.toLowerCase() &&
+                                s.endpoint?.toLowerCase() === (img.dataset.stackEndpoint || 'Actual').toLowerCase()
+                            );
+                            if (stackData?.url) {
+                                window.open(stackData.url, '_blank');
+                            }
+                            next(false);
+                            return;
+                        }
+                    }
+                    next();
+                });
+            }
             MetricsManager.start();
+            // Pausar métricas cuando la pestaña no está activa
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    MetricsManager.stop();
+                } else if (RouteManager.isRootPath()) {
+                    MetricsManager.start();
+                }
+            });
         };
         setTimeout(checkAndLoadAgents, 300);
     }
