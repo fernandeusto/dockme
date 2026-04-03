@@ -218,7 +218,7 @@ fi
 #   CLEANUP
 # ============================
 echo -e "\n${BLUE}=== Limpiando imagenes huerfanas ===${NC}"
-prune_output=$(docker image prune -f 2>&1 || true)
+prune_output=$(docker image prune -f --filter "until=48h" 2>&1 || true)
 reclaimed=$(echo "$prune_output" | grep -i "Total reclaimed space" | sed 's/Total reclaimed space/Espacio recuperado/' || echo "")
 
 if [ -z "$reclaimed" ]; then

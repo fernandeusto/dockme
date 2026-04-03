@@ -561,10 +561,10 @@ async switchTo(profileName) {
                 img.style.height = '96px';
                 img.style.width = 'auto';
                 img.style.marginRight = '8px';
-                img.dataset.stackName = nombreOriginal;
-                img.dataset.stackEndpoint = endpointOriginal;
                 badge.insertBefore(img, badge.firstChild);
             }
+            img.dataset.stackName = nombreOriginal;
+            img.dataset.stackEndpoint = endpointOriginal;
             const finalUrl = await Utils.loadImage(
                 iconoUrl,
                 `${CONFIG.ICON_DEFAULT}?v=${dockmeIconVersion}`
@@ -728,12 +728,45 @@ async switchTo(profileName) {
 
     // ==================== GESTIÓN DE BLOQUES DE STACKS ====================
     const syncBulkButtons = () => {
-        const checkboxes = document.querySelectorAll('.stack-checkbox');
+        // Si el panel bulk está abierto, no tocar los botones
+        if (BulkUpdatePanel.panel) return;
+        const allCheckboxes = document.querySelectorAll('.stack-checkbox');
+        const visibleCheckboxes = Array.from(allCheckboxes).filter(cb => cb.closest('.stack-card-link')?.style.display !== 'none');
         const btnSelectAll = document.querySelector('.btn-select-all');
         const btnUpdate = document.querySelector('.btn-update-selected');
-        const anyChecked = Array.from(checkboxes).some(cb => cb.checked);
+        const anyChecked = visibleCheckboxes.some(cb => cb.checked);
+        const hasCheckboxes = visibleCheckboxes.length > 0;
         if (btnUpdate) btnUpdate.style.display = anyChecked ? '' : 'none';
-        if (btnSelectAll) btnSelectAll.textContent = anyChecked ? 'Deseleccionar todas' : 'Seleccionar todas';
+        if (btnSelectAll) {
+            btnSelectAll.style.display = hasCheckboxes ? '' : 'none';
+            btnSelectAll.textContent = anyChecked ? 'Deseleccionar todas' : 'Seleccionar todas';
+        }
+    };
+
+    const syncUpdatesUI = () => {
+        const updatesTitle = document.getElementById('updates-title');
+        const updatesRow = document.getElementById('updates-row');
+        const favTitle = document.getElementById('favoritos-title') || document.getElementById('recientes-title');
+        const isFav = !!document.getElementById('favoritos-title');
+
+        const visibleUpdates = Array.from(document.querySelectorAll('.stack-card-horizontal.update'))
+            .filter(c => c.closest('.stack-card-link')?.style.display !== 'none').length;
+
+        if (!BulkUpdatePanel.panel) {
+            if (updatesTitle) updatesTitle.style.display = visibleUpdates > 0 ? '' : 'none';
+            if (updatesRow) updatesRow.style.display = visibleUpdates > 0 ? '' : 'none';
+        }
+
+        if (favTitle && !BulkUpdatePanel.panel) {
+            const existingControls = favTitle.querySelector('.bulk-update-controls');
+            if (visibleUpdates > 0) {
+                favTitle.childNodes[0].textContent = isFav ? '⭐ Favoritos y actualizaciones' : '🕘 Recientes y actualizaciones';
+                if (!existingControls) StackBlockManager.addUpdateButtons(favTitle);
+            } else {
+                existingControls?.remove();
+                favTitle.textContent = isFav ? '⭐ Favoritos' : '🕘 Recientes';
+            }
+        }
     };
     
     const StackBlockManager = {
@@ -772,8 +805,8 @@ async switchTo(profileName) {
                 blockTitle.className = isFavOrRecent ? 'links-cat-box-title' : 'dashboard-section-title mb-3';
                 blockTitle.textContent = titulo;
                 targetContainer.appendChild(blockTitle);
-                if (idBase.startsWith('updates')) {
-                    this.addUpdateButtons(blockTitle);
+            if (idBase.startsWith('updates')) {
+                    if (!BulkUpdatePanel.panel) this.addUpdateButtons(blockTitle);
                 }
             }
             let blockRow = targetContainer.querySelector(`#${idBase}-row`);
@@ -823,6 +856,8 @@ async switchTo(profileName) {
                     const checkbox = card.querySelector('.stack-checkbox');
                     if (checkbox && !e.target.closest('.stack-checkbox')) {
                         e.preventDefault();
+                        // Si el panel bulk está abierto, no permitir selección
+                        if (BulkUpdatePanel.panel) return;
                         
                         const allCheckboxes = document.querySelectorAll('.stack-checkbox:checked');
                         const totalChecked = allCheckboxes.length;
@@ -959,6 +994,9 @@ async switchTo(profileName) {
                     name: cb.dataset.stackName,
                     endpoint: cb.dataset.endpoint
                 }));
+                // Ocultar botones mientras el panel está abierto
+                btnSelectAll.style.display = 'none';
+                btnUpdate.style.display = 'none';
                 BulkUpdatePanel.open(stacks);
             });
         },
@@ -1265,7 +1303,7 @@ async switchTo(profileName) {
                     const secId = favoritosOrdenados ? 'favoritos' : 'recientes';
                     const secTitulo = hasUpdates
                         ? (favoritosOrdenados ? '⭐ Favoritos y actualizaciones' : '🕘 Recientes y actualizaciones')
-                        : (favoritosOrdenados ? '⭐ Favoritos' : '🕘 Últimos visitados');
+                        : (favoritosOrdenados ? '⭐ Favoritos' : '🕘 Recientes');
 
                     // Crear wrapper con título correcto
                     if (hasUpdates || secLista.length > 0) {
@@ -1282,7 +1320,7 @@ async switchTo(profileName) {
                         const titleEl = favWrapper.querySelector(`#${secId}-title`);
                         if (titleEl) {
                             titleEl.textContent = secTitulo;
-                            if (hasUpdates) StackBlockManager.addUpdateButtons(titleEl);
+                            if (hasUpdates && !BulkUpdatePanel.panel) StackBlockManager.addUpdateButtons(titleEl);
                         }
 
                         // Añadir updates antes del separador si los hay
@@ -2050,15 +2088,15 @@ let layoutDirty = false;
             fetch(fetchUrl, fetchOptions)
                 .then(res => (res.ok ? res.json() : null))
                 .then(() => {
-                    // Navegar a raíz y mostrar mensaje de reconectando
+                    window.dockmeUpdateInProgress = false;
                     window.history.pushState({}, '', '/');
                     window.dispatchEvent(new Event('popstate'));
-                    
                     const serverName = isLocalDockme ? 'este servidor' : 'Dockme remoto';
                     setTimeout(() => {
                         showMetricsAlert(`⏳ Actualizando y reconectando ${serverName}...`, 20000);
                     }, 1000);
-                });
+                })
+                .catch(() => { window.dockmeUpdateInProgress = false; });
         }
     };
     // ==================== MENÚ MÓVIL ====================
@@ -2347,9 +2385,6 @@ let layoutDirty = false;
             if (!btn) return;
             if (this.isActive) {
                 btn.style.display = 'none';
-            } else {
-                btn.textContent = 'Actualizar seleccionadas';
-                syncBulkButtons();
             }
         },
 
@@ -2515,7 +2550,7 @@ let layoutDirty = false;
             const card = checkbox?.closest('.stack-card-link');
             if (card) {
                 card.style.opacity = '0';
-                setTimeout(() => { card.remove(); syncBulkButtons(); }, 300);
+                setTimeout(() => { card.remove(); if (!BulkUpdatePanel.panel) syncUpdatesUI(); }, 300);
             }
             
             // 3. Buscar hostname del endpoint
@@ -2530,17 +2565,6 @@ let layoutDirty = false;
                     .then(() => API.loadUpdates())
                     .then(updatesData => {
                         State.setUpdatesData(updatesData);
-                        
-                        // Ocultar sección si no quedan tarjetas
-                        setTimeout(() => {
-                            const remainingCards = document.querySelectorAll('.stack-card-horizontal.update');
-                            if (remainingCards.length === 0) {
-                                const updatesTitle = document.getElementById('updates-title');
-                                const updatesRow = document.getElementById('updates-row');
-                                if (updatesTitle) updatesTitle.style.display = 'none';
-                                if (updatesRow) updatesRow.style.display = 'none';
-                            }
-                        }, 400);
                     });
             }
         },
@@ -2632,6 +2656,8 @@ let layoutDirty = false;
                 this.hasStarted = false;
                 this.isCompleted = false;
                 this.updateButton();
+                syncUpdatesUI();
+                syncBulkButtons();
             }, 300);
         }
 
@@ -3787,7 +3813,8 @@ let layoutDirty = false;
                 // Updates info
                 const checkStatus = metrics.check_status || 'idle';
                 const checkPercent = metrics.check_percent || 0;
-                const checkUpdates = metrics.check_updates || 0;
+                const hostEntry = State.updatesDataGlobal?.find(h => (h.endpoint || '').toLowerCase() === endpoint.toLowerCase());
+                const checkUpdates = (hostEntry?.updates?.length) || metrics.check_updates || 0;
                 const pruneSpace = metrics.prune_space || '';
                 const checkLast = metrics.check_last || '';
                 const checkLastTooltip = checkLast ? (() => {
@@ -3808,7 +3835,7 @@ let layoutDirty = false;
                     h.endpoint?.toLowerCase() === endpoint.toLowerCase()
                 );
                 const uiUrl = serverEntry?.uiUrl || '';
-                const serverIconUrl = `/icons/server-${hostname}.svg`;
+                const serverIconUrl = `/icons/server-${hostname}.svg?v=${dockmeIconVersion}`;
                 const serverIconHtml = `
                     <span class="metric-server-icon-wrap${uiUrl ? ' has-url' : ''}" 
                           title="${uiUrl ? 'Abrir UI del servidor' : 'Configurar servidor'}">
@@ -4132,25 +4159,12 @@ let layoutDirty = false;
                     link.style.display = cardHostname === hostname ? '' : 'none';
                 }
             });
-            
-            // Ocultar/mostrar sección de updates si no hay tarjetas visibles
-            const visibleUpdateCards = Array.from(updateCards).filter(card => {
-                const link = card.closest('.stack-card-link');
-                return link && link.style.display !== 'none';
-            });
-
-            const updatesTitle = document.getElementById('updates-title');
-            const updatesRow = document.getElementById('updates-row');
-            if (visibleUpdateCards.length === 0) {
-                if (updatesTitle) updatesTitle.style.display = 'none';
-                if (updatesRow) updatesRow.style.display = 'none';
-            } else {
-                if (updatesTitle) updatesTitle.style.display = '';
-                if (updatesRow) updatesRow.style.display = '';
+            if (!document.querySelector('.bulk-update-controls:hover')) {
+                syncUpdatesUI();
+                syncBulkButtons();
             }
 
             // Filtrar tarjetas de recientes
-// Filtrar recientes
             const recentLinks = document.querySelectorAll('#recientes-row .stack-card-link');
             recentLinks.forEach(link => {
                 const cardEndpoint = link.dataset.endpoint || 'Actual';
@@ -4234,6 +4248,8 @@ let layoutDirty = false;
             const favoritosRow = document.getElementById('favoritos-row');
             if (favoritosTitle) favoritosTitle.style.display = '';
             if (favoritosRow) favoritosRow.style.display = '';
+            syncUpdatesUI();
+
         },
 
         updateSelectedCard(hostname) {
@@ -4422,7 +4438,7 @@ function createAgentsTable() {
 
     const rows = agents.map(agent => {
         const isLocal = agent.endpoint.toLowerCase() === 'actual';
-        const iconUrl = `/icons/server-${agent.hostname}.svg`;
+        const iconUrl = `/icons/server-${agent.hostname}.svg?v=${dockmeIconVersion}`;
         const endpointHtml = isLocal ? '' : `<div class="agent-endpoint-small">${agent.endpoint}</div>`;
         return `
             <tr>
@@ -4565,8 +4581,13 @@ function renderServidoresTab(container) {
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) {
+                        dockmeIconVersion = Date.now();
+                        localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
                         const img = container.querySelector(`.agent-server-icon[data-endpoint="${fileInput.dataset.endpoint}"]`);
-                        if (img) img.src = img.src.split('?')[0] + '?v=' + Date.now();
+                        if (img) img.src = img.src.split('?')[0] + '?v=' + dockmeIconVersion;
+                        // Actualizar también en tarjeta de métricas
+                        const metricImg = document.querySelector(`#metrics-box .metric-server-icon[alt="${fileInput.dataset.endpoint}"]`);
+                        if (metricImg) metricImg.src = metricImg.src.split('?')[0] + '?v=' + dockmeIconVersion;
                     }
                 })
                 .catch(() => {});
@@ -5171,9 +5192,13 @@ function init() {
                             }
                         }
                         if (img) {
+                            const parentItem = img.closest('a.item');
+                            const href = parentItem?.getAttribute('href') || '';
+                            const nameFromHref = href.match(/^\/compose\/([^/]+)/)?.[1];
+                            const endpointFromHref = href.match(/\/compose\/[^/]+\/(.+)$/)?.[1] || 'Actual';
                             const stackData = stacksConfig.find(s =>
-                                s.name?.toLowerCase() === img.dataset.stackName?.toLowerCase() &&
-                                s.endpoint?.toLowerCase() === (img.dataset.stackEndpoint || 'Actual').toLowerCase()
+                                s.name?.toLowerCase() === (nameFromHref || img.dataset.stackName)?.toLowerCase() &&
+                                s.endpoint?.toLowerCase() === (endpointFromHref || img.dataset.stackEndpoint || 'Actual').toLowerCase()
                             );
                             if (stackData?.url) {
                                 window.open(stackData.url, '_blank');

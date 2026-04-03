@@ -161,12 +161,7 @@ if [ -f /app/data/config/updates.json ]; then
 import json
 with open('/app/data/config/updates.json') as f:
     data = json.load(f)
-for host in data:
-    if host.get('endpoint', '').lower() == 'actual':
-        print(len(host.get('updates', [])))
-        break
-else:
-    print(0)
+print(sum(len(host.get('updates', [])) for host in data))
 ")
 fi
 
