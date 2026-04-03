@@ -3998,7 +3998,7 @@ let layoutDirty = false;
                 // Detectar fin de check O bajada de updates pendientes → recargar dashboard
                 const prev = this.lastCheckStatus[host.endpoint] || { status: 'idle', updates: null };
                 const currStatus = host.metrics?.check_status || 'idle';
-                const currUpdates = host.metrics?.check_updates ?? null;
+                const currUpdates = host.metrics?.total_updates ?? host.metrics?.check_updates ?? null;
 
                 const checkFinished = prev.status === 'checking' && currStatus === 'idle';
                 const updatesChanged = prev.updates !== null && currUpdates !== null && currUpdates !== prev.updates;

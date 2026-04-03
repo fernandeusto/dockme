@@ -156,8 +156,20 @@ timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # UPDATES PENDIENTES
 # ========================
 updates_pending=0
+total_updates=0
 if [ -f /app/data/config/updates.json ]; then
     updates_pending=$(python3 -c "
+import json
+with open('/app/data/config/updates.json') as f:
+    data = json.load(f)
+for host in data:
+    if host.get('endpoint', '').lower() == 'actual':
+        print(len(host.get('updates', [])))
+        break
+else:
+    print(0)
+")
+    total_updates=$(python3 -c "
 import json
 with open('/app/data/config/updates.json') as f:
     data = json.load(f)
@@ -183,6 +195,7 @@ json=$(cat <<EOF
   "check_status": "$check_status",
   "check_percent": ${check_percent:-0},
   "check_updates": ${updates_pending:-0},
+  "total_updates": ${total_updates:-0},
   "check_last": "$check_last",
   "prune_space": "${prune_space:-}"
 }
