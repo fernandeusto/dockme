@@ -6,11 +6,59 @@
     let dockmeEditModeFilterBackup = null;
     let dockmeUpdateInProgress = false;
     let dockmeIconVersion = localStorage.getItem('dockmeIconVersion') || Date.now();
+    // Polling de icon-version al arrancar — detecta cuando el CDN termina de descargar iconos
+    // y refresca stacksConfig + iconos en la UI sin necesidad de F5
+    (() => {
+        const MAX_ATTEMPTS = 10;
+        const INTERVAL_MS  = 3000;
+        let attempts = 0;
+        const check = () => {
+            fetch('/api/icon-version')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.version && data.version > dockmeIconVersion) {
+                        dockmeIconVersion = data.version;
+                        localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
+                        loadStacksConfig().then(() => reasignarIconos());
+                    }
+                    attempts++;
+                    if (attempts < MAX_ATTEMPTS) setTimeout(check, INTERVAL_MS);
+                })
+                .catch(() => {
+                    attempts++;
+                    if (attempts < MAX_ATTEMPTS) setTimeout(check, INTERVAL_MS);
+                });
+        };
+        check();
+    })();
+    let primaryHostLocal = null;
     let stacksConfig = [];
     const loadStacksConfig = () => {
         return fetch('/config/stacks.json')
             .then(r => r.json())
-            .then(data => { if (Array.isArray(data)) stacksConfig = data; })
+            .then(data => {
+                if (Array.isArray(data)) {
+                    stacksConfig = data;
+                    // Lanzar auto-icon en background para entradas sin icono
+                    const sinIcono = [...new Set(
+                        data.filter(s => !s.icon).map(s => s.name.toLowerCase())
+                    )];
+                    sinIcono.forEach(name => {
+                        fetch(`/api/auto-icon?name=${encodeURIComponent(name)}`)
+                            .then(r => r.json())
+                            .then(d => {
+                                if (d.success && d.iconFile) {
+                                    stacksConfig.filter(s => s.name.toLowerCase() === name)
+                                                .forEach(s => { s.icon = d.iconFile; });
+                                    dockmeIconVersion = Date.now();
+                                    localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
+                                    reasignarIconos();
+                                }
+                            })
+                            .catch(() => {});
+                    });
+                }
+            })
             .catch(() => { stacksConfig = []; });
     };
     let linksConfig = [];
@@ -131,13 +179,15 @@
         async save() {
             if (currentLayoutProfile === 'default') return;
             const blocks = this.collectBlocks(); // ya guarda en localStorage
+            const sidebarWidth = this.layouts[currentLayoutProfile]?.sidebarWidth;
             await fetch('/api/set-layout', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     profileName: currentLayoutProfile,
                     deviceId: currentDeviceId,
-                    blocks
+                    blocks,
+                    sidebarWidth
                 })
             });
             const r = await fetch('/api/get-layouts');
@@ -238,6 +288,36 @@ async switchTo(profileName) {
         setUpdatesData(data) {
             this.updatesDataGlobal = data;
             window.updatesDataGlobal = data;
+            // Actualizar primaryHostLocal desde la entrada Actual
+            if (Array.isArray(data)) {
+                const local = data.find(h => h.endpoint?.toLowerCase() === 'actual');
+                if (local?.primaryHost) {
+                    primaryHostLocal = local.primaryHost;
+                } else if (local && !local.primaryHost && RouteManager.isRootPath()) {
+                    // Primera vez — mostrar modal para configurar IP base
+                    setTimeout(() => {
+                        showPrimaryHostModal('Actual', null, (newVal, onSuccess) => {
+                            fetch('/api/set-primary-host', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ primaryHost: newVal, oldHostname: window.location.hostname })
+                            })
+                            .then(r => r.json())
+                            .then(d => {
+                                if (d.success) {
+                                    primaryHostLocal = newVal;
+                                    const span = document.querySelector('.agent-primary-host-value[data-endpoint="Actual"]');
+                                    if (span) span.textContent = newVal;
+                                    if (local) local.primaryHost = newVal;
+                                    loadStacksConfig();
+                                    onSuccess();
+                                }
+                            })
+                            .catch(() => {});
+                        }, null, false); // fromServidores=false → muestra hint primera vez
+                    }, 1500);
+                }
+            }
         },
         
         setSourcesData(data) {
@@ -482,7 +562,7 @@ async switchTo(profileName) {
 
         async loadSources() {
             try {
-                return await this.fetchJSON(`${CONFIG.BASE_URL}/config/sources.json?t=${Date.now()}`);
+                return await this.fetchJSON(`${CONFIG.BASE_URL}/api/sources`);
             } catch {
                 return {};
             }
@@ -553,7 +633,7 @@ async switchTo(profileName) {
             const nombreOriginal = match ? match[1] : null;
             const endpointOriginal = href.match(/\/compose\/[^/]+\/(.+)$/)?.[1] || 'Actual';
             if (!nombreOriginal) return;
-            const iconoUrl = getStackIconUrl(nombreOriginal);
+            const iconoUrl = getStackIconUrl(nombreOriginal, endpointOriginal);
             if (!img) {
                 img = document.createElement('img');
                 img.className = 'cp-icon';
@@ -770,7 +850,7 @@ async switchTo(profileName) {
     };
     
     const StackBlockManager = {
-        async create(contenedor, lista, idBase, titulo, status, sources = {}) {
+        async create(contenedor, lista, idBase, titulo, status) {
             if (!Array.isArray(lista) || lista.length === 0) {
                 this.remove(contenedor, idBase);
                 return;
@@ -823,16 +903,16 @@ async switchTo(profileName) {
             }
             blockRow.innerHTML = '';
             lista.forEach(item => {
-                const card = this.createCard(item, idBase, sources, blockTitle, blockRow);
+                const card = this.createCard(item, idBase, blockTitle, blockRow);
                 blockRow.appendChild(card);
             });
         },
 
-        createCard(item, idBase, sources, blockTitle, blockRow) {
+        createCard(item, idBase, blockTitle, blockRow) {
             const { nombre, displayName, endpoint, composePath, fechaFormateada, dockerExtra } = 
                 this.extractCardData(item, idBase);
 
-            const iconoUrl = getStackIconUrl(nombre);
+            const iconoUrl = getStackIconUrl(nombre, endpoint || 'Actual');
             const link = document.createElement('a');
             link.href = composePath;
             link.className = 'stack-card-link';
@@ -886,7 +966,7 @@ async switchTo(profileName) {
             card.className = 'stack-card-horizontal';
 
             if (idBase.startsWith('updates')) {
-                this.setupUpdateCard(card, item, nombre, displayName, iconoUrl, sources, endpoint, blockTitle, blockRow);
+                this.setupUpdateCard(card, item, nombre, displayName, iconoUrl, endpoint, blockTitle, blockRow);
             } else if (idBase.startsWith('recientes')) {
                 this.setupRecentCard(card, item, displayName, iconoUrl, fechaFormateada);
             } else if (idBase.startsWith('favoritos')) {
@@ -1044,9 +1124,9 @@ async switchTo(profileName) {
             };
         },
 
-        setupUpdateCard(card, item, nombre, displayName, iconoUrl, sources, endpoint, blockTitle, blockRow) {
+        setupUpdateCard(card, item, nombre, displayName, iconoUrl, endpoint, blockTitle, blockRow) {
             card.className = 'stack-card-horizontal update';
-            const repoUrl = sources[nombre] || '';
+            const repoUrl = getStackRepo(nombre, endpoint);
             const changelogLine = repoUrl 
                 ? (window.innerWidth <= 700 
                     ? `<a href="${repoUrl}/releases" target="_blank" rel="noopener">Changelog</a>`
@@ -1186,8 +1266,6 @@ async switchTo(profileName) {
             const detected = getDetectedServers();
             const hasDetected = detected.length > 0;
             const updatesData = State.updatesDataGlobal;
-            const sources = State.sourcesDataGlobal || {};
-
             if (!Array.isArray(updatesData)) return;
 
             const localHost =
@@ -1307,7 +1385,7 @@ async switchTo(profileName) {
 
                     // Crear wrapper con título correcto
                     if (hasUpdates || secLista.length > 0) {
-                        await StackBlockManager.create(col7, secLista.length > 0 ? secLista : [secLista[0] || {}], secId, secTitulo, '', sources);
+                        await StackBlockManager.create(col7, secLista.length > 0 ? secLista : [secLista[0] || {}], secId, secTitulo, '');
                     }
 
                     // Obtener wrapper ya creado
@@ -1332,7 +1410,7 @@ async switchTo(profileName) {
                             updatesRow.id = 'updates-row';
                             updatesRow.classList.add('dashboard-section-grid', 'dashboard-grid-updates');
                             updatesForDashboard.forEach(item => {
-                                const card = StackBlockManager.createCard(item, 'updates', sources, titleEl, updatesRow);
+                                const card = StackBlockManager.createCard(item, 'updates', titleEl, updatesRow);
                                 updatesRow.appendChild(card);
                             });
                             favWrapper.insertBefore(updatesRow, favWrapper.querySelector(`#${secId}-row`) || null);
@@ -1835,17 +1913,60 @@ let layoutDirty = false;
 
     // ==================== UI COMPONENTS ====================
     const UIComponents = {
+        fixPortLinks() {
+            if (!primaryHostLocal) return;
+            document.querySelectorAll('.col-7 a[href]').forEach(a => {
+                try {
+                    const url = new URL(a.href);
+                    // Solo links con puerto explícito que no sean ya primaryHostLocal
+                    if (!url.port || url.hostname === primaryHostLocal) return;
+                    url.hostname = primaryHostLocal;
+                    a.href = url.toString();
+                } catch {}
+            });
+        },
+
         async insertLogo() {
             const stackName = RouteManager.extractStackName();
             if (!stackName) return;
             if (document.querySelector('.compose-header')) return;
             const h1 = document.querySelector('h1.mb-3');
             if (!h1) return;
+            // Capitalizar solo el nodo de texto con el nombre del stack (no los elementos hijo)
+            h1.childNodes.forEach(node => {
+                if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+                    node.textContent = ' ' + Utils.capitalizeFirst(node.textContent.trim()) + ' ';
+                }
+            });
             const container = h1.parentElement;
             if (!container) return;
-            const iconUrl = getStackIconUrl(stackName);
-            const sources = State.sourcesDataGlobal || {};
-            const githubUrl = sources[stackName];
+            const endpoint = RouteManager.extractEndpoint();
+            const iconUrl = getStackIconUrl(stackName, endpoint);
+            const githubUrl = getStackRepo(stackName, endpoint);
+            // Si no tiene icono asignado, intentar descargarlo del CDN en background
+            const currentEntry = stacksConfig.find(s =>
+                s.name.toLowerCase() === stackName.toLowerCase() &&
+                s.endpoint.toLowerCase() === endpoint.toLowerCase()
+            );
+            if (!currentEntry?.icon) {
+                fetch(`/api/auto-icon?name=${encodeURIComponent(stackName)}&endpoint=${encodeURIComponent(endpoint)}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success && data.iconFile) {
+                            if (currentEntry) currentEntry.icon = data.iconFile;
+                            dockmeIconVersion = Date.now();
+                            localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
+                            const logoImg = document.querySelector('.compose-header .cp-icon');
+                            if (logoImg) logoImg.src = getStackIconUrl(stackName, endpoint);
+                            reasignarIconos();
+                        }
+                    })
+                    .catch(() => {});
+            }
+            const serviceUrl = stacksConfig.find(s =>
+                s.name.toLowerCase() === stackName.toLowerCase() &&
+                s.endpoint.toLowerCase() === endpoint.toLowerCase()
+            )?.url || '';
             const row = document.createElement('div');
             row.className = 'row mb-4 compose-header align-items-start';
             const colLogo = document.createElement('div');
@@ -1853,21 +1974,31 @@ let layoutDirty = false;
             const img = document.createElement('img');
             img.className = 'cp-icon';
             img.src = iconUrl;
-            img.style.height = '96px';
-            img.style.width = 'auto';
             img.onerror = () => {
                 if (img.src !== CONFIG.ICON_DEFAULT) {
                     img.src = CONFIG.ICON_DEFAULT;
                 }
             };
-            if (githubUrl) {
-                const link = document.createElement('a');
-                link.href = githubUrl;
-                link.target = '_blank';
-                link.rel = 'noopener noreferrer';
-                link.appendChild(img);
-                colLogo.appendChild(link);
+            if (serviceUrl) {
+                const logoWrap = document.createElement('div');
+                logoWrap.className = 'stack-logo-left has-url';
+                logoWrap.style.width = '96px';
+                logoWrap.style.height = '96px';
+                const flipDiv = document.createElement('div');
+                flipDiv.className = 'stack-logo-flip';
+                const front = document.createElement('div');
+                front.className = 'logo-front';
+                front.appendChild(img);
+                const back = document.createElement('div');
+                back.className = 'logo-back';
+                flipDiv.appendChild(front);
+                flipDiv.appendChild(back);
+                logoWrap.appendChild(flipDiv);
+                logoWrap.addEventListener('click', () => window.open(serviceUrl, '_blank'));
+                colLogo.appendChild(logoWrap);
             } else {
+                img.style.height = '96px';
+                img.style.width = 'auto';
                 colLogo.appendChild(img);
             }
             const colContent = document.createElement('div');
@@ -1879,13 +2010,31 @@ let layoutDirty = false;
                 next = next.nextElementSibling;
                 colContent.appendChild(current);
             }
+            const btnRow = document.createElement('div');
+            btnRow.style.display = 'flex';
+            btnRow.style.gap = '8px';
+            btnRow.style.flexWrap = 'wrap';
+            btnRow.style.marginTop = '8px';
             const volverBtn = document.createElement('button');
-            volverBtn.className = 'btn btn-normal mt-2';
+            volverBtn.className = 'btn btn-normal';
             volverBtn.innerHTML = '⬅️ Volver';
             volverBtn.addEventListener('click', () => {
                 document.querySelector('header .fs-4.title')?.click();
             });
-            colContent.appendChild(volverBtn);
+            btnRow.appendChild(volverBtn);
+            if (githubUrl) {
+                const repoBtn = document.createElement('a');
+                repoBtn.className = 'btn btn-normal';
+                repoBtn.href = githubUrl;
+                repoBtn.target = '_blank';
+                repoBtn.rel = 'noopener noreferrer';
+                repoBtn.style.display = 'inline-flex';
+                repoBtn.style.alignItems = 'center';
+                repoBtn.style.gap = '6px';
+                repoBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>Repositorio GitHub';
+                btnRow.appendChild(repoBtn);
+            }
+            colContent.appendChild(btnRow);
             row.appendChild(colLogo);
             row.appendChild(colContent);
             container.insertBefore(row, container.firstChild);
@@ -1919,6 +2068,71 @@ let layoutDirty = false;
     };
 
     // ==================== EVENT HANDLERS ====================
+    function autoAssignServiceUrl(stackName, endpoint) {
+        if (!stackName) return;
+        // Solo si no tiene URL asignada
+        const entry = stacksConfig.find(s =>
+            s.name.toLowerCase() === stackName.toLowerCase() &&
+            s.endpoint.toLowerCase() === endpoint.toLowerCase()
+        );
+        // Leer el puerto directamente del editor CodeMirror (YAML del compose)
+        const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+            .map(l => l.textContent).join('\n');
+        const portMatch = lines.match(/^\s*-\s*["']?(?:[\d.]+:)?(\d+):\d+/m);
+        const port = portMatch?.[1];
+        if (!port) return;
+
+        // Para local usar primaryHostLocal, para remoto usar solo el host del endpoint (sin puerto)
+        const isLocal = endpoint.toLowerCase() === 'actual';
+        const remoteHost = endpoint.includes(':') ? endpoint.split(':')[0] : endpoint;
+        const host = isLocal ? (primaryHostLocal || window.location.hostname) : remoteHost;
+        const serviceUrl = `http://${host}:${port}`;
+
+        // Si ya tiene URL con el mismo puerto, no hacer nada
+        if (entry?.url === serviceUrl) return;
+        // Si ya tiene URL con puerto diferente al del compose actual, actualizar
+        // Si no tiene URL, crear
+
+        // Buscar repo en sources.json si no tiene uno asignado
+        const repoFromSources = (!entry?.repo) ? (State.sourcesDataGlobal?.[stackName] || '') : '';
+
+        fetch('/api/set-stack', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: stackName, endpoint, url: serviceUrl, ...(repoFromSources ? { repo: repoFromSources, applyRepoToAll: true } : {}) })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                if (entry) {
+                    entry.url = serviceUrl;
+                    if (repoFromSources) entry.repo = repoFromSources;
+                } else {
+                    stacksConfig.push({ name: stackName, endpoint, url: serviceUrl, repo: '', favorite: false, order: null });
+                    // Stack nuevo — intentar descargar icono del CDN en background
+                    fetch(`/api/auto-icon?name=${encodeURIComponent(stackName)}&endpoint=${encodeURIComponent(endpoint)}`)
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.success && d.iconFile) {
+                                const e = stacksConfig.find(s =>
+                                    s.name.toLowerCase() === stackName.toLowerCase() &&
+                                    s.endpoint.toLowerCase() === endpoint.toLowerCase()
+                                );
+                                if (e) e.icon = d.iconFile;
+                                dockmeIconVersion = Date.now();
+                                localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
+                            }
+                            reasignarIconos();
+                        })
+                        .catch(() => {});
+                }
+                // Recargar stacksConfig para garantizar sincronización con el servidor
+                loadStacksConfig().then(() => reasignarIconos());
+            }
+        })
+        .catch(() => {});
+    }
+
     const EventHandlers = {
         handleButtonClick(e) {
             // Detectar "Detener y desactivar" en dropdown
@@ -1929,6 +2143,16 @@ let layoutDirty = false;
                     const parts = RouteManager.extractComposeParts();
                     if (parts) {
                         RecentManager.remove(parts.name, parts.endpoint);
+                        if (Array.isArray(State.updatesDataGlobal)) {
+                            const hostEntry = State.updatesDataGlobal.find(
+                                h => h.endpoint?.toLowerCase() === parts.endpoint.toLowerCase()
+                            );
+                            if (hostEntry?.hostname) {
+                                API.removeUpdate(parts.name, hostEntry.hostname)
+                                    .then(() => API.loadUpdates())
+                                    .then(updatesData => { State.setUpdatesData(updatesData); });
+                            }
+                        }
                     }
                 }
             }
@@ -1984,12 +2208,38 @@ let layoutDirty = false;
 
                 if (iconName === 'cloud-arrow-down') {
                     this.handleUpdateButton();
+                    const parts = RouteManager.extractComposeParts();
+                    if (parts) autoAssignServiceUrl(parts.name, parts.endpoint || 'Actual');
                     return;
                 }
 
                 if (iconName === 'rocket') {
+                    let parts = RouteManager.extractComposeParts();
+                    // Stack nuevo en /compose: leer nombre e endpoint del formulario o del h1
+                    if (!parts?.name) {
+                        // Primero intentar input#name (stack nunca desplegado)
+                        let stackName = document.querySelector('input#name')?.value?.trim();
+                        // Si ya fue desplegado (fallido), leer del h1
+                        if (!stackName) {
+                            const h1 = document.querySelector('h1.mb-3');
+                            if (h1) {
+                                const clone = h1.cloneNode(true);
+                                clone.querySelectorAll('.badge, .agent-name').forEach(el => el.remove());
+                                stackName = clone.textContent.trim();
+                            }
+                        }
+                        const selectVal = document.querySelector('select.form-select')?.value || '';
+                        const ep = selectVal ? selectVal : 'Actual';
+                        if (stackName) parts = { name: stackName, endpoint: ep };
+                    }
+                    if (parts?.name) autoAssignServiceUrl(parts.name, parts.endpoint || 'Actual');
                     return;
                 }
+            }
+
+            if (iconName === 'rotate') {
+                const parts = RouteManager.extractComposeParts();
+                if (parts) autoAssignServiceUrl(parts.name, parts.endpoint || 'Actual');
             }
 
             if (iconName === 'trash') {
@@ -2015,37 +2265,62 @@ let layoutDirty = false;
         },
 
         handleDeleteButton() {
-            const parts = RouteManager.extractComposeParts();
-            if (!parts) return;
-            RecentManager.remove(parts.name, parts.endpoint);
-            if (!Array.isArray(State.updatesDataGlobal)) return;
-            const hostEntry = State.updatesDataGlobal.find(
-                h => h.endpoint?.toLowerCase() === parts.endpoint.toLowerCase()
-            );
-            if (!hostEntry?.hostname) return;
-            API.removeUpdate(parts.name, hostEntry.hostname)
-                .then(() => API.loadUpdates())
-                .then(updatesData => {
-                    State.setUpdatesData(updatesData);
-                    setTimeout(() => {
-                        if (RouteManager.isRootPath()) {
-                            Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
-                        }
-                    }, 300);
-                });
-            // Limpiar stacks.json
-            const stackIdx = stacksConfig.findIndex(s =>
-                s.name?.toLowerCase() === parts.name?.toLowerCase() &&
-                s.endpoint?.toLowerCase() === (parts.endpoint || 'Actual').toLowerCase()
-            );
-            if (stackIdx >= 0) {
-                stacksConfig.splice(stackIdx, 1);
-                fetch('/api/set-stack', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: parts.name, endpoint: parts.endpoint || 'Actual', _delete: true })
-                }).catch(() => {});
+            let parts = RouteManager.extractComposeParts();
+            // Si estamos en /compose sin nombre (deploy fallido), leer del h1
+            if (!parts?.name) {
+                const h1 = document.querySelector('h1.mb-3');
+                if (h1) {
+                    const clone = h1.cloneNode(true);
+                    clone.querySelectorAll('.badge, .agent-name').forEach(el => el.remove());
+                    const stackName = clone.textContent.trim();
+                    const agentName = h1.querySelector('.agent-name')?.textContent?.replace(/[()]/g, '').trim();
+                    const ep = (!agentName || agentName === 'Actual') ? 'Actual' : agentName;
+                    if (stackName) parts = { name: stackName, endpoint: ep };
+                }
             }
+            if (!parts?.name) return;
+            // Esperar a que el usuario confirme en el modal de Dockge
+            // El botón .btn-danger dentro del modal es la confirmación real
+            const waitForConfirm = () => {
+                const confirmBtn = document.querySelector('.modal.show .btn-danger');
+                if (!confirmBtn) {
+                    setTimeout(waitForConfirm, 100);
+                    return;
+                }
+                confirmBtn.addEventListener('click', () => {
+                    RecentManager.remove(parts.name, parts.endpoint);
+                    if (!Array.isArray(State.updatesDataGlobal)) return;
+                    const hostEntry = State.updatesDataGlobal.find(
+                        h => h.endpoint?.toLowerCase() === parts.endpoint.toLowerCase()
+                    );
+                    if (hostEntry?.hostname) {
+                        API.removeUpdate(parts.name, hostEntry.hostname)
+                            .then(() => API.loadUpdates())
+                            .then(updatesData => {
+                                State.setUpdatesData(updatesData);
+                                setTimeout(() => {
+                                    if (RouteManager.isRootPath()) {
+                                        Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
+                                    }
+                                }, 300);
+                            });
+                    }
+                    // Limpiar stacks.json
+                    const stackIdx = stacksConfig.findIndex(s =>
+                        s.name?.toLowerCase() === parts.name?.toLowerCase() &&
+                        s.endpoint?.toLowerCase() === (parts.endpoint || 'Actual').toLowerCase()
+                    );
+                    if (stackIdx >= 0) {
+                        stacksConfig.splice(stackIdx, 1);
+                        fetch('/api/set-stack', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name: parts.name, endpoint: parts.endpoint || 'Actual', _delete: true })
+                        }).catch(() => {});
+                    }
+                }, { once: true });
+            };
+            setTimeout(waitForConfirm, 100);
         },
 
         updateDockme(endpoint) {
@@ -2242,7 +2517,7 @@ let layoutDirty = false;
                 
                 bodyHTML += `<div class="server-group-title">${hostname}</div>`;
                 stacks.forEach(s => {
-                    const iconUrl = getStackIconUrl(s.name);
+                    const iconUrl = getStackIconUrl(s.name, s.endpoint || 'Actual');
                     const stackData = stacksConfig.find(sc =>
                         sc.name?.toLowerCase() === s.name?.toLowerCase() &&
                         sc.endpoint?.toLowerCase() === (s.endpoint || 'Actual').toLowerCase()
@@ -2697,13 +2972,19 @@ let layoutDirty = false;
                 hideDockgeHomeBlock();
                 ensureDockmeRoot();
                 readAgentsFromDockgeDOM();
-                setTimeout(() => {
+                const tryLoadDashboard = (attemptsLeft) => {
                     Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
                         MetricsManager.ensureContainer();
-                        DataLoader.loadAndDisplay();
-                        MetricsManager.start();
+                        const dashboard = ensureDockmeRoot();
+                        if (dashboard) {
+                            DataLoader.loadAndDisplay();
+                            MetricsManager.start();
+                        } else if (attemptsLeft > 0) {
+                            setTimeout(() => tryLoadDashboard(attemptsLeft - 1), 200);
+                        }
                     });
-                }, 100);
+                };
+                setTimeout(() => tryLoadDashboard(10), 100);
             } else {
                 MetricsManager.stop();
             }
@@ -2714,6 +2995,7 @@ let layoutDirty = false;
                 }, CONFIG.LOGO_INSERT_DELAY);
             } else if (RouteManager.isComposePath()) {
                 UIComponents.insertLogo();
+                UIComponents.fixPortLinks();
                 wrapComposeHeader();
                 RecentManager.add();
             }
@@ -2872,14 +3154,32 @@ let layoutDirty = false;
         }
         return false;
     }
-    function getStackIconUrl(stackName) {
+    function getStackRepo(stackName, endpoint) {
+        if (!stackName) return '';
+        const entry = endpoint
+            ? stacksConfig.find(s =>
+                s.name.toLowerCase() === stackName.toLowerCase() &&
+                s.endpoint.toLowerCase() === endpoint.toLowerCase()
+              )
+            : stacksConfig.find(s => s.name.toLowerCase() === stackName.toLowerCase());
+        return entry?.repo || State.sourcesDataGlobal?.[stackName] || '';
+    }
+
+    function getStackIconUrl(stackName, endpoint) {
         if (!stackName) {
             return `${CONFIG.BASE_URL}/system-icons/no-icon.svg`;
         }
         if (stackName.toLowerCase() === 'dockme') {
             return `${CONFIG.BASE_URL}/system-icons/dockme.svg`;
         }
-        return `${CONFIG.BASE_URL}/icons/${stackName}.svg?v=${dockmeIconVersion}`;
+        const entry = endpoint
+            ? stacksConfig.find(s =>
+                s.name.toLowerCase() === stackName.toLowerCase() &&
+                s.endpoint.toLowerCase() === endpoint.toLowerCase()
+              )
+            : stacksConfig.find(s => s.name.toLowerCase() === stackName.toLowerCase());
+        const iconFile = entry?.icon || `${stackName}.svg`;
+        return `${CONFIG.BASE_URL}/icons/${iconFile}?v=${dockmeIconVersion}`;
     }
     function showIconEditorError(editor, message) {
         clearIconEditorMessages(editor);
@@ -3274,6 +3574,11 @@ let layoutDirty = false;
         panel.querySelectorAll('.config-content').forEach(content => {
             content.classList.toggle('active', content.id === `config-tab-${tab}`);
         });
+        // Al volver al tab stacks, resetear el editor al estado por defecto
+        if (tab === 'stacks') {
+            const editor = panel.querySelector('#config-tab-stacks');
+            if (editor) editor.innerHTML = '<p>Selecciona un stack de la lista izquierda para editar sus datos.</p>';
+        }
         // Cargar contenido del tab si está vacío
         if (tab === 'servidores') {
             const container = panel.querySelector('#config-tab-servidores');
@@ -3326,7 +3631,7 @@ let layoutDirty = false;
             </div>
             <div class="dockme-editor-header">
                 <div class="dockme-icon-preview">
-                    <img src="${getStackIconUrl(stackName)}" alt="Icono de ${stackName}">
+                    <img src="${getStackIconUrl(stackName, endpoint)}" alt="Icono de ${stackName}">
                 </div>
                 <div>
                     <div class="dockme-stack-name">
@@ -3352,6 +3657,17 @@ let layoutDirty = false;
                     <span class="dockme-icon-status service-url"></span>
                 </div>
             </div>            
+            <div class="dockme-icon-editor">
+                <label class="dockme-icon-label">Repositorio en GitHub</label>
+                <div class="dockme-icon-input-row">
+                    <input
+                        type="text"
+                        class="dockme-repo-url-input"
+                        placeholder="https://github.com/usuario/repo"
+                    />
+                    <span class="dockme-icon-status repo-url"></span>
+                </div>
+            </div>
             <div class="dockme-icon-editor">
                 <label class="dockme-icon-label">URL del icono (SVG)</label>
                 <div class="dockme-icon-input-row">
@@ -3386,23 +3702,42 @@ let layoutDirty = false;
 
         `;
         addFavFilterBtn(editor, favBtnActive);
-//      Cargar datos actuales del stack
-        fetch(`/api/get-stack?name=${encodeURIComponent(stackName)}&endpoint=${encodeURIComponent(endpoint)}`)
-            .then(r => r.json())
-            .then(data => {
-                if (data.stack) {
-                    const serviceInput = editor.querySelector('.dockme-service-url-input');
-                    if (serviceInput && data.stack.url) serviceInput.value = data.stack.url;
-                    const star = editor.querySelector('.dockme-favorite-star');
-                    if (star) {
-                        star.classList.toggle('active', !!data.stack.favorite);
+//      Cargar datos actuales del stack desde memoria (stacksConfig ya cargado al inicio)
+        const stackEntry = stacksConfig.find(s =>
+            s.name.toLowerCase() === stackName.toLowerCase() &&
+            s.endpoint.toLowerCase() === endpoint.toLowerCase()
+        );
+        // Si no tiene icono, intentar buscarlo en CDN automáticamente
+        if (!stackEntry?.icon) {
+            fetch(`/api/auto-icon?name=${encodeURIComponent(stackName)}&endpoint=${encodeURIComponent(endpoint)}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success && data.iconFile) {
+                        // Actualizar en memoria y refrescar preview
+                        const entry = stacksConfig.find(s =>
+                            s.name.toLowerCase() === stackName.toLowerCase() &&
+                            s.endpoint.toLowerCase() === endpoint.toLowerCase()
+                        );
+                        if (entry) entry.icon = data.iconFile;
+                        dockmeIconVersion = Date.now();
+                        localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
+                        const preview = editor.querySelector('.dockme-icon-preview');
+                        if (preview) preview.innerHTML = `<img src="${getStackIconUrl(stackName, endpoint)}" alt="Icono de ${stackName}">`;
+                        reasignarIconos();
                     }
-                }
-            })
-            .catch(() => {});
+                })
+                .catch(() => {});
+        }
+        const serviceInput = editor.querySelector('.dockme-service-url-input');
+        if (serviceInput && stackEntry?.url) serviceInput.value = stackEntry.url;
+        const repoInput = editor.querySelector('.dockme-repo-url-input');
+        if (repoInput) {
+            repoInput.value = stackEntry?.repo || State.sourcesDataGlobal?.[stackName] || '';
+        }
 //      Estrella favorito
         const star = editor.querySelector('.dockme-favorite-star');
         if (star) {
+            star.classList.toggle('active', !!stackEntry?.favorite);
             star.addEventListener('click', () => {
                 const isFav = star.classList.contains('active');
                 fetch('/api/set-stack', {
@@ -3442,8 +3777,58 @@ let layoutDirty = false;
             });
         }
         // URL del servicio
-        const serviceInput = editor.querySelector('.dockme-service-url-input');
         const handleServiceUrlSave = () => {
+            // Si el endpoint es local y no tiene primaryHost guardado, preguntar primero
+            if (endpoint.toLowerCase() === 'actual' && !primaryHostLocal) {
+                // Guardar la URL pendiente para ejecutarla tras el modal
+                const doSaveUrl = () => {
+                    let url = serviceInput.value.trim();
+                    if (url && !url.match(/^https?:\/\//)) {
+                        url = 'http://' + url;
+                        serviceInput.value = url;
+                    }
+                    fetch('/api/set-stack', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: stackName, endpoint, url })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        setIconStatus(editor, 'service-url', data.success, data.success ? '' : 'Error al guardar');
+                        if (data.success) {
+                            const entry = stacksConfig.find(s =>
+                                s.name.toLowerCase() === stackName.toLowerCase() &&
+                                s.endpoint.toLowerCase() === endpoint.toLowerCase()
+                            );
+                            if (entry) entry.url = url;
+                            setTimeout(() => {
+                                const status = editor.querySelector('.dockme-icon-status.service-url');
+                                if (status) { status.textContent = ''; status.className = 'dockme-icon-status service-url'; }
+                            }, 2000);
+                        }
+                    })
+                    .catch(() => { setIconStatus(editor, 'service-url', false, 'Error de conexión'); });
+                };
+                showPrimaryHostModal('Actual', null, (newVal, onSuccess) => {
+                    fetch('/api/set-primary-host', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ primaryHost: newVal, oldHostname: window.location.hostname })
+                    })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            primaryHostLocal = newVal;
+                            const span = document.querySelector('.agent-primary-host-value[data-endpoint="Actual"]');
+                            if (span) span.textContent = newVal;
+                            onSuccess();
+                            doSaveUrl();
+                        }
+                    })
+                    .catch(() => {});
+                }, doSaveUrl); // onCancel también guarda la URL
+                return;
+            }
             let url = serviceInput.value.trim();
             if (url && !url.match(/^https?:\/\//)) {
                 url = 'http://' + url;
@@ -3458,6 +3843,11 @@ let layoutDirty = false;
             .then(data => {
                 setIconStatus(editor, 'service-url', data.success, data.success ? '' : 'Error al guardar');
                 if (data.success) {
+                    const entry = stacksConfig.find(s =>
+                        s.name.toLowerCase() === stackName.toLowerCase() &&
+                        s.endpoint.toLowerCase() === endpoint.toLowerCase()
+                    );
+                    if (entry) entry.url = url;
                     setTimeout(() => {
                         const status = editor.querySelector('.dockme-icon-status.service-url');
                         if (status) { status.textContent = ''; status.className = 'dockme-icon-status service-url'; }
@@ -3474,6 +3864,42 @@ let layoutDirty = false;
         serviceInput.addEventListener('paste', () => {
             setTimeout(handleServiceUrlSave, 50);
         });
+        // URL del repositorio GitHub
+        const handleRepoUrlSave = () => {
+            let repo = repoInput.value.trim();
+            if (repo && !repo.match(/^https?:\/\//)) {
+                repo = 'https://' + repo;
+                repoInput.value = repo;
+            }
+            fetch('/api/set-stack', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: stackName, endpoint, repo, applyRepoToAll: true })
+            })
+            .then(r => r.json())
+            .then(data => {
+                setIconStatus(editor, 'repo-url', data.success, data.success ? '' : 'Error al guardar');
+                if (data.success) {
+                    // Actualizar todas las entradas con ese nombre en memoria
+                    stacksConfig
+                        .filter(s => s.name.toLowerCase() === stackName.toLowerCase())
+                        .forEach(s => { s.repo = repo; });
+                    setTimeout(() => {
+                        const status = editor.querySelector('.dockme-icon-status.repo-url');
+                        if (status) { status.textContent = ''; status.className = 'dockme-icon-status repo-url'; }
+                    }, 2000);
+                }
+            })
+            .catch(() => {
+                setIconStatus(editor, 'repo-url', false, 'Error de conexión');
+            });
+        };
+        repoInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); handleRepoUrlSave(); }
+        });
+        repoInput.addEventListener('paste', () => {
+            setTimeout(handleRepoUrlSave, 50);
+        });
         // URL SVG
         const urlInput = editor.querySelector('.dockme-icon-url-input');
         const handleUrlApply = () => {
@@ -3482,10 +3908,11 @@ let layoutDirty = false;
                 setIconStatus(editor, 'url', false, 'La URL debe apuntar a un archivo SVG');
                 return;
             }
+            const urlFilename = url.split('/').pop() || `${stackName}.svg`;
             fetch('/api/stack-icon', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ stack: stackName, type: 'url', url })
+                body: JSON.stringify({ name: stackName, endpoint, filename: urlFilename, type: 'url', url })
             })
             .then(res => res.json())
             .then(data => {
@@ -3493,6 +3920,12 @@ let layoutDirty = false;
                     setIconStatus(editor, 'url', false, data.error || 'Error al actualizar el icono');
                     return;
                 }
+                // Actualizar stacksConfig en memoria con el nuevo icon
+                const entry = stacksConfig.find(s =>
+                    s.name.toLowerCase() === stackName.toLowerCase() &&
+                    s.endpoint.toLowerCase() === endpoint.toLowerCase()
+                );
+                if (entry) entry.icon = data.iconFile;
                 setIconStatus(editor, 'url', true);
                 setTimeout(() => {
                     const status = editor.querySelector('.dockme-icon-status.url');
@@ -3502,7 +3935,7 @@ let layoutDirty = false;
                 localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
                 const preview = editor.querySelector('.dockme-icon-preview');
                 if (preview) {
-                    preview.innerHTML = `<img src="${getStackIconUrl(stackName)}" alt="Icono de ${stackName}">`;
+                    preview.innerHTML = `<img src="${getStackIconUrl(stackName, endpoint)}" alt="Icono de ${stackName}">`;
                 }
             })
             .catch(() => {
@@ -3538,7 +3971,7 @@ let layoutDirty = false;
                         setIconStatus(editor,'upload',false,'El archivo no es un SVG válido');
                         return;
                     }
-                    uploadStackIconFromSvg(stackName, svgText, editor);
+                    uploadStackIconFromSvg(stackName, endpoint, file.name, svgText, editor);
                 };
                 reader.onerror = () => {
                     showIconEditorError(editor, 'No se pudo leer el archivo');
@@ -3585,12 +4018,14 @@ let layoutDirty = false;
         hiddenBlock.after(root);
         return root;
     }
-    function uploadStackIconFromSvg(stackName, svgText, editor) {
+    function uploadStackIconFromSvg(stackName, endpoint, filename, svgText, editor) {
         fetch('/api/stack-icon', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                stack: stackName,
+                name: stackName,
+                endpoint,
+                filename,
                 type: 'upload',
                 svg: svgText
             })
@@ -3598,31 +4033,25 @@ let layoutDirty = false;
         .then(res => res.json())
         .then(data => {
             if (!data.success) {
-                setIconStatus(
-                    editor,
-                    'upload',
-                    false,
-                    data.error || 'Error al guardar el icono'
-                );
+                setIconStatus(editor, 'upload', false, data.error || 'Error al guardar el icono');
                 return;
             }
+            // Actualizar stacksConfig en memoria con el nuevo icon
+            const entry = stacksConfig.find(s =>
+                s.name.toLowerCase() === stackName.toLowerCase() &&
+                s.endpoint.toLowerCase() === endpoint.toLowerCase()
+            );
+            if (entry) entry.icon = data.iconFile;
             setIconStatus(editor, 'upload', true);
             dockmeIconVersion = Date.now();
             localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
             const preview = editor.querySelector('.dockme-icon-preview');
             if (preview) {
-                preview.innerHTML = `
-                    <img src="${getStackIconUrl(stackName)}" alt="Icono de ${stackName}">
-                `;
+                preview.innerHTML = `<img src="${getStackIconUrl(stackName, endpoint)}" alt="Icono de ${stackName}">`;
             }
         })
         .catch(() => {
-            setIconStatus(
-                editor,
-                'upload',
-                false,
-                'Error de conexión'
-            );
+            setIconStatus(editor, 'upload', false, 'Error de conexión');
         });
     }
 
@@ -3675,10 +4104,11 @@ let layoutDirty = false;
             const img = a.querySelector('img.cp-icon');
             if (!href || !img) return;
             if (img.dataset.iconoFallback === 'true') return;
-            const match = href.match(/\/compose\/([^/]+)/);
+            const match = href.match(/\/compose\/([^/]+)(?:\/([^/]+))?/);
             if (!match) return;
             const stackName = match[1];
-            const esperado = getStackIconUrl(stackName);
+            const endpointIcon = match[2] || 'Actual';
+            const esperado = getStackIconUrl(stackName, endpointIcon);
             if (!img.src.includes(esperado)) {
                 img.src = esperado;
             }
@@ -3949,11 +4379,12 @@ let layoutDirty = false;
                 btnCheckNow.addEventListener('click', async (e) => {
                     e.stopPropagation();
                     btnCheckNow.style.display = 'none';
-                    const targetUrl = endpoint.toLowerCase() === 'actual'
-                        ? '/api/run-check'
-                        : `http://${endpoint}/api/run-check`;
                     try {
-                        await fetch(targetUrl, { method: 'POST' });
+                        await fetch('/api/run-check', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ endpoint })
+                        });
                     } catch {}
                 });
             }
@@ -4440,6 +4871,15 @@ function createAgentsTable() {
         const isLocal = agent.endpoint.toLowerCase() === 'actual';
         const iconUrl = `/icons/server-${agent.hostname}.svg?v=${dockmeIconVersion}`;
         const endpointHtml = isLocal ? '' : `<div class="agent-endpoint-small">${agent.endpoint}</div>`;
+        const primaryHostHtml = isLocal ? `
+            <div class="agent-endpoint-small" style="display:flex;align-items:center;gap:4px;margin-top:4px;">
+                <span class="agent-primary-host-value" data-endpoint="${agent.endpoint}">—</span>
+                <img src="/system-icons/dockme-edit.svg" 
+                    class="agent-primary-host-edit" 
+                    data-endpoint="${agent.endpoint}"
+                    title="Editar IP base del servidor"
+                    style="width:20px;height:20px;cursor:pointer;opacity:0.6;flex-shrink:0;">
+            </div>` : '';
         return `
             <tr>
                 <td class="text-center">
@@ -4451,6 +4891,7 @@ function createAgentsTable() {
                 <td>
                     <strong>${agent.hostname}</strong>
                     ${endpointHtml}
+                    ${primaryHostHtml}
                 </td>
                 <td>
                     <div style="display:flex;align-items:center;gap:6px;">
@@ -4463,7 +4904,7 @@ function createAgentsTable() {
                 </td>
                 <td class="text-center">
                     ${isLocal 
-                        ? '-' 
+                        ? `<img src="/system-icons/dockme-edit.svg" class="agent-primary-host-edit" data-endpoint="${agent.endpoint}" title="Editar IP base del servidor" style="width:28px;height:28px;cursor:pointer;opacity:0.7;">`
                         : `<button class="btn-delete-agent" data-endpoint="${agent.endpoint}" title="Eliminar agente">❌</button>`
                     }
                 </td>
@@ -4495,6 +4936,47 @@ function createAgentsTable() {
 }
 
 // ==================== MOSTRAR PANEL DE GESTIÓN ====================
+function showPrimaryHostModal(endpoint, currentValue, onSave, onCancel, fromServidores = false) {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    const isFirstTime = !currentValue;
+    const title = isFirstTime ? 'Configura tu servidor' : 'IP base del servidor';
+    const desc = isFirstTime
+        ? 'Ahora puedes configurar la URL base para lanzar los servicios Docker. Introduce la IP o hostname que quieres usar:'
+        : 'IP o hostname local del servidor. Se usa para generar automáticamente las URLs de servicio.';
+    const hint = isFirstTime
+        ? `<p style="font-size:0.8em;color:#4f84c8;margin:0 0 16px;">Puedes cambiarlo después desde <strong>Configuración → Servidores → ✏️</strong></p>`
+        : '';
+    modal.innerHTML = `
+        <div style="background:#1a2332;border:1px solid #3a4557;border-radius:12px;padding:24px;width:400px;max-width:90vw;">
+            <h3 style="margin:0 0 10px;font-size:1.1em;">${title}</h3>
+            <p style="font-size:0.85em;color:#888;margin:0 0 12px;line-height:1.5;">${desc}</p>
+            <p style="font-size:0.85em;color:#888;margin:0 0 16px;line-height:2;">
+                <code style="color:#4f84c8;">localhost</code> &nbsp;→ http://localhost:8080<br>
+                <code style="color:#4f84c8;">192.168.0.15</code> → http://192.168.0.15:8080
+            </p>
+            <input type="text" id="primary-host-modal-input"
+                value="${currentValue || 'localhost'}"
+                placeholder="localhost"
+                style="width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #3a4557;background:#121821;color:#fff;font-family:monospace;margin-bottom:12px;">
+            ${hint}
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button id="primary-host-save" class="btn btn-normal">Guardar</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    const input = modal.querySelector('#primary-host-modal-input');
+    input.focus();
+    input.select();
+    modal.querySelector('#primary-host-save').addEventListener('click', () => {
+        const val = input.value.trim();
+        if (!val) return;
+        if (onSave) onSave(val, () => { modal.remove(); });
+    });
+}
+
+
 function renderServidoresTab(container) {
     readAgentsFromDockgeDOM();
     container.innerHTML = `
@@ -4512,11 +4994,22 @@ function renderServidoresTab(container) {
                 if (entry?.uiUrl) {
                     input.value = entry.uiUrl;
                     setTimeout(() => { input.scrollLeft = 0; }, 50);
-                    input.addEventListener('blur', () => {
-                        input.scrollLeft = 0;
-                    });
+                    input.addEventListener('blur', () => { input.scrollLeft = 0; });
                 }
             });
+            // Cargar primaryHost para el servidor local
+            let needsPrimaryHostSetup = false;
+            container.querySelectorAll('.agent-primary-host-value').forEach(span => {
+                const ep = span.dataset.endpoint;
+                const entry = data.find(h => h.endpoint?.toLowerCase() === ep?.toLowerCase());
+                if (entry?.primaryHost) {
+                    span.textContent = entry.primaryHost;
+                } else {
+                    span.textContent = 'localhost';
+                    needsPrimaryHostSetup = true;
+                }
+            });
+
         })
         .catch(() => {});
 
@@ -4547,6 +5040,39 @@ function renderServidoresTab(container) {
             if (e.key === 'Enter') { e.preventDefault(); handleSave(); }
         });
         input.addEventListener('paste', () => setTimeout(handleSave, 50));
+    });
+
+    // Listener lápiz primaryHost — abre modal
+    container.querySelectorAll('.agent-primary-host-edit').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const ep = btn.dataset.endpoint;
+            const currentVal = container.querySelector(`.agent-primary-host-value[data-endpoint="${ep}"]`)?.textContent || '';
+            const isDefault = currentVal === 'localhost';
+            showPrimaryHostModal(ep, isDefault ? null : currentVal, (newVal, onSuccess) => {
+                fetch('/api/set-primary-host', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ primaryHost: newVal, oldHostname: primaryHostLocal || window.location.hostname })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        primaryHostLocal = newVal;
+                        const span = container.querySelector(`.agent-primary-host-value[data-endpoint="${ep}"]`);
+                        if (span) span.textContent = newVal;
+                        // Actualizar en memoria
+                        if (Array.isArray(State.updatesDataGlobal)) {
+                            const local = State.updatesDataGlobal.find(h => h.endpoint?.toLowerCase() === 'actual');
+                            if (local) local.primaryHost = newVal;
+                        }
+                        // Recargar stacksConfig para que las URLs actualizadas estén disponibles
+                        loadStacksConfig();
+                        onSuccess();
+                    }
+                })
+                .catch(() => {});
+            }, null, true);
+        });
     });
 
     // Listeners icono servidor
@@ -5142,6 +5668,7 @@ function init() {
         insertEditStacksIcon();
         setTimeout(() => ItemManager.refreshIcons(), CONFIG.ICON_REFRESH_DELAY);
         OcultarAddUrlComposEditor();
+        if (RouteManager.isComposePath()) UIComponents.fixPortLinks();
     };
 
     DOMObserver.init(processTodoCompleto);

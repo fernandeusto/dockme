@@ -231,9 +231,18 @@ fi
 #   FORMAT SPACE
 # ============================
 format_space() {
+    # Retorna vacío si el espacio es menor a 100MB (umbral mínimo para notificar)
     echo "$1" | awk '{
         n = $0; gsub(/[A-Z]+/, "", n)
         u = $0; gsub(/[0-9.]+/, "", u)
+        # Convertir a MB para comparar con umbral
+        mb = n
+        if (u == "KB") mb = n / 1024
+        else if (u == "B") mb = n / 1048576
+        else if (u == "GB") mb = n * 1024
+        else if (u == "TB") mb = n * 1048576
+        if (mb < 100) { print ""; exit }
+        # Formatear salida
         if (u == "GB") {
             dec = n - int(n)
             if (dec == 0) printf "%d GB\n", int(n)
@@ -242,6 +251,7 @@ format_space() {
         else printf "%d %s\n", int(n + 0.5), u
     }' | sed 's/\.\([0-9]\)/,\1/'
 }
+
 
 # ============================
 #   SUMMARY
@@ -266,10 +276,10 @@ while IFS= read -r stack; do
     msg+="<code>  • ${stack}</code>"$'\n'
 done <<< "$stacks_unique"
 
-# Añadir espacio liberado si hay
+# Añadir espacio liberado si supera 100MB (format_space filtra por umbral)
 if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
     space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
-    msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
+    [ -n "$space" ] && msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
 fi
 
 send_notif "$msg"
@@ -304,12 +314,14 @@ send_notif "$msg"
     fi
 else
     echo -e "${GREEN}No hay actualizaciones. Todos los stacks están actualizados!${NC}"
-    # Notificar si se libero espacio aunque no haya updates
+    # Notificar si se liberó espacio superior a 100MB aunque no haya updates
     if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
         space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
-        msg="🐋 <b>${HOSTNAME}</b>: Todo actualizado"$'\n'
-        msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
-        send_notif "$msg"
+        if [ -n "$space" ]; then
+            msg="🐋 <b>${HOSTNAME}</b>: Todo actualizado"$'\n'
+            msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
+            send_notif "$msg"
+        fi
     fi
 fi
 # Guardar estado final en progress
@@ -324,6 +336,7 @@ lastCheck=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 prune_space=""
 if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
     prune_space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
+    # format_space ya filtra por umbral de 100MB, si está vacío no mostrar
 fi
 cat > /app/data/config/check-progress.json << EOF
 {"status":"idle","percent":100,"lastCheck":"${lastCheck}","pruneSpace":"${prune_space}"}

@@ -145,11 +145,10 @@ RUN chmod +x \
 # Copiar custom (Nginx + API Node + custom.js)
 # ========================================
 COPY custom/ /custom/
-RUN chmod +x /custom/api.js
 
-# Instalar dependencias de la API Node
+# Instalar dependencias de la API Node (como apps para evitar chown posterior)
 WORKDIR /custom
-RUN npm install --omit=dev
+RUN chown -R apps:apps /custom     && chmod +x /custom/api.js     && su -s /bin/sh apps -c "npm install --omit=dev" 
 
 # Configurar Nginx - remover config por defecto y copiar la nuestra
 RUN rm -f /etc/nginx/sites-enabled/default \
@@ -181,11 +180,6 @@ RUN mkdir -p \
     && chmod -R 755 /var/log/nginx
 
 # ========================================
-# Copiar metadata por defecto
-# ========================================
-COPY defaults/ /app/defaults/
-
-# ========================================
 # Copiar entrypoint
 # ========================================
 COPY entrypoint.sh /entrypoint.sh
@@ -208,9 +202,8 @@ RUN mkdir -p /app/data \
     /entrypoint.sh \
     && chown -R apps:apps \
     /tools \
-    /custom \
     /etc/nginx \
-    && chmod -R 755 /tools /custom /etc/nginx \
+    && chmod -R 755 /tools /etc/nginx \
     && chmod +x /entrypoint.sh /app/extra/healthcheck \
     && chmod 644 /etc/nginx/nginx.conf /etc/nginx/conf.d/default.conf
 

@@ -92,7 +92,6 @@ if [ ! -f "$INIT_FLAG" ]; then
     mkdir -p /app/data/icons
     mkdir -p /app/data/config
     cp -r /app/defaults/icons/* /app/data/icons/ 2>/dev/null || true
-    cp /app/defaults/json/sources.json /app/data/config/sources.json 2>/dev/null || true
     # Crear updates.json inicial (host local)
     HOSTNAME_VALUE="${HOSTNAME:-Dockme}"
     printf '[{"hostname":"%s","endpoint":"Actual","updates":[]}]' "$HOSTNAME_VALUE" \
@@ -110,11 +109,10 @@ if [ ! -f "/app/data/config/links.json" ]; then
     printf '[]' > /app/data/config/links.json
 fi
 
-# Verificar que tenemos permisos de lectura en metadata
-if [ ! -r "/app/data/config/sources.json" ]; then
-    echo "⚠️  ADVERTENCIA: No se puede leer /app/data/config/sources.json"
-    echo "   Asegúrate de que el volumen /app/data tiene permisos."
-fi
+# TODO: eliminar en v2.3 — limpiar sources.json del volumen del usuario (migrado a imagen interna)
+rm -f /app/data/config/sources.json 2>/dev/null || true
+
+
 
 # ========================================
 # Activar virtualenv para Python

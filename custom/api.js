@@ -225,13 +225,23 @@ app.post('/api/remove-update', (req, res) => {
 // ============================
 app.post('/api/stack-icon', async (req, res) => {
   try {
-    const { stack, type } = req.body;
-    if (!stack || !type) {
+    const { stack, name, endpoint, filename, type } = req.body;
+    // Soporte legacy (stack sin name/endpoint) y nuevo formato
+    const stackName  = name  || stack;
+    const stackEndpoint = endpoint || 'Actual';
+    if (!stackName || !type) {
       return res.status(400).json({ error: 'Faltan parámetros' });
     }
     if (!['url', 'upload'].includes(type)) {
       return res.status(400).json({ error: 'Tipo inválido' });
     }
+
+    const iconsDir = '/app/data/icons';
+    fs.mkdirSync(iconsDir, { recursive: true });
+
+    let svgText;
+    let iconFile;
+
     // ICONO DESDE URL
     if (type === 'url') {
       const { url } = req.body;
@@ -245,24 +255,18 @@ app.post('/api/stack-icon', async (req, res) => {
         });
       }
       const contentType = response.headers.get('content-type') || '';
-      const svgText = await response.text();
+      svgText = await response.text();
       if (
         !contentType.includes('image/svg+xml') &&
         !svgText.trim().startsWith('<svg')
       ) {
-        return res.status(400).json({
-          error: 'La URL no contiene un SVG válido'
-        });
+        return res.status(400).json({ error: 'La URL no contiene un SVG válido' });
       }
-      const iconsDir = '/app/data/icons';
-      const iconPath = path.join(iconsDir, `${stack}.svg`);
-      fs.mkdirSync(iconsDir, { recursive: true });
-      fs.writeFileSync(iconPath, svgText, 'utf8');
-      return res.json({
-        success: true,
-        stack,
-        message: 'Icono actualizado desde URL'
-      });
+      // Nombre del fichero: filename enviado, o último segmento de la URL, o {stack}.svg
+      iconFile = filename
+        || path.basename(new URL(url).pathname)
+        || `${stackName}.svg`;
+      if (!iconFile.toLowerCase().endsWith('.svg')) iconFile += '.svg';
     }
 
     // ICONO DESDE SVG LOCAL (TEXTO)
@@ -272,18 +276,46 @@ app.post('/api/stack-icon', async (req, res) => {
         return res.status(400).json({ error: 'SVG no válido' });
       }
       if (!/<svg[\s>]/i.test(svg)) {
-          return res.status(400).json({ error: 'El contenido no es un SVG válido' });
+        return res.status(400).json({ error: 'El contenido no es un SVG válido' });
       }
-      const iconsDir = '/app/data/icons';
-      const iconPath = path.join(iconsDir, `${stack}.svg`);
-      fs.mkdirSync(iconsDir, { recursive: true });
-      fs.writeFileSync(iconPath, svg, 'utf8');
-      return res.json({
-        success: true,
-        stack,
-        message: 'Icono actualizado desde archivo local'
-      });
+      svgText = svg;
+      iconFile = filename || `${stackName}.svg`;
+      if (!iconFile.toLowerCase().endsWith('.svg')) iconFile += '.svg';
     }
+
+    // Sanear nombre de fichero (solo nombre, sin rutas)
+    iconFile = path.basename(iconFile);
+
+    // Borrar icono anterior si nadie más lo usa
+    const stacks = readStacksFile();
+    const entryIdx = stacks.findIndex(s =>
+      s.name.toLowerCase() === stackName.toLowerCase() &&
+      s.endpoint.toLowerCase() === stackEndpoint.toLowerCase()
+    );
+    if (entryIdx >= 0) {
+      const oldIcon = stacks[entryIdx].icon;
+      if (oldIcon && oldIcon !== iconFile) {
+        const usedByOther = stacks.some((s, i) => i !== entryIdx && s.icon === oldIcon);
+        if (!usedByOther) {
+          const oldPath = path.join(iconsDir, oldIcon);
+          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        }
+      }
+    }
+
+    // Guardar fichero SVG con nombre original
+    fs.writeFileSync(path.join(iconsDir, iconFile), svgText, 'utf8');
+
+    // Actualizar campo icon en stacks.json (no crear entradas para iconos de links)
+    if (entryIdx >= 0) {
+      stacks[entryIdx].icon = iconFile;
+      writeStacksFile(stacks);
+    } else if (!stackName.startsWith('link-') && !stackName.startsWith('server-')) {
+      stacks.push({ name: stackName, endpoint: stackEndpoint, icon: iconFile, url: '', repo: '', favorite: false, order: null });
+      writeStacksFile(stacks);
+    }
+
+    return res.json({ success: true, iconFile, message: 'Icono actualizado' });
 
   } catch (err) {
     console.error('Error en /api/stack-icon:', err);
@@ -527,20 +559,55 @@ app.get('/api/get-stack', (req, res) => {
 // ============================
 app.post('/api/set-stack', (req, res) => {
   try {
-    const { name, endpoint, url, favorite, order, _delete } = req.body;
+    const { name, endpoint, url, repo, favorite, order, _delete, applyRepoToAll } = req.body;
     if (!name || !endpoint) {
       return res.status(400).json({ error: "Faltan parámetros 'name' o 'endpoint'" });
     }
     const data = readStacksFile();
+
+    // Si repo viene con applyRepoToAll, actualizarlo en todas las entradas con ese nombre
+    if (repo !== undefined && applyRepoToAll) {
+      const matches = data.filter(s => s.name.toLowerCase() === name.toLowerCase());
+      if (matches.length > 0) {
+        matches.forEach(s => {
+          s.repo = repo;
+          // Si viene url, aplicarla solo a la entrada del endpoint actual
+          if (url !== undefined && s.endpoint.toLowerCase() === endpoint.toLowerCase()) {
+            s.url = url;
+          }
+        });
+        // Si no existe entrada para este endpoint concreto, crearla
+        const hasThisEndpoint = matches.some(s => s.endpoint.toLowerCase() === endpoint.toLowerCase());
+        if (!hasThisEndpoint) {
+          data.push({ name, endpoint, url: url || '', repo, favorite: false, order: null });
+        }
+      } else {
+        // No existe ninguna entrada con ese nombre — crear la del endpoint actual
+        data.push({ name, endpoint, url: url || '', repo, favorite: false, order: null });
+      }
+      writeStacksFile(data);
+      return res.json({ success: true });
+    }
+
     const idx = data.findIndex(s =>
       s.name.toLowerCase() === name.toLowerCase() &&
       s.endpoint.toLowerCase() === endpoint.toLowerCase()
     );
     if (idx >= 0) {
       if (_delete) {
+        // Borrar icono si nadie más lo usa
+        const oldIcon = data[idx].icon;
+        if (oldIcon) {
+          const usedByOther = data.some((s, i) => i !== idx && s.icon === oldIcon);
+          if (!usedByOther) {
+            const iconPath = path.join('/app/data/icons', oldIcon);
+            if (fs.existsSync(iconPath)) fs.unlinkSync(iconPath);
+          }
+        }
         data.splice(idx, 1);
       } else {
         if (url      !== undefined) data[idx].url      = url;
+        if (repo     !== undefined) data[idx].repo     = repo;
         if (favorite !== undefined) data[idx].favorite = favorite;
         if (order    !== undefined) data[idx].order    = order;
       }
@@ -549,9 +616,18 @@ app.post('/api/set-stack', (req, res) => {
         name,
         endpoint,
         url:      url      !== undefined ? url      : '',
+        repo:     repo     !== undefined ? repo     : '',
         favorite: favorite !== undefined ? favorite : false,
         order:    order    !== undefined ? order    : null
       });
+      // Intentar descargar icono del CDN si no tiene (async, no bloquea respuesta)
+      tryDownloadIconFromCDN(name).then(iconFile => {
+        if (!iconFile) return;
+        const fresh = readStacksFile();
+        fresh.filter(s => s.name.toLowerCase() === name.toLowerCase() && !s.icon)
+             .forEach(s => { s.icon = iconFile; });
+        writeStacksFile(fresh);
+      }).catch(() => {});
     }
     writeStacksFile(data);
     res.json({ success: true });
@@ -563,8 +639,26 @@ app.post('/api/set-stack', (req, res) => {
 // ============================
 // POST /api/run-check
 // ============================
-app.post('/api/run-check', (req, res) => {
-    // Comprobar si ya hay un check en curso
+app.post('/api/run-check', async (req, res) => {
+    const { endpoint } = req.body;
+
+    // Si viene endpoint remoto, proxificar la llamada al agente
+    if (endpoint && endpoint.toLowerCase() !== 'actual') {
+        try {
+            const targetUrl = `http://${endpoint}/api/run-check`;
+            const response = await fetch(targetUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(10000)
+            });
+            const data = await response.json();
+            return res.json(data);
+        } catch (err) {
+            return res.status(502).json({ success: false, message: `No se pudo contactar con el agente: ${err.message}` });
+        }
+    }
+
+    // Check local
     if (fs.existsSync('/tmp/check-progress.json')) {
         try {
             const progress = JSON.parse(fs.readFileSync('/tmp/check-progress.json', 'utf8'));
@@ -606,6 +700,18 @@ function writeLinksFile(data) {
 }
 
 // ============================
+// GET /api/sources
+// ============================
+app.get('/api/sources', (req, res) => {
+  try {
+    if (!fs.existsSync('/custom/sources.json')) return res.json({});
+    const data = JSON.parse(fs.readFileSync('/custom/sources.json', 'utf8'));
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/get-links
 // ============================
 app.get('/api/get-links', (req, res) => {
@@ -732,7 +838,7 @@ app.get('/api/get-layouts', (req, res) => {
 // ============================
 app.post('/api/set-layout', (req, res) => {
   try {
-    const { profileName, deviceId, blocks } = req.body;
+    const { profileName, deviceId, blocks, sidebarWidth } = req.body;
     if (!profileName || !deviceId || !Array.isArray(blocks)) {
       return res.status(400).json({ error: 'Faltan parámetros' });
     }
@@ -740,7 +846,9 @@ app.post('/api/set-layout', (req, res) => {
     if (profileName === 'default') {
       return res.status(403).json({ error: 'No se puede modificar el perfil por defecto' });
     }
-    layouts[profileName] = { name: profileName, deviceId, blocks };
+    const layout = { name: profileName, deviceId, blocks };
+    if (sidebarWidth != null) layout.sidebarWidth = sidebarWidth;
+    layouts[profileName] = layout;
     writeLayoutsFile(layouts);
     res.json({ success: true });
   } catch (err) {
@@ -792,8 +900,299 @@ app.delete('/api/delete-layout/:name', (req, res) => {
 });
 
 // ============================
+// ============================
+// Migración automática al arrancar
+// ============================
+// Intenta descargar el icono de un stack desde el CDN de dashboard-icons
+// Prueba: {name}.svg y {name}-home.svg
+async function tryDownloadIconFromCDN(stackName) {
+  const iconsDir = '/app/data/icons';
+  const CDN_BASE = 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg';
+  const candidates = [
+    `${stackName}.svg`,
+    `${stackName}-home.svg`
+  ];
+  for (const filename of candidates) {
+    try {
+      const res = await fetch(`${CDN_BASE}/${filename}`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (!/<svg[\s>]/i.test(text)) continue;
+      fs.mkdirSync(iconsDir, { recursive: true });
+      fs.writeFileSync(path.join(iconsDir, filename), text, 'utf8');
+      console.log(`✅ Icono descargado del CDN: ${stackName} → ${filename}`);
+      return filename;
+    } catch {
+      // timeout o error de red — siguiente candidato
+    }
+  }
+  return null;
+}
+
+// ============================
+// ============================
+// GET /api/auto-icon
+// ============================
+app.get('/api/auto-icon', async (req, res) => {
+  try {
+    const { name, endpoint } = req.query;
+    if (!name) return res.status(400).json({ error: 'Falta parámetro name' });
+
+    // Si ya tiene icono en disco, no hacer nada
+    const stacks = readStacksFile();
+    const entry = stacks.find(s =>
+      s.name.toLowerCase() === name.toLowerCase() &&
+      (endpoint ? s.endpoint.toLowerCase() === endpoint.toLowerCase() : true)
+    );
+    if (entry?.icon && fs.existsSync(path.join('/app/data/icons', entry.icon))) {
+      return res.json({ success: false, reason: 'already-has-icon' });
+    }
+
+    const iconFile = await tryDownloadIconFromCDN(name);
+    if (!iconFile) return res.json({ success: false, reason: 'not-found' });
+
+    // Actualizar todas las entradas con ese nombre
+    const fresh = readStacksFile();
+    fresh.filter(s => s.name.toLowerCase() === name.toLowerCase())
+         .forEach(s => { s.icon = iconFile; });
+    writeStacksFile(fresh);
+
+    res.json({ success: true, iconFile });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/icon-version
+// ============================
+app.get('/api/icon-version', (req, res) => {
+  try {
+    const iconsDir = '/app/data/icons';
+    if (!fs.existsSync(iconsDir)) return res.json({ version: 0 });
+    const files = fs.readdirSync(iconsDir);
+    const maxMtime = files.reduce((max, file) => {
+      try {
+        const mtime = fs.statSync(path.join(iconsDir, file)).mtimeMs;
+        return mtime > max ? mtime : max;
+      } catch { return max; }
+    }, 0);
+    res.json({ version: Math.floor(maxMtime) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================
+// POST /api/set-primary-host
+// ============================
+app.post('/api/set-primary-host', (req, res) => {
+  try {
+    const { primaryHost, oldHostname } = req.body;
+    if (!primaryHost) return res.status(400).json({ error: 'Falta parámetro primaryHost' });
+
+    const updates = readUpdatesFile();
+    const localIdx = updates.findIndex(h => h.endpoint?.toLowerCase() === 'actual');
+    if (localIdx < 0) return res.status(404).json({ error: 'No se encontró el host local' });
+
+    // oldHost: valor anterior guardado en json, o oldHostname enviado por el frontend (window.location.hostname)
+    const oldHost = updates[localIdx].primaryHost || oldHostname;
+    updates[localIdx].primaryHost = primaryHost;
+    writeUpdatesFile(updates);
+
+    // Leer stacks una vez para ambas operaciones
+    const stacks = readStacksFile();
+    let changed = false;
+
+    // 1. Sustituir URLs que usen el patrón http://{oldHost}:puerto
+    if (oldHost && oldHost !== primaryHost) {
+      const pattern = `http://${oldHost}:`;
+      stacks.forEach(s => {
+        if (s.url && s.url.startsWith(pattern)) {
+          const port = s.url.slice(pattern.length);
+          s.url = `http://${primaryHost}:${port}`;
+          changed = true;
+        }
+      });
+    }
+
+    // 2. Rellenar stacks locales sin URL usando compose.yaml + nuevo primaryHost
+    stacks.forEach(s => {
+      if (!s.url && s.endpoint?.toLowerCase() === 'actual') {
+        const port = getStackPort(s.name);
+        if (port) {
+          s.url = `http://${primaryHost}:${port}`;
+          changed = true;
+        }
+      }
+    });
+
+    if (changed) writeStacksFile(stacks);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Lee el primer puerto host del compose.yaml de un stack
+function getStackPort(stackName) {
+  try {
+    const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
+    const composePath = path.join(stacksDir, stackName, 'compose.yaml');
+    if (!fs.existsSync(composePath)) return null;
+    const content = fs.readFileSync(composePath, 'utf8');
+    const match = content.match(/^\s*-\s*["']?(?:[\d.]+:)?(\d+):\d+/m);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+// TODO: eliminar en v2.3 — migración temporal para rellenar icon/repo en stacks.json
+function migrateStacksOnStartup() {
+  try {
+    const sourcesPath = "/custom/sources.json";
+    const iconsDir    = "/app/data/icons";
+
+    const stacks  = readStacksFile();
+    const sources = fs.existsSync(sourcesPath)
+      ? JSON.parse(fs.readFileSync(sourcesPath, "utf8"))
+      : {};
+
+    let changed = false;
+
+    for (const entry of stacks) {
+      // --- repo: migrar desde sources.json si no tiene
+      if (!entry.repo) {
+        const repoUrl = sources[entry.name] || sources[entry.name?.toLowerCase()];
+        if (repoUrl) {
+          entry.repo = repoUrl;
+          changed = true;
+        }
+      }
+
+      // --- icon: asignar {name}.svg si existe el fichero y no tiene icon
+      if (!entry.icon) {
+        const svgPath = path.join(iconsDir, `${entry.name}.svg`);
+        if (fs.existsSync(svgPath)) {
+          entry.icon = `${entry.name}.svg`;
+          changed = true;
+        }
+      }
+
+
+    }
+
+    // Normalizar estructura de cada entrada (campos en orden consistente)
+    const normalized = stacks.map(s => ({
+      name:     s.name     || '',
+      endpoint: s.endpoint || 'Actual',
+      icon:     s.icon     || '',
+      url:      s.url      || '',
+      repo:     s.repo     || '',
+      favorite: s.favorite || false,
+      order:    s.order    ?? null
+    }));
+
+    // Escribir siempre para garantizar estructura normalizada
+    writeStacksFile(normalized);
+    if (changed) {
+      console.log("✅ Migración stacks.json completada (icon/repo/url)");
+    } else {
+      console.log("✅ Migración stacks.json: estructura normalizada");
+    }
+  } catch (err) {
+    console.error("❌ Error en migración stacks.json:", err.message);
+  }
+}
+
 // Servidor
 // ============================
+migrateStacksOnStartup();
+
+// Descarga async de iconos desde CDN para stacks sin icono (no bloquea el arranque)
+(async () => {
+  try {
+    const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
+    const iconsDir  = '/app/data/icons';
+
+    // Leer nombres de stacks desde el filesystem (subcarpetas de /opt/stacks)
+    let stackNamesFromFs = [];
+    if (fs.existsSync(stacksDir)) {
+      stackNamesFromFs = fs.readdirSync(stacksDir).filter(f =>
+        fs.statSync(path.join(stacksDir, f)).isDirectory()
+      );
+    }
+
+    // Combinar con los que ya están en stacks.json
+    const stacks = readStacksFile();
+    const namesFromJson = stacks.filter(s => !s.icon || !fs.existsSync(path.join(iconsDir, s.icon)))
+                                .map(s => s.name.toLowerCase());
+    const allNames = [...new Set([...stackNamesFromFs.map(n => n.toLowerCase()), ...namesFromJson])];
+
+    if (allNames.length === 0) return;
+    console.log(`🔍 Buscando iconos en CDN para ${allNames.length} stack(s)...`);
+
+    // Cargar sources.json para asignar repos al crear entradas nuevas
+    const sourcesPath = '/custom/sources.json';
+    const sources = fs.existsSync(sourcesPath)
+      ? JSON.parse(fs.readFileSync(sourcesPath, 'utf8'))
+      : {};
+
+    const updated = readStacksFile();
+    let changed = false;
+
+    for (const name of allNames) {
+      // Si ya tiene icono en disco, saltar
+      const existing = updated.find(s => s.name.toLowerCase() === name);
+      if (existing?.icon && fs.existsSync(path.join(iconsDir, existing.icon))) continue;
+
+      const iconFile = await tryDownloadIconFromCDN(name);
+      if (!iconFile) continue;
+
+      // Actualizar entradas existentes en stacks.json
+      const matches = updated.filter(s => s.name.toLowerCase() === name);
+      const repoFromSources = sources[name] || sources[name.toLowerCase()] || '';
+      if (matches.length > 0) {
+        matches.forEach(s => {
+          s.icon = iconFile;
+          if (!s.repo && repoFromSources) s.repo = repoFromSources;
+        });
+      } else {
+        // Stack existe en filesystem pero no en stacks.json — crear entrada completa
+        updated.push({ name, endpoint: 'Actual', icon: iconFile, url: '', repo: repoFromSources, favorite: false, order: null });
+      }
+      changed = true;
+    }
+
+    if (changed) writeStacksFile(updated);
+
+    // Asignar URL de servicio para stacks locales sin url
+    // Solo si ya hay primaryHost configurado — si no, el modal lo pedirá al usuario
+    const localUpdates = readUpdatesFile();
+    const localHost = localUpdates.find(h => h.endpoint?.toLowerCase() === 'actual');
+    if (localHost?.primaryHost) {
+      const updatedForUrl = readStacksFile();
+      let urlChanged = false;
+      for (const entry of updatedForUrl) {
+        if (!entry.url && entry.endpoint?.toLowerCase() === 'actual') {
+          const port = getStackPort(entry.name);
+          if (port) {
+            entry.url = `http://${localHost.primaryHost}:${port}`;
+            urlChanged = true;
+          }
+        }
+      }
+      if (urlChanged) {
+        writeStacksFile(updatedForUrl);
+        console.log('✅ URLs de servicio asignadas desde compose.yaml');
+      }
+    }
+
+  } catch (err) {
+    console.error('❌ Error en descarga CDN de iconos:', err.message);
+  }
+})();
+
 app.listen(port, () => {
   console.log(`✅ API Node lista en puerto ${port}`);
 });

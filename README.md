@@ -172,12 +172,13 @@ Este proyecto está construido sobre el trabajo de:
 
 - [**Dockge**](https://github.com/louislam/dockge) por **Louis Lam** - Interfaz web para gestión de Docker Compose
 - [**docge-update-check**](https://github.com/PhilGoud/docge-update-check) por **Phil_Goud** - Script de detección de actualizaciones
+- [**dashboard-icons**](https://github.com/homarr-labs/dashboard-icons) - Iconos descargados automáticamente desde dashboard-icons por Homarr Labs (Apache License 2.0)
 
 ---
 
 ## 📜 Licencia
 
-MIT License - Copyright (c) 2025 Fernandeusto
+MIT License - Copyright (c) 2026 Fernandeusto
 
 Este proyecto incorpora código de Dockge y docge-update-check, ambos bajo licencia MIT.
 Ver [LICENSE](LICENSE) para más detalles.

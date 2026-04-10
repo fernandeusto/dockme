@@ -1029,7 +1029,8 @@ span.badge.bg-primary {
 }
 
 .dockme-icon-url-input,
-.dockme-service-url-input {
+.dockme-service-url-input,
+.dockme-repo-url-input {
     width: 100%;
     padding: 8px;
     border-radius: 6px;
