@@ -1,0 +1,181 @@
+{
+  "_shoutrrr_version": "0.14.3",
+  "_updated": "2026-04",
+  "_docs": "https://shoutrrr.nickfedor.com/dev/services/overview/",
+  "_note": "Formatos de URL extraídos de la documentación oficial. Actualizar al cambiar versión de shoutrrr.",
+  "services": [
+    { "name": "── Chat ──────────────────", "url": "", "notes": "", "link": "" },
+    {
+      "name": "Telegram",
+      "url": "telegram://TOKEN@telegram?chats=CHATID",
+      "notes": "TOKEN = bot token obtenido del @BotFather. CHATID = ID numérico del chat o nombre del canal público (ej: @micanal o -1001234567890).",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/telegram/"
+    },
+    {
+      "name": "Discord",
+      "url": "discord://TOKEN@CHANNELID",
+      "notes": "Desde la URL del webhook de Discord: discord.com/api/webhooks/CHANNELID/TOKEN. Copia cada parte por separado.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/discord/"
+    },
+    {
+      "name": "Slack",
+      "url": "slack://TOKEN-A/TOKEN-B/TOKEN-C",
+      "notes": "Los tres tokens se extraen de la URL del webhook de Slack (Incoming Webhooks). El formato es T.../B.../XXXX.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/slack/"
+    },
+    {
+      "name": "Matrix",
+      "url": "matrix://USERNAME:PASSWORD@HOST:PORT/?rooms=!ROOMID",
+      "notes": "ROOMID = ID interno de la sala (ej: !abc123:matrix.org). Puedes omitir PORT si usas el 443 por defecto.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/matrix/"
+    },
+    {
+      "name": "Mattermost",
+      "url": "mattermost://USERNAME@HOST/TOKEN/CHANNEL",
+      "notes": "TOKEN del webhook entrante de Mattermost. CHANNEL es opcional (si no se especifica usa el del webhook).",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/mattermost/"
+    },
+    {
+      "name": "Rocket.Chat",
+      "url": "rocketchat://USERNAME@HOST/TOKEN/CHANNEL",
+      "notes": "Prefija CHANNEL con # para canales o @ para mensajes directos a un usuario.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/rocketchat/"
+    },
+    {
+      "name": "Google Chat",
+      "url": "googlechat://chat.googleapis.com/v1/spaces/SPACE/messages?key=KEY&token=TOKEN",
+      "notes": "Copia la URL completa del webhook de Google Chat y reemplaza el esquema https:// por googlechat://.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/googlechat/"
+    },
+    {
+      "name": "Microsoft Teams",
+      "url": "teams://GROUP@TENANT/ALTID/GROUPOWNER?host=ORGANIZATION.webhook.office.com",
+      "notes": "Los valores se extraen de la URL del conector webhook de Teams. Consulta el enlace para el desglose exacto.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/teams/"
+    },
+    {
+      "name": "Lark / Feishu",
+      "url": "lark://HOST/TOKEN?secret=SECRET",
+      "notes": "TOKEN y SECRET del bot webhook de Lark o Feishu. HOST suele ser open.larksuite.com.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/lark/"
+    },
+    {
+      "name": "Zulip",
+      "url": "zulip://BOT-MAIL:BOT-KEY@ZULIP-DOMAIN/?stream=STREAM&topic=TOPIC",
+      "notes": "BOT-MAIL y BOT-KEY del bot de Zulip. STREAM = nombre del canal, TOPIC = asunto del mensaje.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/zulip/"
+    },
+    {
+      "name": "Signal",
+      "url": "signal://USER:PASSWORD@HOST:PORT/SOURCE_PHONE/RECIPIENT",
+      "notes": "Requiere signal-cli corriendo en HOST:PORT. SOURCE y RECIPIENT son números en formato E.164 (ej: +34612345678).",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/signal/"
+    },
+    {
+      "name": "WeCom",
+      "url": "wecom://KEY",
+      "notes": "KEY = clave del bot webhook de WeCom (企业微信). Se obtiene al crear el bot en el grupo.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/chat/wecom/"
+    },
+    { "name": "── Push ──────────────────", "url": "", "notes": "", "link": "" },
+    {
+      "name": "Ntfy (público)",
+      "url": "ntfy://ntfy.sh/TOPIC",
+      "notes": "TOPIC = nombre de tu topic en ntfy.sh. Sin autenticación. Cualquiera con el nombre puede suscribirse.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/ntfy/"
+    },
+    {
+      "name": "Ntfy (propio)",
+      "url": "ntfy://USER:PASS@TU-SERVIDOR/TOPIC",
+      "notes": "Para instancias propias de ntfy con autenticación. TU-SERVIDOR = IP o dominio de tu instancia.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/ntfy/"
+    },
+    {
+      "name": "Gotify",
+      "url": "gotify://TU-SERVIDOR/TOKEN",
+      "notes": "TU-SERVIDOR = IP o dominio de tu Gotify. TOKEN = application token generado en el panel de Gotify.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/gotify/"
+    },
+    {
+      "name": "Pushover",
+      "url": "pushover://shoutrrr:APITOKEN@USERKEY",
+      "notes": "APITOKEN = token de tu aplicación en pushover.net. USERKEY = clave de usuario de tu cuenta.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/pushover/"
+    },
+    {
+      "name": "Bark (iOS)",
+      "url": "bark://DEVICEKEY@HOST",
+      "notes": "DEVICEKEY = clave del dispositivo que muestra la app Bark. HOST por defecto: api.day.app.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/bark/"
+    },
+    {
+      "name": "Pushbullet",
+      "url": "pushbullet://API-TOKEN",
+      "notes": "API-TOKEN de tu cuenta en pushbullet.com. Opcionalmente añade /DEVICE, /#CHANNEL o /email.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/pushbullet/"
+    },
+    {
+      "name": "IFTTT",
+      "url": "ifttt://KEY/?events=EVENT1,EVENT2",
+      "notes": "KEY de la sección Webhooks de IFTTT (My Applets → Webhooks → Settings). Uno o varios eventos separados por comas.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/ifttt/"
+    },
+    {
+      "name": "Join",
+      "url": "join://shoutrrr:API-KEY@join/?devices=DEVICE",
+      "notes": "API-KEY de join.joaoapps.com. DEVICE = ID del dispositivo destino (visible en la web de Join).",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/join/"
+    },
+    {
+      "name": "MQTT",
+      "url": "mqtt://USER:PASS@HOST:PORT/TOPIC",
+      "notes": "Broker MQTT estándar. Puerto por defecto: 1883. USER:PASS son opcionales si el broker no requiere auth.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/push/mqtt/"
+    },
+    { "name": "── Email ─────────────────", "url": "", "notes": "", "link": "" },
+    {
+      "name": "Email (SMTP)",
+      "url": "smtp://USER:PASS@HOST:587/?fromAddress=FROM@DOMINIO&toAddresses=TO@DOMINIO",
+      "notes": "Puerto 465 para SSL directo, 587 para STARTTLS. Múltiples destinatarios separados por comas en toAddresses.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/email/smtp/"
+    },
+    { "name": "── SMS ───────────────────", "url": "", "notes": "", "link": "" },
+    {
+      "name": "Twilio (SMS)",
+      "url": "twilio://ACCOUNTSID:AUTHTOKEN@FROMNUMBER/TONUMBER",
+      "notes": "ACCOUNTSID y AUTHTOKEN de tu cuenta Twilio. FROMNUMBER y TONUMBER en formato E.164 (ej: +34612345678).",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/sms/twilio/"
+    },
+    { "name": "── Especializado ─────────", "url": "", "notes": "", "link": "" },
+    {
+      "name": "Generic Webhook",
+      "url": "generic+https://TU-SERVIDOR/webhook",
+      "notes": "Para cualquier webhook HTTP. Añade ?template=json para enviar payload JSON con campos title y message.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/specialized/generic/"
+    },
+    {
+      "name": "Generic (JSON + cabeceras)",
+      "url": "generic://TU-SERVIDOR/webhook?template=json&@Authorization=Bearer%20TOKEN",
+      "notes": "Como el anterior pero con más opciones. Cabeceras HTTP con @Nombre=valor. Útil para webhooks con autenticación.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/specialized/generic/"
+    },
+    {
+      "name": "Notifiarr",
+      "url": "notifiarr://API-KEY@notifiarr.com/CHANNEL-ID",
+      "notes": "API-KEY de tu cuenta en notifiarr.com. Orientado a gestión de servidores de medios (Plex, Radarr, etc.).",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/specialized/notifiarr/"
+    },
+    {
+      "name": "OpsGenie",
+      "url": "opsgenie://HOST/TOKEN?responders=RESPONDER",
+      "notes": "HOST por defecto: api.opsgenie.com. TOKEN de la integración. RESPONDER = equipo o usuario que recibe la alerta.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/incident/opsgenie/"
+    },
+    {
+      "name": "PagerDuty",
+      "url": "pagerduty://INTEGRATION-KEY",
+      "notes": "INTEGRATION-KEY del servicio en PagerDuty (Events API v2). Se genera al crear una integración en el servicio.",
+      "link": "https://shoutrrr.nickfedor.com/dev/services/incident/pagerduty/"
+    }
+  ]
+}

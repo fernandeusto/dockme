@@ -131,20 +131,42 @@ COPY version.json /tools/version.json
 # Copiar tools
 # ========================================
 COPY tools/check-updates.sh /tools/check-updates.sh
+COPY tools/prune.sh /tools/prune.sh
 COPY tools/metrics.sh /tools/metrics.sh
 COPY tools/api_metrics.py /tools/api_metrics.py
-COPY tools/dockme /usr/local/bin/dockme
+
+# ========================================
+# Descargar binario shoutrrr (notificaciones multi-servicio)
+# ========================================
+RUN set -e; \
+    ARCH=$(dpkg --print-architecture); \
+    case "$ARCH" in \
+        amd64)  SHOUTRRR_ARCH="linux_amd64" ;; \
+        arm64)  SHOUTRRR_ARCH="linux_arm64" ;; \
+        armhf)  SHOUTRRR_ARCH="linux_arm" ;; \
+        i386)   SHOUTRRR_ARCH="linux_386" ;; \
+        *)      echo "Arquitectura no soportada: $ARCH" && exit 1 ;; \
+    esac; \
+    SHOUTRRR_URL=$(curl -sf https://api.github.com/repos/nicholas-fedor/shoutrrr/releases/latest \
+        | grep -o "https://[^\"]*${SHOUTRRR_ARCH}[^\"]*\.tar\.gz" | head -1); \
+    echo "Descargando shoutrrr: $SHOUTRRR_URL"; \
+    mkdir -p /tmp/shoutrrr-install; \
+    curl -sfL "$SHOUTRRR_URL" | tar -xz -C /tmp/shoutrrr-install; \
+    install -m 755 $(find /tmp/shoutrrr-install -maxdepth 2 -type f ! -name '*.md' | head -1) /usr/local/bin/shoutrrr; \
+    rm -rf /tmp/shoutrrr-install; \
+    shoutrrr --version
 
 RUN chmod +x \
     /tools/check-updates.sh \
+    /tools/prune.sh \
     /tools/metrics.sh \
-    /tools/api_metrics.py \
-    /usr/local/bin/dockme
+    /tools/api_metrics.py
 
 # ========================================
 # Copiar custom (Nginx + API Node + custom.js)
 # ========================================
 COPY custom/ /custom/
+COPY custom/shoutrrr-services.json /custom/shoutrrr-services.json
 
 # Instalar dependencias de la API Node (como apps para evitar chown posterior)
 WORKDIR /custom

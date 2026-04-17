@@ -16,6 +16,7 @@ const updatesPath  = "/app/data/config/updates.json";
 const stacksPath   = "/app/data/config/stacks.json";
 const linksPath    = "/app/data/config/links.json";
 const layoutsPath  = "/app/data/config/layouts.json";
+const settingsPath = "/app/data/config/settings.json";
 
 // ============================
 // Funciones auxiliares
@@ -32,6 +33,32 @@ function readUpdatesFile() {
 
 function writeUpdatesFile(data) {
   fs.writeFileSync(updatesPath, JSON.stringify(data, null, 2));
+}
+
+const defaultSettings = {
+  centralUrl:          '',
+  migration_2_1_shown: false,
+  primaryHost:         '',
+  release:             '',
+  notifications: {
+    enabled: false,
+    urls:    []
+  },
+  checkTime: '09:00',
+  pruneMode: 'conservative'
+};
+
+function readSettingsFile() {
+  if (!fs.existsSync(settingsPath)) return { ...defaultSettings };
+  try {
+    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  } catch {
+    return { ...defaultSettings };
+  }
+}
+
+function writeSettingsFile(data) {
+  fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2));
 }
 
 // ============================
@@ -51,18 +78,22 @@ app.post('/api/set-updates', (req, res) => {
     );
 
     if (existingIndex >= 0) {
-      // Reemplazar bloque existente
+      // Preservar todos los campos existentes (uiUrl, etc.)
+      // Sobreescribir solo hostname, endpoint y updates.
+      // Eliminar primaryHost y release si llegaran por error — viven en settings.json.
+      const preserved = { ...currentData[existingIndex] };
+      delete preserved.primaryHost;
+      delete preserved.release;
       currentData[existingIndex] = {
+        ...preserved,
         hostname,
         endpoint,
-        uiUrl: currentData[existingIndex].uiUrl || '',
         updates: updates.map(u => ({
           stack: u.stack,
           dockers: u.dockers
         }))
       };
     } else {
-      // Nuevo host
       currentData.push({
         hostname,
         endpoint,
@@ -74,6 +105,18 @@ app.post('/api/set-updates', (req, res) => {
     }
 
     writeUpdatesFile(currentData);
+
+    // Si hay un ciclo activo, marcar este endpoint como respondido
+    if (activeCycle && activeCycle.pending.has(endpoint.toLowerCase())) {
+      activeCycle.pending.delete(endpoint.toLowerCase());
+      const updateCount = updates.length;
+      const stackNames  = updates.map(u => u.stack).join(', ') || 'ninguna';
+      console.log(`📥 [Cycle] ${hostname} (${endpoint}) respondió — ${updateCount} update(s): [${stackNames}] — pendientes: ${activeCycle.pending.size}`);
+      if (activeCycle.pending.size === 0) {
+        activeCycle.resolve([]);
+      }
+    }
+
     res.json({ success: true, data: currentData });
 
   } catch (err) {
@@ -425,6 +468,169 @@ app.post('/api/update-dockme', async (req, res) => {
 });
 
 // ============================
+// GET /api/shoutrrr-services
+// ============================
+app.get('/api/shoutrrr-services', (req, res) => {
+  try {
+    const servicesPath = '/custom/shoutrrr-services.json';
+    if (!fs.existsSync(servicesPath)) return res.json({ services: [] });
+    res.json(JSON.parse(fs.readFileSync(servicesPath, 'utf8')));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================
+// GET /api/get-settings
+// ============================
+app.get('/api/get-settings', (req, res) => {
+  try {
+    res.json(readSettingsFile());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================
+// POST /api/save-settings
+// ============================
+app.post('/api/save-settings', (req, res) => {
+  try {
+    const incoming = req.body;
+    if (!incoming || typeof incoming !== 'object') {
+      return res.status(400).json({ error: 'Payload inválido' });
+    }
+    // Merge con valores actuales para no perder campos desconocidos
+    const current = readSettingsFile();
+    const merged = {
+      ...current,
+      ...incoming,
+      notifications: {
+        ...current.notifications,
+        ...(incoming.notifications || {})
+      }
+    };
+    writeSettingsFile(merged);
+
+    // Si cambió la hora del check, relanzar scheduler
+    if (incoming.checkTime && incoming.checkTime !== current.checkTime) {
+      setupScheduler();
+    }
+
+    res.json({ success: true, settings: merged });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================
+// POST /api/mark-agents-migration-shown
+// ============================
+app.post('/api/mark-agents-migration-shown', (req, res) => {
+  try {
+    const settings = readSettingsFile();
+    settings.migration_2_1_shown = true;
+    writeSettingsFile(settings);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================
+// POST /api/test-notification
+// ============================
+app.post('/api/test-notification', async (req, res) => {
+  try {
+    const settings = readSettingsFile();
+    const notif = settings.notifications || {};
+    const urls = Array.isArray(notif.urls) ? notif.urls.filter(Boolean) : [];
+    if (urls.length === 0) {
+      return res.status(400).json({ success: false, message: 'No hay URLs de notificación configuradas' });
+    }
+    const msg = '🔔 DockMe — Notificación de prueba.\n✅ Los saltos de línea funcionan correctamente.';
+    const url = urls[0];
+    const tmpFile = `/tmp/shoutrrr-test-${Date.now()}.txt`;
+    fs.writeFileSync(tmpFile, msg);
+    exec(`shoutrrr send --url ${JSON.stringify(url)} --message - < ${tmpFile}`,
+      { shell: true },
+      (err, stdout, stderr) => {
+        fs.unlink(tmpFile, () => {});
+        if (err) {
+          console.error('❌ [Test notif]', err.message);
+          return res.json({ success: false, message: err.message });
+        }
+        console.log('✅ [Test notif] Enviado');
+        res.json({ success: true });
+      }
+    );
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================
+// POST /api/set-connected-endpoints
+// Sincroniza desde el frontend la lista de endpoints conectados en Dockge.
+// Se guarda en memoria — no persiste entre reinicios (se resincroniza automáticamente).
+// ============================
+app.post('/api/set-connected-endpoints', (req, res) => {
+  try {
+    const { endpoints } = req.body;
+    if (!Array.isArray(endpoints)) return res.status(400).json({ error: 'Se esperaba un array' });
+    connectedEndpoints = new Set(endpoints.map(e => e.toLowerCase()));
+    console.log(`🔗 [Connected] Endpoints activos: [${[...connectedEndpoints].join(', ') || 'ninguno'}]`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================
+// GET /api/check-status
+// ============================
+app.get('/api/check-status', (req, res) => {
+  try {
+    const progressPath = '/app/data/config/check-progress.json';
+    if (!fs.existsSync(progressPath)) return res.json({ status: 'idle', percent: 0 });
+    res.json(JSON.parse(fs.readFileSync(progressPath, 'utf8')));
+  } catch {
+    res.json({ status: 'idle', percent: 0 });
+  }
+});
+
+// ============================
+// POST /api/run-prune
+// ============================
+app.post('/api/run-prune', async (req, res) => {
+  const { endpoint, pruneMode } = req.body;
+
+  // Proxy al agente remoto
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    try {
+      const response = await fetch(`http://${endpoint}/api/run-prune`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pruneMode }),
+        signal: AbortSignal.timeout(10000)
+      });
+      const data = await response.json();
+      return res.json(data);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: err.message });
+    }
+  }
+
+  // Prune local — se ejecuta en background, responde inmediatamente
+  const mode = pruneMode || readSettingsFile().pruneMode || 'disabled';
+  exec(`/tools/prune.sh ${mode} 2>&1 | tee -a /tmp/prune.log`, { shell: true }, (err) => {
+    if (err) console.error('❌ Error en prune local:', err.message);
+    else     console.log('✅ Prune local completado');
+  });
+  res.json({ success: true, message: 'Prune iniciado' });
+});
+
+// ============================
 // POST /api/set-updates-file
 // ============================
 // Reescribe completamente el updates.json(para cuando eliminamos un endpoint por ejemplo)
@@ -458,13 +664,9 @@ app.post('/api/set-release-version', async (req, res) => {
     const { version } = req.body;
     if (!version) return res.status(400).json({ error: 'version requerida' });
     try {
-        const raw = fs.readFileSync(updatesPath, 'utf8');
-        const data = JSON.parse(raw);
-        if (Array.isArray(data)) {
-            const host = data.find(h => (h.endpoint || '').toLowerCase() === 'actual');
-            if (host) host.release = version;
-            fs.writeFileSync(updatesPath, JSON.stringify(data, null, 2));
-        }
+        const settings = readSettingsFile();
+        settings.release = version;
+        writeSettingsFile(settings);
         res.json({ ok: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -640,15 +842,18 @@ app.post('/api/set-stack', (req, res) => {
 // POST /api/run-check
 // ============================
 app.post('/api/run-check', async (req, res) => {
-    const { endpoint } = req.body;
+    const { endpoint, pruneMode, fromCycle } = req.body;
+    // fromCycle=true: viene del scheduler — usa el pruneMode configurado.
+    // fromCycle falsy: check manual del usuario — prune siempre disabled.
+    const mode = fromCycle ? (pruneMode || 'disabled') : 'disabled';
 
-    // Si viene endpoint remoto, proxificar la llamada al agente
+    // Si viene endpoint remoto, proxificar al agente
     if (endpoint && endpoint.toLowerCase() !== 'actual') {
         try {
-            const targetUrl = `http://${endpoint}/api/run-check`;
-            const response = await fetch(targetUrl, {
+            const response = await fetch(`http://${endpoint}/api/run-check`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pruneMode: mode, fromCycle }),
                 signal: AbortSignal.timeout(10000)
             });
             const data = await response.json();
@@ -658,25 +863,25 @@ app.post('/api/run-check', async (req, res) => {
         }
     }
 
-    // Check local
-    if (fs.existsSync('/tmp/check-progress.json')) {
+    // Check local — guard contra doble ejecución
+    const progressPath = '/app/data/config/check-progress.json';
+    if (fs.existsSync(progressPath)) {
         try {
-            const progress = JSON.parse(fs.readFileSync('/tmp/check-progress.json', 'utf8'));
+            const progress = JSON.parse(fs.readFileSync(progressPath, 'utf8'));
             if (progress.status === 'checking') {
                 return res.status(409).json({ success: false, message: 'Ya hay un check en curso' });
             }
         } catch {}
     }
 
-    console.log('🔍 Lanzando check-updates manual...');
-
-    exec('/tools/check-updates.sh manual 2>&1 | tee -a /tmp/updates-check.log > /proc/1/fd/1', 
+    const isManual = !fromCycle;
+    console.log(`🔍 Lanzando check ${isManual ? 'manual' : '[Cycle]'} (prune: ${mode})...`);
+    // Siempre pasar 'manual' para bypass del cooldown de 12h —
+    // el scheduler Node ya gestiona la frecuencia, el cooldown era para el viejo cron bash.
+    exec(`/tools/check-updates.sh ${mode} manual 2>&1 | tee -a /tmp/updates-check.log > /proc/1/fd/1`,
         { detached: true, shell: true }, (error) => {
-        if (error) {
-            console.error('❌ Error en check-updates:', error);
-        } else {
-            console.log('✅ check-updates finalizado');
-        }
+        if (error) console.error('❌ Error en check-updates:', error);
+        else        console.log('✅ check-updates finalizado');
     });
 
     res.json({ success: true, message: 'Check iniciado' });
@@ -990,16 +1195,13 @@ app.post('/api/set-primary-host', (req, res) => {
     const { primaryHost, oldHostname } = req.body;
     if (!primaryHost) return res.status(400).json({ error: 'Falta parámetro primaryHost' });
 
-    const updates = readUpdatesFile();
-    const localIdx = updates.findIndex(h => h.endpoint?.toLowerCase() === 'actual');
-    if (localIdx < 0) return res.status(404).json({ error: 'No se encontró el host local' });
+    // Guardar en settings.json (fuente de verdad para primaryHost)
+    const settings = readSettingsFile();
+    const oldHost = settings.primaryHost || oldHostname;
+    settings.primaryHost = primaryHost;
+    writeSettingsFile(settings);
 
-    // oldHost: valor anterior guardado en json, o oldHostname enviado por el frontend (window.location.hostname)
-    const oldHost = updates[localIdx].primaryHost || oldHostname;
-    updates[localIdx].primaryHost = primaryHost;
-    writeUpdatesFile(updates);
-
-    // Leer stacks una vez para ambas operaciones
+    // Actualizar URLs de stacks que usen el host anterior
     const stacks = readStacksFile();
     let changed = false;
 
@@ -1110,7 +1312,10 @@ function migrateStacksOnStartup() {
 migrateStacksOnStartup();
 
 // Descarga async de iconos desde CDN para stacks sin icono (no bloquea el arranque)
+// Los agentes remotos no necesitan iconos — los gestiona el central
 (async () => {
+  const _centralUrl = process.env.CENTRAL_URL || process.env.WEBHOOK_URL || '';
+  if (_centralUrl && process.env.ENDPOINT !== 'Actual') return; // agente: no descargar iconos
   try {
     const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
     const iconsDir  = '/app/data/icons';
@@ -1193,6 +1398,247 @@ migrateStacksOnStartup();
   }
 })();
 
+// ============================
+// Scheduler Node (central/standalone)
+// ============================
+const IS_AGENT = !!(process.env.WEBHOOK_URL && process.env.ENDPOINT && process.env.ENDPOINT !== 'Actual');
+
+let schedulerTimer = null;
+
+// Estado del ciclo activo: se rellena al lanzar los checks y se limpia
+// cuando todos los servidores han respondido vía set-updates (o timeout).
+let activeCycle = null;
+
+// Lista de endpoints conectados sincronizada desde el frontend.
+// Vacío = sin info todavía (usar todos los de updates.json como fallback).
+let connectedEndpoints = new Set();
+
+// Lanza el check+prune en un endpoint sin esperar respuesta.
+// El endpoint reportará al central via set-updates cuando termine.
+async function launchCheck(endpoint, pruneMode) {
+  if (endpoint.toLowerCase() === 'actual') {
+    console.log(`🔍 [Cycle] Lanzando check local (prune: ${pruneMode})...`);
+    // Llamar via HTTP al propio API (puerto 5002) para flujo uniforme con remotos.
+    // check-updates.sh hará POST a set-updates al terminar (señal de fin de ciclo).
+    try {
+      await fetch(`http://localhost:5002/api/run-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pruneMode, fromCycle: true }),
+        signal: AbortSignal.timeout(10000)
+      });
+    } catch (err) {
+      console.error(`❌ [Cycle] Error lanzando check local: ${err.message}`);
+      if (activeCycle) {
+        activeCycle.pending.delete('actual');
+        activeCycle.timedOut.push('Actual (local)');
+        if (activeCycle.pending.size === 0) activeCycle.resolve(activeCycle.timedOut);
+      }
+    }
+  } else {
+    console.log(`🔍 [Cycle] Lanzando check en ${endpoint} (prune: ${pruneMode})...`);
+    try {
+      await fetch(`http://${endpoint}/api/run-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pruneMode, fromCycle: true }),
+        signal: AbortSignal.timeout(10000)
+      });
+    } catch (err) {
+      console.error(`❌ [Cycle] No se pudo contactar con ${endpoint}: ${err.message}`);
+      // Si no se puede contactar, quitar de pendientes para no bloquear el ciclo
+      if (activeCycle) {
+        activeCycle.pending.delete(endpoint.toLowerCase());
+        activeCycle.timedOut.push(endpoint);
+        if (activeCycle.pending.size === 0) activeCycle.resolve(activeCycle.timedOut);
+      }
+    }
+  }
+}
+
+function findNewUpdates(before, after) {
+  const results = [];
+  for (const serverAfter of after) {
+    const serverBefore = before.find(h =>
+      h.endpoint?.toLowerCase() === serverAfter.endpoint?.toLowerCase()
+    );
+    const stacksBefore = serverBefore?.updates || [];
+    for (const stackAfter of (serverAfter.updates || [])) {
+      const stackBefore = stacksBefore.find(u => u.stack === stackAfter.stack);
+      if (!stackBefore) {
+        results.push({ hostname: serverAfter.hostname, stack: stackAfter.stack });
+      } else {
+        const newDockers = stackAfter.dockers.filter(d => !(stackBefore.dockers || []).includes(d));
+        if (newDockers.length > 0) {
+          results.push({ hostname: serverAfter.hostname, stack: stackAfter.stack });
+        }
+      }
+    }
+  }
+  return results;
+}
+
+function buildMessage(newUpdates, timedOut = []) {
+  const byHost = {};
+  for (const item of newUpdates) {
+    if (!byHost[item.hostname]) byHost[item.hostname] = [];
+    byHost[item.hostname].push(item.stack);
+  }
+  let msg = '';
+  if (newUpdates.length > 0) {
+    msg += '🐋 Nuevas actualizaciones en Dockme\n';
+    for (const [hostname, stacks] of Object.entries(byHost)) {
+      msg += `\n🖥 ${hostname}\n`;
+      for (const stack of stacks) msg += `  • ${stack}\n`;
+    }
+  }
+  if (timedOut.length > 0) {
+    const updates = readUpdatesFile();
+    for (const ep of timedOut) {
+      const host = updates.find(h => h.endpoint?.toLowerCase() === ep.toLowerCase());
+      const hostname = host?.hostname || ep;
+      if (msg) msg += '\n';
+      msg += `⚠️ ${hostname}\n`;
+      msg += '  • Sin respuesta tras 10 min.\n';
+    }
+  }
+  return msg.trim();
+}
+
+async function sendNotification(message) {
+  if (!message) return;
+  const settings = readSettingsFile();
+  const notif = settings.notifications || {};
+  if (!notif.enabled) {
+    console.log('📵 [Notif] Notificaciones desactivadas');
+    return;
+  }
+  const urls = Array.isArray(notif.urls) ? notif.urls.filter(Boolean) : [];
+  if (urls.length === 0) {
+    console.log('📵 [Notif] Sin URLs configuradas');
+    return;
+  }
+  for (const url of urls) {
+    await new Promise((resolve) => {
+      // Escribir mensaje a fichero temporal para preservar saltos de línea
+      const tmpFile = `/tmp/shoutrrr-msg-${Date.now()}.txt`;
+      fs.writeFileSync(tmpFile, message);
+      exec(`shoutrrr send --url ${JSON.stringify(url)} --message - < ${tmpFile}`,
+        { shell: true },
+        (err, stdout, stderr) => {
+          fs.unlink(tmpFile, () => {});
+          if (err) console.error(`❌ [Notif] Error enviando a ${url.split('://')[0]}: ${err.message}`);
+          else     console.log(`✅ [Notif] Enviado a ${url.split('://')[0]}`);
+          resolve();
+        }
+      );
+    });
+  }
+}
+
+async function runScheduledChecks(notify = true) {
+  console.log(`🕒 [Cycle] Iniciando — ${new Date().toISOString()}`);
+
+  const snapshotBefore = JSON.parse(JSON.stringify(readUpdatesFile()));
+  const updates  = readUpdatesFile();
+  const settings = readSettingsFile();
+  const pruneMode = settings.pruneMode || 'disabled';
+
+  // Solo incluir endpoints conectados (sincronizados desde el frontend).
+  // Si la lista está vacía (aún no sincronizada), incluir todos como fallback.
+  const servers = updates
+    .filter(h => {
+      const ep = (h.endpoint || '').toLowerCase();
+      if (ep === 'actual') return true;
+      if (connectedEndpoints.size > 0) return connectedEndpoints.has(ep);
+      return true; // fallback: sin info de conexión todavía
+    })
+    .map(h => h.endpoint);
+
+  if (servers.length === 0) {
+    console.log('⚠️ [Cycle] No hay servidores registrados');
+    return;
+  }
+
+  console.log(`🖥️ [Cycle] Servidores: ${servers.join(', ')} | Prune: ${pruneMode}`);
+
+  // Crear ciclo: Promise que resuelve cuando todos respondan vía set-updates
+  const cycleResult = await new Promise((resolve) => {
+    const TIMEOUT_MS = 10 * 60 * 1000;
+    const timer = setTimeout(() => {
+      if (!activeCycle) return;
+      const remaining = [...activeCycle.pending];
+      console.warn(`⏱️ [Cycle] Timeout — sin respuesta de: ${remaining.join(', ')}`);
+      activeCycle = null;
+      resolve({ timedOut: remaining });
+    }, TIMEOUT_MS);
+
+    activeCycle = {
+      pending:  new Set(servers.map(e => e.toLowerCase())),
+      timedOut: [],
+      resolve:  (timedOut = []) => {
+        clearTimeout(timer);
+        activeCycle = null;
+        resolve({ timedOut });
+      }
+    };
+
+    // Lanzar todos en paralelo (fire & forget — cada uno notificará al terminar)
+    Promise.all(servers.map(ep => launchCheck(ep, pruneMode)));
+  });
+
+  console.log(`🎉 [Cycle] Completado — ${new Date().toISOString()}`);
+
+  if (notify) {
+    const snapshotAfter = readUpdatesFile();
+    const newUpdates = findNewUpdates(snapshotBefore, snapshotAfter);
+    console.log(`📊 [Cycle] Novedades: ${newUpdates.length} | Timeouts: ${JSON.stringify(cycleResult.timedOut)}`);
+    const msg = buildMessage(newUpdates, cycleResult.timedOut);
+    if (msg) {
+      console.log(`📬 [Cycle] Enviando notificación (${newUpdates.length} novedad(es), ${cycleResult.timedOut.length} timeout(s))`);
+      await sendNotification(msg);
+    } else {
+      console.log('📭 [Cycle] Sin novedades ni timeouts, no se notifica');
+    }
+  }
+}
+
+function setupScheduler() {
+  if (schedulerTimer) { clearTimeout(schedulerTimer); schedulerTimer = null; }
+  if (IS_AGENT) return;
+
+  const settings  = readSettingsFile();
+  const checkTime = settings.checkTime || '09:00';
+  const [hhStr, mmStr] = checkTime.split(':');
+  const hh = parseInt(hhStr, 10);
+  const mm = parseInt(mmStr, 10);
+
+  if (isNaN(hh) || isNaN(mm) || hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+    console.warn(`⚠️ [Scheduler] Hora inválida "${checkTime}"`);
+    return;
+  }
+
+  const scheduleNext = () => {
+    const now  = new Date();
+    const next = new Date();
+    next.setHours(hh, mm, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    const delay = next - now;
+    console.log(`⏰ [Scheduler] Próximo check a las ${checkTime} (en ${Math.round(delay / 60000)} min)`);
+    schedulerTimer = setTimeout(async () => {
+      await runScheduledChecks(true);
+      scheduleNext();
+    }, delay);
+  };
+  scheduleNext();
+}
+
+// ============================
+// DEV — eliminar antes de release
+// ============================
+// Arranque
+// ============================
 app.listen(port, () => {
   console.log(`✅ API Node lista en puerto ${port}`);
+  setupScheduler();
 });

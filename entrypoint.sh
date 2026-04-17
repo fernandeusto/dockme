@@ -7,6 +7,12 @@ echo "🚀 Iniciando Dockme"
 echo "🕒 $START_TIME"
 echo "===================="
 
+# Compatibilidad: nuevos nombres de variables del compose → nombres internos
+# CENTRAL_URL reemplaza a WEBHOOK_URL, AGENT_URL reemplaza a ENDPOINT
+WEBHOOK_URL="${WEBHOOK_URL:-$CENTRAL_URL}"
+ENDPOINT="${ENDPOINT:-$AGENT_URL}"
+export WEBHOOK_URL ENDPOINT
+
 # HOSTNAME es obligatorio - debe definirse en el compose
 SYSTEM_HOSTNAME=$(hostname)
 if [ "$HOSTNAME" = "$SYSTEM_HOSTNAME" ]; then
@@ -108,9 +114,93 @@ fi
 if [ ! -f "/app/data/config/links.json" ]; then
     printf '[]' > /app/data/config/links.json
 fi
+# Crear settings.json si no existe (recupera valores del compose y de updates.json si los hay)
+if [ ! -f "/app/data/config/settings.json" ]; then
+    python3 << 'PYEOF'
+import json, os
+
+# Hora del check: coger la primera si hay varias separadas por coma
+check_times_raw = os.environ.get('CHECK_TIMES', '09:00')
+check_time = check_times_raw.split(',')[0].strip()
+
+tg_token  = os.environ.get('TELEGRAM_TOKEN',  '')
+tg_chatid = os.environ.get('TELEGRAM_CHATID', '')
+
+# Migrar primaryHost y release desde updates.json si existen
+primary_host = ''
+release = ''
+try:
+    with open('/app/data/config/updates.json', 'r') as f:
+        updates = json.load(f)
+    local = next((h for h in updates if h.get('endpoint','').lower() == 'actual'), {})
+    primary_host = local.get('primaryHost', '')
+    release      = local.get('release', '')
+    # Limpiarlos de updates.json ahora que migran a settings.json
+    changed = False
+    for h in updates:
+        if 'primaryHost' in h or 'release' in h:
+            h.pop('primaryHost', None)
+            h.pop('release', None)
+            changed = True
+    if changed:
+        with open('/app/data/config/updates.json', 'w') as f:
+            json.dump(updates, f, indent=2)
+        print("✅ primaryHost y release migrados desde updates.json")
+except Exception as e:
+    print(f"⚠️ No se pudo leer updates.json para migración: {e}")
+
+# Detectar si es agente remoto
+webhook_url = os.environ.get('WEBHOOK_URL', '')
+endpoint    = os.environ.get('ENDPOINT', '')
+is_agent    = bool(webhook_url and endpoint and endpoint.lower() != 'actual')
+# Añadir http:// si falta en la URL del central
+if is_agent and webhook_url and not webhook_url.startswith('http'):
+    webhook_url = 'http://' + webhook_url
+central_url = webhook_url.rstrip('/') if is_agent else ''
+
+# Construir URL de shoutrrr desde variables de Telegram si existen
+# Solo en central/standalone — los agentes no gestionan notificaciones
+notification_urls = []
+
+if not is_agent and tg_token and tg_chatid:
+    notification_urls = [f"telegram://{tg_token}@telegram?chats={tg_chatid}"]
+    print("✅ URL de Telegram migrada desde variables de entorno")
+
+if is_agent:
+    settings = {
+        "centralUrl": central_url
+    }
+else:
+    settings = {
+        "centralUrl":  "",
+        "primaryHost": primary_host,
+        "release":     release,
+        "notifications": {
+            "enabled": bool(notification_urls),
+            "urls":    notification_urls
+        },
+        "checkTime": check_time,
+        "pruneMode": os.environ.get('PRUNE_MODE', 'conservative')
+    }
+
+with open('/app/data/config/settings.json', 'w') as f:
+    json.dump(settings, f, indent=2)
+
+print("✅ settings.json creado con valores del entorno")
+PYEOF
+fi
 
 # TODO: eliminar en v2.3 — limpiar sources.json del volumen del usuario (migrado a imagen interna)
 rm -f /app/data/config/sources.json 2>/dev/null || true
+
+# TODO: eliminar en v2.4 — limpieza de carpetas antiguas de versiones previas a v2.2
+# Una vez que todos los usuarios hayan migrado, esta limpieza ya no será necesaria
+if [ -n "$WEBHOOK_URL" ] && [ -n "$ENDPOINT" ] && [ "$ENDPOINT" != "Actual" ]; then
+    rm -rf /app/data/icons   2>/dev/null || true
+    rm -rf /app/data/logs    2>/dev/null || true
+    rm -rf /app/data/metadata 2>/dev/null || true
+    echo "🧹 Carpetas antiguas eliminadas del volumen del agente"
+fi
 
 
 
@@ -132,37 +222,13 @@ echo "🔧 Iniciando entorno..."
 node /custom/api.js >> /tmp/api-node.log 2>&1 &
 
 # ========================================
-# 3. Arrancar dockme-agent como apps
+# 3. Scheduler de chequeo
 # ========================================
-# Configurar horarios de chequeo
-CHECK_TIMES="${CHECK_TIMES:-09:00}"
-echo "🤖  Programando actualizaciones: $CHECK_TIMES"
-
-# Crear script del scheduler
-
-cat > /tmp/scheduler.sh << 'SCHEDULER_SCRIPT'
-#!/bin/bash
-CHECK_TIMES="$1"
-while true; do
-  HORA_ACTUAL=$(date +%H:%M)
-  IFS=',' read -ra TIMES <<< "$CHECK_TIMES"
-  for CHECK_TIME in "${TIMES[@]}"; do
-    CHECK_TIME=$(echo "$CHECK_TIME" | xargs)
-    if [ "$HORA_ACTUAL" = "$CHECK_TIME" ]; then
-      echo "[$(date '+%Y-%m-%d %H:%M:%S')] ⏰ Ejecutando chequeo de updates..."
-      /tools/check-updates.sh 2>&1 | tee -a /tmp/updates-check.log
-      sleep 61
-      break
-    fi
-  done
-  sleep 60
-done
-SCHEDULER_SCRIPT
-
-chmod +x /tmp/scheduler.sh
-
-# Arrancar scheduler como usuario apps
-su -s /bin/bash apps -c "/tmp/scheduler.sh '$CHECK_TIMES'" &
+# El scheduler está integrado en api.js (Node) y solo se activa
+# en modo central/standalone. Los agentes remotos no programan checks.
+if [ -n "$WEBHOOK_URL" ] && [ -n "$ENDPOINT" ] && [ "$ENDPOINT" != "Actual" ]; then
+    echo "📡 Modo agente remoto — scheduler desactivado (el central gestiona los checks)"
+fi
 
 # Arrancar API Flask para métricas (bajo demanda, sin loop)
 su -s /bin/bash apps -c "cd /tools && python3 api_metrics.py" >> /tmp/metrics.log 2>&1 &

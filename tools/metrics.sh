@@ -144,6 +144,8 @@ if [ -f /app/data/config/check-progress.json ]; then
     check_updates=$(sed -n 's/.*"updates":\([0-9]*\).*/\1/p' /app/data/config/check-progress.json)
     check_last=$(sed -n 's/.*"lastCheck":"\([^"]*\)".*/\1/p' /app/data/config/check-progress.json)
     prune_space=$(sed -n 's/.*"pruneSpace":"\([^"]*\)".*/\1/p' /app/data/config/check-progress.json)
+    # Fallback: si status quedó vacío (campo ausente o fichero malformado), usar idle
+    [ -z "$check_status" ] && check_status="idle"
 fi
 
 # ========================

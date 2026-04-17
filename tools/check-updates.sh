@@ -22,11 +22,11 @@
 #   FIXED CONFIGURATION
 # ============================
 STACKS_DIR="/opt/stacks"
-TELEGRAM_TOKEN="${TELEGRAM_TOKEN}"
-TELEGRAM_CHATID="${TELEGRAM_CHATID}"
 HOSTNAME="${HOSTNAME:-Server}"
 WEBHOOK_URL="${WEBHOOK_URL}"
 ENDPOINT="${ENDPOINT}"
+PRUNE_MODE="${1:-disabled}"   # disabled | conservative | normal | aggressive
+MANUAL="${2:-}"               # "manual" para saltar el cooldown de 12h
 IS_AGENT=false
 if [ -n "$WEBHOOK_URL" ] && [ -n "$ENDPOINT" ]; then
     IS_AGENT=true
@@ -43,38 +43,28 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # ========================================
-# Normalizar WEBHOOK_URL (base vs legacy)
+# Normalizar WEBHOOK_URL (añadir http:// si falta, compatibilidad con legacy)
 # ========================================
 WEBHOOK_ENDPOINT=""
 if [ -n "$WEBHOOK_URL" ]; then
- if echo "$WEBHOOK_URL" | grep -qE 'https?://[^/]+/.+'; then
-        # Modo legacy (compatibilidad)
+    if echo "$WEBHOOK_URL" | grep -qE 'https?://[^/]+/.+'; then
+        # Modo legacy: URL completa con /api/... — usar tal cual
         WEBHOOK_ENDPOINT="$WEBHOOK_URL"
         echo "⚠️ AVISO: WEBHOOK_URL incluye '/api/...'."
         echo " 👉 Debe actualizar el compose a:"
-        echo "    WEBHOOK_URL=http://<host>:<puerto>"
-    else
+        echo "    CENTRAL_URL=<host>:<puerto>"
+    elif echo "$WEBHOOK_URL" | grep -qE 'https?://'; then
+        # Tiene http:// pero sin path — añadir /api/set-updates
         WEBHOOK_ENDPOINT="${WEBHOOK_URL%/}/api/set-updates"
+    else
+        # Sin protocolo — añadir http://
+        WEBHOOK_ENDPOINT="http://${WEBHOOK_URL%/}/api/set-updates"
     fi
 fi
 
 # ============================
 #   NOTIFICATION FUNCTIONS
 # ============================
-send_notif() {
-   echo -e "\n${BLUE}Enviando notificación...${NC}"
-    local message="$1"
-
-    if [ -z "$TELEGRAM_TOKEN" ] || [ -z "$TELEGRAM_CHATID" ]; then
-        return
-    fi
-
-    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-        -d chat_id="${TELEGRAM_CHATID}" \
-        -d text="$message" \
-        -d parse_mode="HTML" >/dev/null
-}
-
 send_webhook() {
     local updates_json="$1"
     curl -s -X POST "$WEBHOOK_ENDPOINT" \
@@ -85,26 +75,35 @@ send_webhook() {
 
 save_updates_local() {
     local updates_json="$1"
-    local updates_file="/app/data/config/updates.json"
-    python3 - <<EOF
+    # POST al API Node (mismo contenedor, puerto 5002 — acceso directo sin nginx).
+    # Permite que set-updates detecte el fin de ciclo igual que los agentes.
+    if curl -sf -X POST "http://localhost:5002/api/set-updates" \
+        -H "Content-Type: application/json" \
+        -d "{\"hostname\":\"$HOSTNAME\",\"endpoint\":\"Actual\",\"updates\":$updates_json}" \
+        -m 5 >/dev/null 2>&1; then
+        return 0
+    fi
+    # Fallback: escritura directa si el API local no responde
+    echo "⚠️ API local no disponible, guardando updates directamente"
+    python3 - << PYEOF
 import json
-updates_file = "$updates_file"
-updates = json.loads('$updates_json')
-with open(updates_file, 'r') as f:
-    data = json.load(f)
-for host in data:
-    if host.get("endpoint") == "Actual":
-        host["updates"] = updates
-with open(updates_file, 'w') as f:
-    json.dump(data, f, indent=2)
-EOF
+try:
+    with open("/app/data/config/updates.json", "r") as f:
+        data = json.load(f)
+    for host in data:
+        if host.get("endpoint") == "Actual":
+            host["updates"] = json.loads('$updates_json')
+    with open("/app/data/config/updates.json", "w") as f:
+        json.dump(data, f, indent=2)
+except Exception as e:
+    print(f"Error: {e}")
+PYEOF
 }
 
 # ============================
 #   CHECK 12H COOLDOWN
 # ============================
 PROGRESS_FILE="/app/data/config/check-progress.json"
-MANUAL="${1:-}"
 if [ -z "$MANUAL" ] && [ -f "$PROGRESS_FILE" ]; then
     lastCheck=$(python3 -c "
 import json, sys
@@ -215,45 +214,6 @@ if [ "$valid_stack_found" = false ]; then
 fi
 
 # ============================
-#   CLEANUP
-# ============================
-echo -e "\n${BLUE}=== Limpiando imagenes huerfanas ===${NC}"
-prune_output=$(docker image prune -f --filter "until=48h" 2>&1 || true)
-reclaimed=$(echo "$prune_output" | grep -i "Total reclaimed space" | sed 's/Total reclaimed space/Espacio recuperado/' || echo "")
-
-if [ -z "$reclaimed" ]; then
-    echo -e "${GREEN}Nada que limpiar.${NC}"
-else
-    echo -e "${YELLOW}$reclaimed${NC}"
-fi
-
-# ============================
-#   FORMAT SPACE
-# ============================
-format_space() {
-    # Retorna vacío si el espacio es menor a 100MB (umbral mínimo para notificar)
-    echo "$1" | awk '{
-        n = $0; gsub(/[A-Z]+/, "", n)
-        u = $0; gsub(/[0-9.]+/, "", u)
-        # Convertir a MB para comparar con umbral
-        mb = n
-        if (u == "KB") mb = n / 1024
-        else if (u == "B") mb = n / 1048576
-        else if (u == "GB") mb = n * 1024
-        else if (u == "TB") mb = n * 1048576
-        if (mb < 100) { print ""; exit }
-        # Formatear salida
-        if (u == "GB") {
-            dec = n - int(n)
-            if (dec == 0) printf "%d GB\n", int(n)
-            else printf "%.1f GB\n", n
-        }
-        else printf "%d %s\n", int(n + 0.5), u
-    }' | sed 's/\.\([0-9]\)/,\1/'
-}
-
-
-# ============================
 #   SUMMARY
 # ============================
 if [ ${#updates_list[@]} -gt 0 ]; then
@@ -264,26 +224,6 @@ if [ ${#updates_list[@]} -gt 0 ]; then
         IFS='|' read -r stack service <<< "$item"
         printf "${YELLOW}%-25s${NC} | ${CYAN}%-25s${NC}\n" "$stack" "$service"
     done
- # Formatear lista de stacks
-stacks_unique=$(printf "%s\n" "${updates_list[@]}" | cut -d'|' -f1 | sort -u)
-stacks_count=$(echo "$stacks_unique" | wc -l)
-
-# Construir mensaje
-msg="🐋 <b>${HOSTNAME}</b>: ${stacks_count} update"
-[ "$stacks_count" -gt 1 ] && msg+="s"
-msg+=$'\n'
-while IFS= read -r stack; do
-    msg+="<code>  • ${stack}</code>"$'\n'
-done <<< "$stacks_unique"
-
-# Añadir espacio liberado si supera 100MB (format_space filtra por umbral)
-if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
-    space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
-    [ -n "$space" ] && msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
-fi
-
-send_notif "$msg"
-
 # ============================
 #   FORMAT WEBHOOK
 # ============================
@@ -304,41 +244,40 @@ send_notif "$msg"
         updates_json+="{\"stack\":\"$stack\",\"dockers\":$dockers_json}"
     done
     updates_json+="]"
-    if [ -n "$WEBHOOK_URL" ] && [ -n "$ENDPOINT" ]; then
-        WEBHOOK_BASE=$(echo "$WEBHOOK_URL" | sed 's#/api/.*##')
-        echo -e "\n${BLUE}🌐 Enviando updates a $WEBHOOK_BASE${NC}"
-        send_webhook "$updates_json"
-    else
-        echo "🖥️ Guardando updates localmente"
-        save_updates_local "$updates_json"
-    fi
 else
     echo -e "${GREEN}No hay actualizaciones. Todos los stacks están actualizados!${NC}"
-    # Notificar si se liberó espacio superior a 100MB aunque no haya updates
-    if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
-        space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
-        if [ -n "$space" ]; then
-            msg="🐋 <b>${HOSTNAME}</b>: Todo actualizado"$'\n'
-            msg+=$'\n'"🧹 <b>Espacio liberado:</b> ${space}"
-            send_notif "$msg"
-        fi
-    fi
+    updates_json="[]"
 fi
-# Guardar estado final en progress
-updates_count=${#updates_list[@]}
-# Contar stacks únicos con updates
-if [ $updates_count -gt 0 ]; then
-    stacks_with_updates=$(printf "%s\n" "${updates_list[@]}" | cut -d'|' -f1 | sort -u | wc -l)
+
+# Siempre notificar al central (con updates o sin ellas) para señalar fin de ciclo
+if [ -n "$WEBHOOK_URL" ] && [ -n "$ENDPOINT" ]; then
+    WEBHOOK_BASE=$(echo "$WEBHOOK_ENDPOINT" | sed 's#/api/.*##')
+    echo -e "\n${BLUE}🌐 Enviando updates a $WEBHOOK_BASE${NC}"
+    send_webhook "$updates_json"
 else
-    stacks_with_updates=0
+    echo "🖥️ Enviando updates al API local"
+    save_updates_local "$updates_json"
 fi
+# ============================
+#   PRUNE (antes de cerrar el ciclo)
+# ============================
+/tools/prune.sh "$PRUNE_MODE" 2>&1 | tee -a /tmp/prune.log
+
+# Leer pruneSpace que dejó prune.sh en check-progress.json
+prune_space=$(python3 -c "
+import json
+try:
+    d = json.load(open('$PROGRESS_FILE'))
+    print(d.get('pruneSpace',''))
+except:
+    print('')
+" 2>/dev/null || echo "")
+
+# ============================
+#   ESTADO FINAL
+# ============================
 lastCheck=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-prune_space=""
-if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "0B"; then
-    prune_space=$(format_space "$(echo "$reclaimed" | sed 's/.*: //')")
-    # format_space ya filtra por umbral de 100MB, si está vacío no mostrar
-fi
-cat > /app/data/config/check-progress.json << EOF
+cat > /app/data/config/check-progress.json << PROGRESSEOF
 {"status":"idle","percent":100,"lastCheck":"${lastCheck}","pruneSpace":"${prune_space}"}
-EOF
+PROGRESSEOF
 echo "🕒 Última comprobación: $(date '+%d-%m-%Y %H:%M')"

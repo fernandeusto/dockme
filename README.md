@@ -13,7 +13,7 @@
 - 🎨 **Gestión de Compose mejorada** - Editor, logs y terminal a pantalla completa; terminal con portapapeles
 - 🏠 **Homepage personal** - Organiza links y servicios docker en categorías con sus iconos, y márcalos como favoritos para tenerlos anclados en el dashboard. Tanto desde las tarjetas favoritas como desde la lista de stacks puedes abrir el compose o lanzar el servicio si el click es en el icono.
 - 📐 **Layouts por dispositivo** - Arrastra y redimensiona los bloques a tu gusto y guarda distintas disposiciones del dashboard para cada uno de tus dispositivos o tamaños de pantalla.
-- 🔔 **Detección de actualizaciones** - Chequeo automático programable y manual con notificaciones por Telegram, prune de imágenes antiguas para recuperar espacio en disco, sincronizado entre dispositivos y actualización masiva de todos los pendientes en múltiples servidores con un solo click.
+- 🔔 **Detección de actualizaciones** - Chequeo automático programable y manual con notificaciones multi-servicio (Telegram, Discord, ntfy, Pushover y más), prune de imágenes antiguas para recuperar espacio en disco, sincronizado entre dispositivos y actualización masiva de todas las pendientes en múltiples servidores con un solo click.
 - 🌐 **Multi-servidor** - Gestiona múltiples hosts desde un panel centralizado con métricas en tiempo real, editando o desplegando nuevos compose en remoto. Ademas puedes asignar un icono a cada servidor para identificarlos y lanzar su interfaz web.
 - 🔄 **Auto-actualización** - Dockme puede actualizarse a sí mismo desde la tarjeta de métricas, incluso en los host remotos sin perder el control de sus docker.
 
@@ -73,12 +73,19 @@ docker version --format '{{.Server.APIVersion}}'
 | Variable | Descripción | Por defecto |
 |----------|-------------|-------------|
 | `HOSTNAME` | Nombre del servidor ⚠️ **Obligatorio** | |
-| `CHECK_TIMES` | Horarios de chequeo (HH:MM, separados por comas) | `09:00` |
 | `TZ` | Zona horaria | `Europe/Madrid` |
-| `TELEGRAM_TOKEN` | Token del bot de Telegram | |
-| `TELEGRAM_CHATID` | ID del chat de Telegram | |
-| `ENDPOINT` | IP:Puerto del servidor remoto | *(solo remotos)* |
-| `WEBHOOK_URL` | URL del servidor central | *(solo remotos)* |
+| `AGENT_URL` | IP:Puerto deL servidor remoto | *(solo remotos)* |
+| `CENTRAL_URL` | IP:Puerto del servidor central | *(solo remotos)* |
+
+> ⚠️ **Variables deprecadas** — siguen funcionando pero serán eliminadas en futuras versiones. Sustitúyelas por las equivalentes nuevas o elimínalas si ya no las usas:
+>
+> | Variable deprecada | Sustituir por | Notas |
+> |--------------------|---------------|-------|
+> | `ENDPOINT` | `AGENT_URL` | Solo remotos |
+> | `WEBHOOK_URL` | `CENTRAL_URL` | Solo remotos |
+> | `TELEGRAM_TOKEN` | — | Configurar desde ✏️ Editar → General |
+> | `TELEGRAM_CHATID` | — | Configurar desde ✏️ Editar → General |
+> | `CHECK_TIMES` | — | Configurar desde ✏️ Editar → General |
 
 ### 📂 Sobre el volumen `/opt/stacks`
 
@@ -104,19 +111,21 @@ Dockme puede funcionar **en solitario** o como **servidor central** recibiendo i
 Para conectar un servidor remoto al central, añade estas **2 variables** al compose del servidor remoto:
 ```yaml
 environment:
-  ENDPOINT: "192.168.1.200:5041"             # IP:Puerto de ESTE servidor
-  WEBHOOK_URL: "http://192.168.1.100:5041"   # URL del servidor central
+  AGENT_URL: "192.168.1.200:5041"   # IP:Puerto del servidor remoto (sin http://) Asegurarse que desde el central se puede acceder a ella
+  CENTRAL_URL: "192.168.1.100:5041" # IP:Puerto del servidor central (sin http://) Asegurarse que desde el servidor remoto se puede acceder a ella
 ```
 
-1. **Levanta el Dockme remoto** con las variables `ENDPOINT` y `WEBHOOK_URL`
-2. **En el central**, espera unos segundos o recarga la página 
-3. **Aparecerá una alerta** indicando que hay servidores detectados — haz click en ella para ir al panel de configuración
-4. En la pestaña **Servidores**, introduce usuario y contraseña del login remoto y haz click en **"Conectar agente"**
-5. Opcionalmente asigna un icono y la URL de su interfaz web
+1. **Levanta el Dockme remoto** con las variables `AGENT_URL` y `CENTRAL_URL`
+2. **Antes de continuar**, accede a la interfaz web del remoto directamente (p.ej. `http://192.168.1.200:5041`) y crea el usuario y contraseña si no lo habias hecho antes.
+3. **En el central**, espera unos segundos o recarga la página
+4. **Aparecerá una alerta** indicando que hay servidores detectados — haz click en ella para ir al panel de configuración
+5. En la pestaña **Servidores**, introduce usuario y contraseña del login remoto y haz click en **"Conectar agente"**
+6. Opcionalmente asigna un icono y la URL de su interfaz web
+7. Una vez conectado y para mayor seguridad si quieres puedes cerrar sesion desde el menu superior, ya que todo sera gestionado desde el central.
 
-¡Listo! El servidor remoto ya está sincronizado, ahora se podrán gestionar remotamente sus compose, desplegar nuevos stack, ver sus métricas, recibir sus actualizaciones pendientes, y actualizarlas desde el central de forma masiva.
+¡Listo! El servidor remoto ya está sincronizado, ahora se podrán gestionar remotamente sus compose, desplegar nuevos stacks, ver sus métricas, recibir sus actualizaciones pendientes, y actualizarlas desde el central de forma masiva.
 
-👉 Haciendo click en cada una de las tarjetas de métricas se pueden filtrar la lista de stack para mostrar solo los stack de ese servidor, sus favoritos y sus actualizaciones pendientes, y volver a mostrar todos haciendo click de nuevo en la que esta seleccionada.
+👉 Haciendo click en cada una de las tarjetas de métricas se pueden filtrar la lista de stacks para mostrar solo los de ese servidor, sus favoritos y sus actualizaciones pendientes, y volver a mostrar todos haciendo click de nuevo en la que está seleccionada.
 
 ---
 
@@ -124,11 +133,12 @@ environment:
 
 Desde el botón **✏️** del header accedes al panel de configuración unificado con varias pestañas:
 
-- **Stacks** - Asigna iconos SVG a tus stacks desde URL o archivo local, y configura la URL de su servicio para lanzarlo con un click, y marcalos como favoritos para anclarlos en el dashboard
-- **Links** - Crea y organiza categorías de links con iconos autodetectados o personalizados
-- **Servidores** - Conecta y gestiona hosts remotos, asignales un icono y la url de su interfaz web
+- **📦 Stacks** - Asigna iconos a tus stacks desde URL o archivo local, configura la URL de su servicio para lanzarlo con un click, y márcalos como favoritos para anclarlos en el dashboard
+- **🔗 Links** - Crea y organiza categorías de links con iconos autodetectados o personalizados para acceder a servicios externos o cualquier url de internet
+- **🖥️ Servidores** - Conecta y gestiona hosts remotos, asígnales un icono y la URL de su interfaz web
+- **⚙️ General** - Configura las notificaciones (Telegram, Discord, ntfy y más), programa la hora del check diario de actualizaciones, y ajusta el modo de limpieza automática de imágenes Docker
 
-💡 **Tip:** Encuentra iconos en [Self-Hosted Dashboard Icons](https://selfh.st/icons/)
+💡 **Tip:** DockMe descarga automáticamente iconos para más de 2800 servicios conocidos al arrancar. Si el tuyo no está incluido o quieres personalizarlo, puedes asignarlo manualmente desde la pestaña Stacks. Encuentra iconos adicionales en [Self-Hosted Dashboard Icons](https://selfh.st/icons/)
 
 ## 📐 Modo organizar
 
@@ -141,18 +151,6 @@ Desde el botón **⠿** del header accedes al modo organizar donde puedes person
 - Crea distintos perfiles para cada dispositivo o tamaño de pantalla — Dockme recuerda automáticamente cuál usar en cada uno
 
 👉 Los perfiles se guardan en el servidor, por lo que están disponibles desde cualquier navegador.
-
----
-
-## 🛠️ Comandos CLI
-
-Desde el terminal del contenedor:
-
-| Comando | Descripción |
-|---------|-------------|
-| `dockme checkupdates` | Chequear actualizaciones manualmente |
-| `dockme prune` | Limpiar imágenes Docker huérfanas |
-| `dockme test-telegram` | Enviar mensaje de prueba a Telegram |
 
 ---
 

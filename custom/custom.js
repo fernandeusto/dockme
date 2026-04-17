@@ -282,18 +282,21 @@ async switchTo(profileName) {
     const State = {
         updatesDataGlobal: null,
         sourcesDataGlobal: null,
+        settingsData: null,
         hostnameLocal: null,
         lastPath: window.location.pathname,
         
         setUpdatesData(data) {
             this.updatesDataGlobal = data;
             window.updatesDataGlobal = data;
-            // Actualizar primaryHostLocal desde la entrada Actual
+            // primaryHost viene de settings.json (fuente de verdad)
+            // updatesDataGlobal ya no lo lleva
             if (Array.isArray(data)) {
                 const local = data.find(h => h.endpoint?.toLowerCase() === 'actual');
-                if (local?.primaryHost) {
-                    primaryHostLocal = local.primaryHost;
-                } else if (local && !local.primaryHost && RouteManager.isRootPath()) {
+                const ph = this.settingsData?.primaryHost || local?.primaryHost || null;
+                if (ph) {
+                    primaryHostLocal = ph;
+                } else if (local && RouteManager.isRootPath() && !State.settingsData?.centralUrl && !RouteManager.isSetupPath()) {
                     // Primera vez — mostrar modal para configurar IP base
                     setTimeout(() => {
                         showPrimaryHostModal('Actual', null, (newVal, onSuccess) => {
@@ -308,7 +311,7 @@ async switchTo(profileName) {
                                     primaryHostLocal = newVal;
                                     const span = document.querySelector('.agent-primary-host-value[data-endpoint="Actual"]');
                                     if (span) span.textContent = newVal;
-                                    if (local) local.primaryHost = newVal;
+                                    if (State.settingsData) State.settingsData.primaryHost = newVal;
                                     loadStacksConfig();
                                     onSuccess();
                                 }
@@ -573,6 +576,14 @@ async switchTo(profileName) {
                 return await this.fetchJSON(`${CONFIG.BASE_URL}/config/updates.json?t=${Date.now()}`);
             } catch {
                 return [];
+            }
+        },
+
+        async loadSettings() {
+            try {
+                return await this.fetchJSON(`${CONFIG.BASE_URL}/api/get-settings?t=${Date.now()}`);
+            } catch {
+                return {};
             }
         },
 
@@ -1250,6 +1261,7 @@ async switchTo(profileName) {
     const DataLoader = {
         async loadAndDisplay() {
             if (!RouteManager.isRootPath()) return;
+            if (!!State.settingsData?.centralUrl) return; // agente: no dibujar dashboard
             await loadStacksConfig();
             await loadLinksConfig();
             const layoutBlocks = await LayoutManager.load();
@@ -1915,10 +1927,12 @@ let layoutDirty = false;
     const UIComponents = {
         fixPortLinks() {
             if (!primaryHostLocal) return;
+            // Solo aplicar en stacks locales (/compose/stack/) — los remotos (/compose/stack/endpoint) ya tienen el host correcto
+            const endpoint = RouteManager.extractEndpoint?.();
+            if (endpoint && endpoint.toLowerCase() !== 'actual') return;
             document.querySelectorAll('.col-7 a[href]').forEach(a => {
                 try {
                     const url = new URL(a.href);
-                    // Solo links con puerto explícito que no sean ya primaryHostLocal
                     if (!url.port || url.hostname === primaryHostLocal) return;
                     url.hostname = primaryHostLocal;
                     a.href = url.toString();
@@ -2974,11 +2988,13 @@ let layoutDirty = false;
                 readAgentsFromDockgeDOM();
                 const tryLoadDashboard = (attemptsLeft) => {
                     Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
-                        MetricsManager.ensureContainer();
+                        if (!State.settingsData?.centralUrl) {
+                            MetricsManager.ensureContainer();
+                        }
                         const dashboard = ensureDockmeRoot();
                         if (dashboard) {
                             DataLoader.loadAndDisplay();
-                            MetricsManager.start();
+                            if (!State.settingsData?.centralUrl) MetricsManager.start();
                         } else if (attemptsLeft > 0) {
                             setTimeout(() => tryLoadDashboard(attemptsLeft - 1), 200);
                         }
@@ -3060,10 +3076,16 @@ let layoutDirty = false;
 
         async load() {
             if (this.loaded) return;
-            const [updatesData, sourcesData] = await Promise.all([
+            const [updatesData, sourcesData, settingsData] = await Promise.all([
                 API.loadUpdates(),
-                API.loadSources()
+                API.loadSources(),
+                API.loadSettings()
             ]);
+            State.settingsData = settingsData;
+            // primaryHost viene de settings.json
+            if (settingsData?.primaryHost) {
+                primaryHostLocal = settingsData.primaryHost;
+            }
             State.setUpdatesData(updatesData);
             State.setSourcesData(sourcesData);
             if (Array.isArray(updatesData) && updatesData.length > 0) {
@@ -3079,6 +3101,14 @@ let layoutDirty = false;
             }
             this.loaded = true;
             RouteObserver.handleRouteChange(window.location.pathname);
+
+            // TODO: eliminar en v2.3 — avisar variables obsoletas en el compose (solo una vez)
+            if (!settingsData?.centralUrl) setTimeout(() => checkDeprecatedVars(), 2000);
+
+            // Bloqueo UI agente remoto
+            if (!!settingsData?.centralUrl) {
+                applyAgentMode(settingsData.centralUrl || '');
+            }
         }
     };
 
@@ -3364,18 +3394,18 @@ let layoutDirty = false;
         });
 
         // Botón Novedades en header
-        const mostrarNovedades = (currentVersion, udata) => {
-            const hosts = Array.isArray(udata) ? udata : [];
-            const localHost = hosts.find(h => (h.endpoint || '').toLowerCase() === 'actual');
-            if (!currentVersion || !localHost) return;
-            if (localHost.release === currentVersion) return;
+        const mostrarNovedades = (currentVersion) => {
+            if (!currentVersion) return;
+            // release se lee de settings.json (fuente de verdad), no de updates.json
+            const savedRelease = State.settingsData?.release || '';
+            if (savedRelease === currentVersion) return;
             const novedadesIcon = document.createElement('button');
             novedadesIcon.className = 'btn-novedades-dockme';
             novedadesIcon.title = `Novedades v${currentVersion}`;
             novedadesIcon.innerHTML = '📣 Novedades';
             novedadesIcon.addEventListener('click', async () => {
                 window.open('https://github.com/fernandeusto/dockme/releases', '_blank');
-                localHost.release = currentVersion;
+                if (State.settingsData) State.settingsData.release = currentVersion;
                 novedadesIcon.remove();
                 await fetch('/api/set-release-version', {
                     method: 'POST',
@@ -3385,14 +3415,10 @@ let layoutDirty = false;
             });
             if (window.innerWidth > 700) wrapper.prepend(novedadesIcon);
         };
-        Promise.all([
-            fetch('/api/get-version').then(r => r.json()),
-            fetch('/config/updates.json').then(r => r.json())
-        ]).then(([vdata, udata]) => {
-            const hosts = Array.isArray(udata) ? udata : [];
-            const localHost = hosts.find(h => (h.endpoint || '').toLowerCase() === 'actual');
-            mostrarNovedades(vdata.version, udata);
-        }).catch(err => console.error('[Novedades] error:', err));
+        fetch('/api/get-version')
+            .then(r => r.json())
+            .then(vdata => mostrarNovedades(vdata.version))
+            .catch(err => console.error('[Novedades] error:', err));
 
         wrapper.appendChild(editIcon);
         wrapper.appendChild(organizeIcon);
@@ -3532,9 +3558,10 @@ let layoutDirty = false;
                 <button class="config-panel-close" title="Cerrar">×</button>
             </div>
             <div class="config-tabs">
-                <button class="config-tab active" data-tab="stacks">⚙️ Stacks</button>
+                <button class="config-tab active" data-tab="stacks">📦 Stacks</button>
                 <button class="config-tab" data-tab="servidores">🖥️ Servidores</button>
                 <button class="config-tab" data-tab="links">🔗 Links</button>
+                <button class="config-tab" data-tab="general">⚙️ General</button>
             </div>
             <div class="config-content active" id="config-tab-stacks">
                 <p>Selecciona un stack de la lista izquierda para editar sus datos.</p>
@@ -3543,6 +3570,7 @@ let layoutDirty = false;
             <div class="config-content" id="config-tab-links">
                 <p>Próximamente...</p>
             </div>
+            <div class="config-content" id="config-tab-general"></div>
         `;
 
         // Listeners de tabs
@@ -3592,6 +3620,13 @@ let layoutDirty = false;
             if (container) {
                 container.dataset.loaded = 'true';
                 renderLinksTab(container);
+            }
+        }
+        if (tab === 'general') {
+            const container = panel.querySelector('#config-tab-general');
+            if (container && !container.dataset.loaded) {
+                container.dataset.loaded = 'true';
+                renderGeneralTab(container);
             }
         }
     }
@@ -3821,6 +3856,7 @@ let layoutDirty = false;
                             primaryHostLocal = newVal;
                             const span = document.querySelector('.agent-primary-host-value[data-endpoint="Actual"]');
                             if (span) span.textContent = newVal;
+                            if (State.settingsData) State.settingsData.primaryHost = newVal;
                             onSuccess();
                             doSaveUrl();
                         }
@@ -4012,6 +4048,33 @@ let layoutDirty = false;
         if (root) return root;
         const hiddenBlock = hideDockgeHomeBlock();
         if (!hiddenBlock) return null;
+        // Si es agente, mostrar mensaje en lugar del dashboard
+        if (!!State.settingsData?.centralUrl) {
+            const centralUrl = State.settingsData.centralUrl || '';
+            const centralLink = centralUrl
+                ? `<a href="${centralUrl}" style="color:#7eb8f7;text-decoration:underline;">${centralUrl}</a>`
+                : 'el servidor central';
+            const msg = document.createElement('div');
+            msg.id = 'dockme-dashboard';
+            msg.className = 'row mt-4';
+            msg.innerHTML = `
+                <div style="text-align:center;padding:40px 20px;max-width:560px;margin:0 auto;">
+                    <img src="/system-icons/dockme.svg" style="width:48px;height:48px;margin-bottom:14px;opacity:0.75;">
+                    <div style="font-size:1.1em;font-weight:600;color:#fff;margin-bottom:12px;">Servidor gestionado de forma centralizada</div>
+                    <p style="color:#c0cfe0;font-size:0.9em;line-height:1.7;margin:0 0 10px 0;">
+                        Este servidor está siendo gestionado desde ${centralLink}.
+                    </p>
+                    <p style="color:#a0b8d0;font-size:0.85em;line-height:1.7;margin:0 0 12px 0;">
+                        Este servidor debería aparecer detectado en el servidor central. Si no aparece tras refrescar la página del central, verifica que las variables del compose tengan la URL del central correcta. Para volver al modo sin conexión a central, elimina las variables de agente en este compose.
+                    </p>
+                    <p style="color:#7a9cc4;font-size:0.82em;margin:0;">
+                        Más info en <a href="https://github.com/fernandeusto/dockme" target="_blank" style="color:#7eb8f7;">github.com/fernandeusto/dockme</a>
+                    </p>
+                </div>
+            `;
+            hiddenBlock.after(msg);
+            return msg;
+        }
         root = document.createElement('div');
         root.id = 'dockme-dashboard';
         root.className = 'row mt-4';
@@ -4257,9 +4320,11 @@ let layoutDirty = false;
                 })() : '';
                 const updatesLabel = checkStatus === 'checking'
                     ? `<span class="metric-value warning">Comprobando ${checkPercent}%</span>`
-                    : checkLast
-                        ? `<span class="metric-value ${checkUpdates > 0 ? 'danger' : 'normal'}" title="${checkLastTooltip}">${checkUpdates > 0 ? checkUpdates + ' pendientes' : '✓ Al día'}</span>`
-                        : `<span class="metric-value">--</span>`;
+                    : checkStatus === 'pruning'
+                        ? `<span class="metric-value warning">Limpiando... 🧹</span>`
+                        : checkLast
+                            ? `<span class="metric-value ${checkUpdates > 0 ? 'danger' : 'normal'}" title="${checkLastTooltip}">${checkUpdates > 0 ? checkUpdates + ' pendientes' : '✓ Al día'}</span>`
+                            : `<span class="metric-value">--</span>`;
                 // Obtener uiUrl e icono del servidor
                 const serverEntry = State.updatesDataGlobal?.find(h =>
                     h.endpoint?.toLowerCase() === endpoint.toLowerCase()
@@ -4306,7 +4371,7 @@ let layoutDirty = false;
                         <span class="metric-label">Actualizaciones:</span>
                         <span style="display:flex;align-items:center;gap:6px;">
                             ${updatesLabel}
-                            <img src="/system-icons/check-updates.svg" class="btn-check-now" data-endpoint="${endpoint}" title="Comprobar ahora" style="cursor:pointer;width:18px;height:18px;opacity:0.7;${checkStatus === 'checking' ? 'display:none;' : ''}" />
+                            <img src="/system-icons/check-updates.svg" class="btn-check-now" data-endpoint="${endpoint}" title="Comprobar ahora" style="cursor:pointer;width:18px;height:18px;opacity:0.7;${checkStatus === 'checking' || checkStatus === 'pruning' ? 'display:none;' : ''}" />
                         </span>
                     </div>
                     ${pruneSpace ? `
@@ -4494,6 +4559,7 @@ let layoutDirty = false;
         },
 
         ensureContainer() {
+            if (!!State.settingsData?.centralUrl) return;
             const dockmeBlocks = document.querySelector('#dockme-dashboard');
             if (!dockmeBlocks) return;
 
@@ -4787,6 +4853,15 @@ function readAgentsFromDockgeDOM() {
         });
     });
     AgentsState.setAgents(agents);
+
+    // Sincronizar al backend los endpoints conectados (online) para que el
+    // scheduler no lance checks a servidores detectados pero no conectados
+    const connectedEps = agents.filter(a => a.isOnline).map(a => a.endpoint);
+    fetch('/api/set-connected-endpoints', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoints: connectedEps })
+    }).catch(() => {});
 }
 
 // ==================== DETECTAR SERVIDORES PENDIENTES ====================
@@ -4817,7 +4892,7 @@ function createDetectedServersSection() {
             <div class="detected-server-header">
                 <div class="detected-server-info">
                     <div class="detected-server-hostname">${server.hostname}</div>
-                    <div class="detected-server-endpoint"><code>${server.endpoint}</code></div>
+                    <div class="detected-server-endpoint"><a href="http://${server.endpoint}" target="_blank" rel="noopener" style="color:#7eb8f7;"><code>${server.endpoint}</code></a></div>
                 </div>
                 <button class="btn-discard-detected" data-endpoint="${server.endpoint}" title="Descartar servidor">
                     ❌
@@ -4844,6 +4919,9 @@ function createDetectedServersSection() {
     return `
         <div class="dockme-detected-servers" style="margin-top: 40px;">
             <h3 style="font-size: 20px;">Servidores Dockme detectados</h3>
+            <p style="color:#7a9cc4;font-size:0.82em;line-height:1.6;margin-bottom:14px;">
+                ⚠️ Antes de conectar a un agente por primera vez, accede a su interfaz web y crea el usuario si aún no lo has hecho. Luego introduce las credenciales aquí para conectar con el agente.
+            </p>
             <div class="detected-servers-list">
                 ${rows}
             </div>
@@ -4935,7 +5013,85 @@ function createAgentsTable() {
     `;
 }
 
-// ==================== MOSTRAR PANEL DE GESTIÓN ====================
+// ==================== BLOQUEO UI AGENTE REMOTO ====================
+function applyAgentMode(centralUrl) {
+    const centralLink = centralUrl
+        ? `<a href="${centralUrl}" style="color:#7eb8f7;text-decoration:underline;">${centralUrl}</a>`
+        : 'el servidor central';
+
+    const applyUI = () => {
+        // Ocultar columna de stacks de Dockge
+        const stackCol = document.querySelector('.col-12.col-md-4.col-xl-3');
+        if (stackCol) stackCol.style.setProperty('display', 'none', 'important');
+
+        // Ocultar li con dockme-header-icons y botón Novedades — dejar avatar
+        const dockmeIconsLi = document.querySelector('.dockme-header-icons')?.closest('li.nav-item');
+        if (dockmeIconsLi) dockmeIconsLi.style.setProperty('display', 'none', 'important');
+        const novedadesBtn = document.querySelector('.btn-novedades-dockme');
+        if (novedadesBtn) novedadesBtn.style.setProperty('display', 'none', 'important');
+    };
+
+    applyUI();
+    const obs = new MutationObserver(applyUI);
+    obs.observe(document.body, { childList: true, subtree: true });
+
+    // Si navega fuera de raíz (salvo /setup y /settings), volver a raíz
+    window.addEventListener('popstate', () => {
+        const path = window.location.pathname;
+        if (!RouteManager.isSetupPath() && !path.startsWith('/settings') && path !== '/') {
+            window.history.pushState({}, '', '/');
+            window.dispatchEvent(new Event('popstate'));
+        }
+    });
+}
+
+// ==================== AVISAR VARIABLES OBSOLETAS EN COMPOSE ====================
+// TODO: eliminar en v2.3 cuando todos los usuarios hayan migrado
+function checkDeprecatedVars() {
+    if (document.querySelector('.deprecated-vars-modal')) return;
+    if (State.settingsData?.migration_2_1_shown) return;
+
+    const code = v => `<code style="background:#0d1520;padding:2px 6px;border-radius:3px;display:block;margin:3px 0;">${v}</code>`;
+
+    const modal = document.createElement('div');
+    modal.className = 'deprecated-vars-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    modal.innerHTML = `
+        <div style="background:#1a2537;border-radius:10px;padding:28px 32px;max-width:500px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+            <div style="font-size:1.1em;font-weight:600;color:#fff;margin-bottom:12px;">⚠️ Variables del compose obsoletas</div>
+            <p style="color:#c0cfe0;font-size:0.88em;line-height:1.6;margin-bottom:14px;">
+                Ahora las siguientes variables se gestionan desde el nuevo panel de configuración del propio Dockme en <b>✏️ Editar → General</b>.
+            </p>
+            <p style="color:#c0cfe0;font-size:0.88em;margin:0 0 6px 0;">Elimina en el compose de Dockme las siguientes variables si las tienes configuradas:</p>
+            <div style="margin:0 0 16px 16px;">
+                ${['TELEGRAM_TOKEN','TELEGRAM_CHATID','CHECK_TIMES'].map(code).join('')}
+            </div>
+            <p style="color:#c0cfe0;font-size:0.88em;margin:0 0 6px 0;">Si tienes agentes Dockme remotos, además de eliminar las variables anteriores también debes renombrar en cada uno:</p>
+            <div style="margin:0 0 20px 16px;">
+                <div style="display:flex;align-items:center;gap:8px;margin:3px 0;">
+                    ${code('WEBHOOK_URL')}<span style="color:#7a9cc4;flex-shrink:0;">por</span>${code('CENTRAL_URL')}
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;margin:3px 0;">
+                    ${code('ENDPOINT')}<span style="color:#7a9cc4;flex-shrink:0;">por</span>${code('AGENT_URL')}
+                </div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:10px;">
+                <button class="btn btn-normal" id="deprecated-vars-later">Más tarde</button>
+                <button class="btn btn-primary" id="deprecated-vars-ok">Entendido</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    const dismiss = () => {
+        modal.remove();
+        fetch('/api/mark-agents-migration-shown', { method: 'POST' }).catch(() => {});
+        if (State.settingsData) State.settingsData.migration_2_1_shown = true;
+    };
+    modal.querySelector('#deprecated-vars-ok').addEventListener('click', dismiss);
+    modal.querySelector('#deprecated-vars-later').addEventListener('click', () => modal.remove());
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
 function showPrimaryHostModal(endpoint, currentValue, onSave, onCancel, fromServidores = false) {
     const modal = document.createElement('div');
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;';
@@ -4984,7 +5140,7 @@ function renderServidoresTab(container) {
         ${createDetectedServersSection()}
     `;
 
-    // Cargar uiUrl actuales desde updates.json
+    // Cargar uiUrl actuales desde updates.json y primaryHost desde settings.json
     fetch('/config/updates.json?t=' + Date.now())
         .then(r => r.json())
         .then(data => {
@@ -4997,19 +5153,15 @@ function renderServidoresTab(container) {
                     input.addEventListener('blur', () => { input.scrollLeft = 0; });
                 }
             });
-            // Cargar primaryHost para el servidor local
-            let needsPrimaryHostSetup = false;
+            // primaryHost viene de settings.json (ya en State.settingsData)
             container.querySelectorAll('.agent-primary-host-value').forEach(span => {
-                const ep = span.dataset.endpoint;
-                const entry = data.find(h => h.endpoint?.toLowerCase() === ep?.toLowerCase());
-                if (entry?.primaryHost) {
-                    span.textContent = entry.primaryHost;
+                const ph = State.settingsData?.primaryHost || primaryHostLocal || '';
+                if (ph) {
+                    span.textContent = ph;
                 } else {
                     span.textContent = 'localhost';
-                    needsPrimaryHostSetup = true;
                 }
             });
-
         })
         .catch(() => {});
 
@@ -5060,11 +5212,8 @@ function renderServidoresTab(container) {
                         primaryHostLocal = newVal;
                         const span = container.querySelector(`.agent-primary-host-value[data-endpoint="${ep}"]`);
                         if (span) span.textContent = newVal;
-                        // Actualizar en memoria
-                        if (Array.isArray(State.updatesDataGlobal)) {
-                            const local = State.updatesDataGlobal.find(h => h.endpoint?.toLowerCase() === 'actual');
-                            if (local) local.primaryHost = newVal;
-                        }
+                        // Actualizar en State.settingsData (fuente de verdad)
+                        if (State.settingsData) State.settingsData.primaryHost = newVal;
                         // Recargar stacksConfig para que las URLs actualizadas estén disponibles
                         loadStacksConfig();
                         onSuccess();
@@ -5269,6 +5418,306 @@ function renderLinksTab(container) {
     };
 
     render();
+}
+
+function renderGeneralTab(container) {
+    container.innerHTML = '<p style="color:#aaa;">Cargando configuración...</p>';
+
+    fetch('/api/get-settings?t=' + Date.now())
+        .then(r => r.json())
+        .then(settings => {
+            const notif        = settings.notifications || {};
+            const notifEnabled = !!notif.enabled;
+            const notifUrl     = (Array.isArray(notif.urls) ? notif.urls[0] : '') || '';
+            const pruneMode    = settings.pruneMode || 'disabled';
+            const checkTime    = settings.checkTime || '09:00';
+
+            container.innerHTML = `
+                <div class="general-tab-form">
+
+                    <!-- NOTIFICACIONES -->
+                    <div class="general-section">
+                        <div class="general-section-title">🔔 Notificaciones</div>
+
+                        <div class="general-field">
+                            <div class="general-input-row" style="align-items:center;gap:10px;">
+                                <label class="general-toggle">
+                                    <input type="checkbox" id="gen-notif-enabled" ${notifEnabled ? 'checked' : ''}>
+                                    <span class="general-toggle-slider"></span>
+                                </label>
+                                <span class="general-label" style="margin:0;">Enviar notificaciones</span>
+                                <span class="gen-field-status" id="gen-notif-enabled-status"></span>
+                            </div>
+                        </div>
+
+                        <div class="general-field">
+                            <label class="general-label" style="margin-bottom:4px;display:block;">Ejemplos por servicio</label>
+                            <select id="gen-notif-service-select" class="dockme-service-url-input" style="margin-bottom:6px;">
+                                <option value="">— Selecciona un servicio —</option>
+                            </select>
+                            <div id="gen-notif-example" style="display:none;background:#0d1520;border-radius:6px;padding:8px 10px;font-size:0.82em;margin-bottom:10px;">
+                                <div style="color:#6a7f9a;margin-bottom:6px;font-size:0.9em;">
+                                    Copia el ejemplo y sustituye las palabras en MAYÚSCULAS por tus valores:
+                                </div>
+                                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                                    <code id="gen-notif-example-url" style="word-break:break-all;color:#7eb8f7;flex:1;"></code>
+                                    <button id="gen-notif-example-copy" class="btn btn-normal" style="padding:1px 8px;font-size:0.8em;flex-shrink:0;">Copiar</button>
+                                </div>
+                                <div id="gen-notif-example-notes" style="margin-top:6px;color:#7a9cc4;font-style:italic;line-height:1.4;"></div>
+                                <a id="gen-notif-example-link" href="#" target="_blank" rel="noopener"
+                                   style="display:none;margin-top:6px;font-size:0.82em;color:#5b8fc9;">
+                                   📖 Ver documentación de este servicio
+                                </a>
+                            </div>
+                        </div>
+
+                        <div class="general-field">
+                            <label class="general-label">URL de notificación</label>
+                            <div class="general-input-row">
+                                <input type="text" id="gen-notif-url" class="dockme-service-url-input"
+                                    placeholder="telegram://TOKEN@telegram?chats=CHATID" value="${notifUrl}">
+                                <span class="gen-field-status" id="gen-notif-url-status"></span>
+                            </div>
+                            <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+                                <button class="btn btn-normal" id="gen-notif-test" style="padding:2px 10px;font-size:0.85em;">Enviar prueba</button>
+                                <span class="gen-field-status" id="gen-notif-test-status" style="font-size:0.85em;"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- PRUNE -->
+                    <div class="general-section">
+                        <div class="general-section-title">🧹 Limpieza de imágenes</div>
+
+                        <div class="general-prune-row">
+                            <div class="general-prune-left">
+                                <label class="general-label">Limpieza diaria</label>
+                                <div class="general-input-row">
+                                    <select id="gen-prune-mode" class="dockme-service-url-input">
+                                        <option value="disabled"     ${pruneMode === 'disabled'     ? 'selected' : ''}>Desactivado</option>
+                                        <option value="conservative" ${pruneMode === 'conservative' ? 'selected' : ''}>Ligero (recomendado)</option>
+                                        <option value="normal"       ${pruneMode === 'normal'       ? 'selected' : ''}>Completo</option>
+                                        <option value="aggressive"   ${pruneMode === 'aggressive'   ? 'selected' : ''}>Agresivo</option>
+                                    </select>
+                                    <span class="gen-field-status" id="gen-prune-mode-status"></span>
+                                </div>
+                            </div>
+                            <div class="general-prune-right">
+                                <label class="general-label">Limpieza puntual</label>
+                                <button class="btn btn-danger" id="gen-prune-total-btn" style="margin-top:-5px;height:36px;">🧹 Limpieza Total</button>
+                                <span class="gen-field-status" id="gen-prune-total-status"></span>
+                            </div>
+                        </div>
+                        <span class="general-field-hint" id="gen-prune-hint"></span>
+                    </div>
+
+                    <!-- CHECK AUTOMÁTICO -->
+                    <div class="general-section">
+                        <div class="general-section-title">⏰ Comprobación de actualizaciones</div>
+
+                        <div class="general-field">
+                            <label class="general-label">Programación diaria</label>
+                            <div class="general-input-row">
+                                <input type="time" id="gen-check-time" class="dockme-service-url-input general-time-input"
+                                    value="${checkTime}">
+                                <span class="gen-field-status" id="gen-check-time-status"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            `;
+
+            // Helper: muestra ✅ o ❌ junto al campo y lo borra a los 2s
+            const showStatus = (statusId, ok) => {
+                const el = container.querySelector(`#${statusId}`);
+                if (!el) return;
+                el.textContent = ok ? '✅' : '❌';
+                setTimeout(() => { el.textContent = ''; }, 2000);
+            };
+
+            // Helper: envía solo el campo que cambió
+            const saveField = (payload, statusId) => {
+                fetch('/api/save-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                .then(r => r.json())
+                .then(data => showStatus(statusId, !!data.success))
+                .catch(() => showStatus(statusId, false));
+            };
+
+            // Helper para inputs de texto: guarda en blur y Enter
+            const bindTextInput = (id, statusId, buildPayload) => {
+                const el = container.querySelector(`#${id}`);
+                if (!el) return;
+                const save = () => saveField(buildPayload(el.value.trim()), statusId);
+                el.addEventListener('blur', save);
+                el.addEventListener('keydown', e => {
+                    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+                });
+            };
+
+            // Toggle enabled
+            container.querySelector('#gen-notif-enabled').addEventListener('change', function () {
+                saveField(
+                    { notifications: { enabled: this.checked } },
+                    'gen-notif-enabled-status'
+                );
+            });
+
+            // URL de notificación
+            bindTextInput('gen-notif-url', 'gen-notif-url-status', val => ({
+                notifications: { urls: val ? [val] : [] }
+            }));
+
+            // Cargar ejemplos de servicios desde el JSON estático
+            fetch('/api/shoutrrr-services?t=' + Date.now())
+                .then(r => r.json())
+                .then(data => {
+                    const services = data.services || [];
+                    const sel = container.querySelector('#gen-notif-service-select');
+                    if (!sel) return;
+                    services.forEach(svc => {
+                        const opt = document.createElement('option');
+                        opt.value = svc.url || '';
+                        opt.dataset.notes = svc.notes || '';
+                        opt.dataset.link  = svc.link  || '';
+                        opt.textContent = svc.name;
+                        if (!svc.url) opt.disabled = true; // separadores de categoría
+                        sel.appendChild(opt);
+                    });
+
+                    sel.addEventListener('change', function () {
+                        const exampleDiv  = container.querySelector('#gen-notif-example');
+                        const exampleUrl  = container.querySelector('#gen-notif-example-url');
+                        const exampleNote = container.querySelector('#gen-notif-example-notes');
+                        const exampleLink = container.querySelector('#gen-notif-example-link');
+                        const copyBtn     = container.querySelector('#gen-notif-example-copy');
+                        if (!this.value) {
+                            exampleDiv.style.display = 'none';
+                            return;
+                        }
+                        const opt = this.options[this.selectedIndex];
+                        exampleUrl.textContent  = this.value;
+                        exampleNote.textContent = opt.dataset.notes || '';
+                        const link = opt.dataset.link || '';
+                        if (link) {
+                            exampleLink.href = link;
+                            exampleLink.style.display = 'inline-block';
+                        } else {
+                            exampleLink.style.display = 'none';
+                        }
+                        exampleDiv.style.display = 'block';
+
+                        copyBtn.onclick = () => {
+                            navigator.clipboard.writeText(this.value).then(() => {
+                                copyBtn.textContent = '✅';
+                                setTimeout(() => { copyBtn.textContent = 'Copiar'; }, 1500);
+                            }).catch(() => {});
+                        };
+                    });
+                })
+                .catch(() => {}); // si no carga el JSON, la sección simplemente no aparece
+
+            // Botón Enviar prueba
+            container.querySelector('#gen-notif-test').addEventListener('click', () => {
+                const statusEl = container.querySelector('#gen-notif-test-status');
+                fetch('/api/test-notification', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(d => {
+                        statusEl.textContent = d.success ? '✅' : '❌ ' + (d.message || 'Error');
+                        statusEl.style.color = d.success ? '#8affc1' : '#ff8a8a';
+                        setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 4000);
+                    })
+                    .catch(() => {
+                        statusEl.textContent = '❌ Error de conexión';
+                        statusEl.style.color = '#ff8a8a';
+                        setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 4000);
+                    });
+            });
+
+            // Hora del check
+            bindTextInput('gen-check-time', 'gen-check-time-status', val => ({
+                checkTime: val
+            }));
+
+            // Prune mode — guarda al cambiar el select
+            const pruneSelect = container.querySelector('#gen-prune-mode');
+            const pruneHints = {
+                disabled:     '',
+                conservative: 'Elimina imágenes antiguas reemplazadas por una actualización.\nLos stacks parados no se ven afectados.\nSe aplica tras 48h.',
+                normal:       'Elimina todas las imágenes que no estén en uso,\nincluyendo las de stacks parados, eliminados o de versiones anteriores.\nSe aplica tras 48h.',
+                aggressive:   'Como Completo pero sin espera mínima.\nElimina inmediatamente todo lo que no esté en uso.'
+            };
+            const updatePruneHint = () => {
+                const hint = container.querySelector('#gen-prune-hint');
+                if (hint) hint.textContent = pruneHints[pruneSelect.value] || '';
+            };
+            pruneSelect.addEventListener('change', function () {
+                updatePruneHint();
+                saveField({ pruneMode: this.value }, 'gen-prune-mode-status');
+            });
+            updatePruneHint();
+
+            // Prune Total — modal de confirmación + lanzar en todos los servidores
+            container.querySelector('#gen-prune-total-btn').addEventListener('click', () => {
+                // Cerrar modo edición y volver al dashboard para ver las métricas
+                dockmeEditMode = false;
+                updateEditModeToggleUI();
+
+                // Pequeño delay para que el dashboard se redibuje antes del modal
+                setTimeout(() => {
+                    const modal = document.createElement('div');
+                    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;';
+                    modal.innerHTML = `
+                        <div style="background:#1a2537;border-radius:10px;padding:28px 32px;max-width:420px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+                            <div style="font-size:1.1em;font-weight:600;color:#fff;margin-bottom:12px;">⚠️ Confirmar Prune Total</div>
+                            <p style="color:#c0cfe0;font-size:0.95em;line-height:1.6;margin-bottom:8px;">
+                                Se eliminarán <b>todas las imágenes Docker no usadas en este momento</b> en todos los servidores, sin límite de tiempo.
+                            </p>
+                            <p style="color:#f0a060;font-size:0.88em;line-height:1.5;margin-bottom:20px;">
+                                Los stacks parados perderán su imagen y tendrán que descargarla de nuevo al arrancar.
+                            </p>
+                            <div style="display:flex;justify-content:flex-end;gap:10px;">
+                                <button class="btn btn-normal" id="prune-total-cancel">Cancelar</button>
+                                <button class="btn btn-danger" id="prune-total-confirm">Sí, limpiar todo</button>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(modal);
+                    modal.querySelector('#prune-total-cancel').addEventListener('click', () => modal.remove());
+                    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+                    modal.querySelector('#prune-total-confirm').addEventListener('click', async () => {
+                        modal.remove();
+
+                        // Obtener todos los servidores del updates.json
+                        let servers = [];
+                        try {
+                            const data = await fetch('/config/updates.json?t=' + Date.now()).then(r => r.json());
+                            servers = Array.isArray(data) ? data : [];
+                        } catch {}
+
+                        // Lanzar prune agresivo en paralelo en todos los servidores
+                        await Promise.allSettled(servers.map(async (host) => {
+                            const endpoint = host.endpoint?.toLowerCase() === 'actual' ? null : host.endpoint;
+                            const body = { pruneMode: 'aggressive' };
+                            if (endpoint) body.endpoint = endpoint;
+                            await fetch('/api/run-prune', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(body)
+                            });
+                        }));
+                    });
+                }, 300);
+            });
+        })
+        .catch(() => {
+            container.innerHTML = '<p style="color:#ff8a8a;">❌ No se pudo cargar la configuración.</p>';
+        });
 }
 
 function renderLinks(container, cat, catIdx, saveLinks, rerender) {

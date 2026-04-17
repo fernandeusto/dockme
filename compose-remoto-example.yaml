@@ -6,18 +6,11 @@ services:
     
     environment:
       HOSTNAME: "Dockme-Remoto" # ⚠️ Obligatorio, asignar el nombre con el que identificarlo
-      CHECK_TIMES: "15:00" #opcional, formato HH:MM, hora a la que se realizará el check de stacks, si no se especifica se hará cada 24h
-
-    #opcional para recibir notificaciones por telegram, se deben configurar las siguientes dos variables:
-      TELEGRAM_TOKEN: "123456:ABC-DEF..."
-      TELEGRAM_CHATID: "987654321"
-
-    #para usar un servidor remoto, se deben configurar las siguientes variables obligatoriamente:
-      ENDPOINT: "192.168.1.200:5041"  # IP:Puerto para acceder al servidor remoto desde el central
-      WEBHOOK_URL: "http://192.168.1.100:5041"  # URL del servidor central al que se enviarán updates, métricas,...
+      CENTRAL_URL: "192.168.1.200:5041"  # IP:Puerto del servidor central accesible desde el remoto
+      AGENT_URL: "192.168.1.100:5041"  # IP:Puerto del servidor remoto accesible desde el central
 
     ports:
-      - "5041:8080"  # Puerto debe coincidir con ENDPOINT
+      - "5041:8080"  # Puerto debe coincidir con AGENT_URL
     
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # para gestionar los docker del host

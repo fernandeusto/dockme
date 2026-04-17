@@ -6,11 +6,6 @@ services:
     
     environment:
       HOSTNAME: "Dockme-Central" # ⚠️ Obligatorio, asignar el nombre con el que identificarlo
-      CHECK_TIMES: "15:00" #opcional, formato HH:MM, hora a la que se realizará el check de stacks, si no se especifica se hará cada 24h
-
-    #opcional para recibir notificaciones por telegram, se deben configurar las siguientes dos variables:
-      TELEGRAM_TOKEN: "123456:ABC-DEF..."
-      TELEGRAM_CHATID: "987654321"
     
     ports:
       - "5041:8080"   # Puerto para la interfaz web
