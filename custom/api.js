@@ -2,15 +2,29 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
+import http from 'http';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Añadir timestamp a todos los logs
+const _origLog   = console.log;
+const _origWarn  = console.warn;
+const _origError = console.error;
+const _ts = () => new Date().toLocaleString('es-ES', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' }).replace(',', '');
+console.log   = (...a) => _origLog(`[${_ts()}]`,   ...a);
+console.warn  = (...a) => _origWarn(`[${_ts()}]`,  ...a);
+console.error = (...a) => _origError(`[${_ts()}]`, ...a);
 
 const app = express();
 const port = 5002;
 
 app.use(express.json({ limit: '2mb' }));
+
+// Servir xterm.js y xterm.css desde /custom
+app.get('/api/xterm.js',  (req, res) => res.sendFile('/custom/xterm.js'));
+app.get('/api/xterm.css', (req, res) => res.sendFile('/custom/xterm.css'));
 
 const updatesPath  = "/app/data/config/updates.json";
 const stacksPath   = "/app/data/config/stacks.json";
@@ -548,7 +562,7 @@ app.post('/api/test-notification', async (req, res) => {
     if (urls.length === 0) {
       return res.status(400).json({ success: false, message: 'No hay URLs de notificación configuradas' });
     }
-    const msg = '🔔 DockMe — Notificación de prueba.\n✅ Los saltos de línea funcionan correctamente.';
+    const msg = '🔔 DockMe — Notificación de prueba.';
     const url = urls[0];
     const tmpFile = `/tmp/shoutrrr-test-${Date.now()}.txt`;
     fs.writeFileSync(tmpFile, msg);
@@ -578,8 +592,26 @@ app.post('/api/set-connected-endpoints', (req, res) => {
   try {
     const { endpoints } = req.body;
     if (!Array.isArray(endpoints)) return res.status(400).json({ error: 'Se esperaba un array' });
-    connectedEndpoints = new Set(endpoints.map(e => e.toLowerCase()));
-    console.log(`🔗 [Connected] Endpoints activos: [${[...connectedEndpoints].join(', ') || 'ninguno'}]`);
+    const newSet = new Set(endpoints.map(e => e.toLowerCase()));
+    // Solo loguear si la lista cambia
+    const changed = newSet.size !== connectedEndpoints.size ||
+      [...newSet].some(e => !connectedEndpoints.has(e));
+    connectedEndpoints = newSet;
+    if (changed) console.log(`🔗 [Connected] Endpoints activos: [${[...connectedEndpoints].join(', ') || 'ninguno'}]`);
+
+    // Migración automática: marcar loggedIn=true para agentes conectados que no lo tengan
+    const data = readUpdatesFile();
+    let migrated = false;
+    data.forEach(h => {
+      const ep = (h.endpoint || '').toLowerCase();
+      if (ep !== 'actual' && newSet.has(ep) && h.loggedIn !== true) {
+        h.loggedIn = true;
+        migrated = true;
+        console.log(`🔑 [Agent] ${h.hostname} (${h.endpoint}) loggedIn=true (migración automática)`);
+      }
+    });
+    if (migrated) writeUpdatesFile(data);
+
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -715,6 +747,26 @@ app.post('/api/agent-alive', (req, res) => {
 
   } catch (err) {
     console.error('❌ Error en /api/agent-alive:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================
+// POST /api/set-agent-logged
+// Marca un agente como logueado (login correcto desde el tab Servidores)
+// ============================
+app.post('/api/set-agent-logged', (req, res) => {
+  try {
+    const { endpoint, loggedIn } = req.body;
+    if (!endpoint) return res.status(400).json({ error: 'Falta endpoint' });
+    const data = readUpdatesFile();
+    const entry = data.find(h => h.endpoint?.toLowerCase() === endpoint.toLowerCase());
+    if (!entry) return res.status(404).json({ error: 'Agente no encontrado' });
+    entry.loggedIn = loggedIn !== false; // true por defecto
+    writeUpdatesFile(data);
+    console.log(`🔑 [Agent] ${entry.hostname} (${endpoint}) loggedIn=${entry.loggedIn}`);
+    res.json({ success: true });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -876,9 +928,7 @@ app.post('/api/run-check', async (req, res) => {
 
     const isManual = !fromCycle;
     console.log(`🔍 Lanzando check ${isManual ? 'manual' : '[Cycle]'} (prune: ${mode})...`);
-    // Siempre pasar 'manual' para bypass del cooldown de 12h —
-    // el scheduler Node ya gestiona la frecuencia, el cooldown era para el viejo cron bash.
-    exec(`/tools/check-updates.sh ${mode} manual 2>&1 | tee -a /tmp/updates-check.log > /proc/1/fd/1`,
+    exec(`/tools/check-updates.sh ${mode} 2>&1 | tee -a /tmp/updates-check.log > /proc/1/fd/1`,
         { detached: true, shell: true }, (error) => {
         if (error) console.error('❌ Error en check-updates:', error);
         else        console.log('✅ check-updates finalizado');
@@ -1335,7 +1385,6 @@ migrateStacksOnStartup();
     const allNames = [...new Set([...stackNamesFromFs.map(n => n.toLowerCase()), ...namesFromJson])];
 
     if (allNames.length === 0) return;
-    console.log(`🔍 Buscando iconos en CDN para ${allNames.length} stack(s)...`);
 
     // Cargar sources.json para asignar repos al crear entradas nuevas
     const sourcesPath = '/custom/sources.json';
@@ -1345,13 +1394,24 @@ migrateStacksOnStartup();
 
     const updated = readStacksFile();
     let changed = false;
+    const toDownload = [];
 
     for (const name of allNames) {
       // Si ya tiene icono en disco, saltar
       const existing = updated.find(s => s.name.toLowerCase() === name);
       if (existing?.icon && fs.existsSync(path.join(iconsDir, existing.icon))) continue;
+      toDownload.push(name);
+    }
 
-      const iconFile = await tryDownloadIconFromCDN(name);
+    if (toDownload.length === 0) return;
+    console.log(`🔍 Buscando iconos en CDN para ${toDownload.length} stack(s) sin icono...`);
+
+    for (const name of toDownload) {
+      // Si ya existe nombre.svg en disco, usarlo directamente sin descargar
+      const svgOnDisk = `${name}.svg`;
+      const iconFile = fs.existsSync(path.join(iconsDir, svgOnDisk))
+        ? svgOnDisk
+        : await tryDownloadIconFromCDN(name);
       if (!iconFile) continue;
 
       // Actualizar entradas existentes en stacks.json
@@ -1544,14 +1604,15 @@ async function runScheduledChecks(notify = true) {
   const settings = readSettingsFile();
   const pruneMode = settings.pruneMode || 'disabled';
 
-  // Solo incluir endpoints conectados (sincronizados desde el frontend).
-  // Si la lista está vacía (aún no sincronizada), incluir todos como fallback.
+  // Incluir: Actual siempre + agentes con loggedIn=true en updates.json
+  // Si ningún agente tiene loggedIn (instalaciones antiguas), usar todos como fallback
+  const hasAnyLogged = updates.some(h => h.endpoint?.toLowerCase() !== 'actual' && h.loggedIn === true);
   const servers = updates
     .filter(h => {
       const ep = (h.endpoint || '').toLowerCase();
       if (ep === 'actual') return true;
-      if (connectedEndpoints.size > 0) return connectedEndpoints.has(ep);
-      return true; // fallback: sin info de conexión todavía
+      if (hasAnyLogged) return h.loggedIn === true;
+      return true; // fallback: ningún agente tiene loggedIn aún (instalación antigua)
     })
     .map(h => h.endpoint);
 
@@ -1638,7 +1699,359 @@ function setupScheduler() {
 // ============================
 // Arranque
 // ============================
+// ============================
+// GET /api/stack-containers/:stack
+// Devuelve la lista de contenedores de un stack (local o proxy remoto)
+// ============================
+app.get('/api/stack-containers/:stack', async (req, res) => {
+  const { stack } = req.params;
+  const { endpoint } = req.query;
+
+  // Proxy al agente remoto
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    try {
+      const response = await fetch(`http://${endpoint}/api/stack-containers/${encodeURIComponent(stack)}`, {
+        signal: AbortSignal.timeout(5000)
+      });
+      const data = await response.json();
+      return res.json(data);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: err.message });
+    }
+  }
+
+  // Local
+  const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
+  const composePath = path.join(stacksDir, stack, 'compose.yaml');
+  if (!fs.existsSync(composePath)) {
+    return res.status(404).json({ success: false, message: 'Stack no encontrado' });
+  }
+
+  exec(`docker compose -f ${composePath} ps --all --format json`, (err, stdout) => {
+    if (err) return res.status(500).json({ success: false, message: err.message });
+    try {
+      const containers = stdout.trim().split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line))
+        .map(c => {
+          // Deduplicar puertos — preferir entrada con IP específica sobre 0.0.0.0
+          const seen = new Map();
+          (c.Publishers || [])
+            .filter(p => p.PublishedPort > 0)
+            .forEach(p => {
+              const key = p.PublishedPort;
+              const hasSpecificIP = p.URL && p.URL !== '0.0.0.0' && p.URL !== '::';
+              if (!seen.has(key) || hasSpecificIP) {
+                seen.set(key, { host: p.URL || '0.0.0.0', published: p.PublishedPort, target: p.TargetPort, protocol: p.Protocol });
+              }
+            });
+          return { name: c.Names, service: c.Service, state: c.State, ports: Array.from(seen.values()) };
+        });
+      res.json({ success: true, containers });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  });
+});
+
+// ============================
+// GET /api/logs/:stack  — SSE streaming de logs Docker
+// Query params: ?endpoint=IP:PORT  &container=NOMBRE  &tail=200
+// Si endpoint es remoto, hace pipe del SSE del agente al frontend.
+// ============================
+app.get('/api/logs/:stack', (req, res) => {
+  const { stack } = req.params;
+  const { container, tail = '200', endpoint } = req.query;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // Proxy SSE al agente remoto
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    const [agentHost, agentPort = '5002'] = endpoint.split(':');
+    const qs = new URLSearchParams({ tail, ...(container ? { container } : {}) }).toString();
+    const agentPath = `/api/logs/${encodeURIComponent(stack)}?${qs}`;
+
+    console.log(`📡 [Logs] Proxy → ${endpoint}${agentPath}`);
+
+    const agentReq = http.request(
+      { host: agentHost, port: agentPort, path: agentPath, method: 'GET' },
+      agentRes => { agentRes.pipe(res); }
+    );
+    agentReq.on('error', err => {
+      res.write(`data: ❌ Error conectando con el agente: ${err.message}\n\n`);
+      res.end();
+    });
+    req.on('close', () => agentReq.destroy());
+    agentReq.end();
+    return;
+  }
+
+  // Local: lanzar docker compose logs
+  const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
+  const composePath = path.join(stacksDir, stack, 'compose.yaml');
+
+  if (!fs.existsSync(composePath)) {
+    res.write(`data: ❌ Stack no encontrado: ${stack}\n\n`);
+    res.end();
+    return;
+  }
+
+  const args = ['compose', '-f', composePath, 'logs', '--timestamps', '--follow', '--tail', tail];
+  if (container) args.push(container);
+
+  console.log(`📋 [Logs] Iniciando stream: ${stack}${container ? ` (${container})` : ''}`);
+  const proc = spawn('docker', args);
+
+  const sendLine = line => {
+    if (line.trim()) res.write(`data: ${line}\n\n`);
+  };
+
+  proc.stdout.on('data', chunk => chunk.toString().split('\n').forEach(sendLine));
+  proc.stderr.on('data', chunk => chunk.toString().split('\n').forEach(sendLine));
+
+  req.on('close', () => {
+    console.log(`📋 [Logs] Cliente desconectado: ${stack}`);
+    proc.kill();
+  });
+  proc.on('close', () => res.end());
+});
+
+// ============================
+// GET /api/compose/:stack — Lee el compose.yaml de un stack
+// POST /api/compose/:stack — Guarda el compose.yaml de un stack
+// Query param: ?endpoint=IP:PORT para remotos
+// ============================
+app.get('/api/compose/:stack', async (req, res) => {
+  const { stack } = req.params;
+  const { endpoint } = req.query;
+
+  // Proxy al agente remoto
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    try {
+      const response = await fetch(`http://${endpoint}/api/compose/${encodeURIComponent(stack)}`, {
+        signal: AbortSignal.timeout(5000)
+      });
+      const data = await response.json();
+      return res.json(data);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: err.message });
+    }
+  }
+
+  // Local
+  const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
+  const composePath = path.join(stacksDir, stack, 'compose.yaml');
+  const envPath     = path.join(stacksDir, stack, '.env');
+
+  if (!fs.existsSync(composePath)) {
+    return res.status(404).json({ success: false, message: 'compose.yaml no encontrado' });
+  }
+  try {
+    const compose = fs.readFileSync(composePath, 'utf8');
+    const env     = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
+    res.json({ success: true, content: compose, env });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/compose/:stack', async (req, res) => {
+  const { stack } = req.params;
+  const { endpoint } = req.query;
+  const { content, env } = req.body;
+
+  if (!content || typeof content !== 'string') {
+    return res.status(400).json({ success: false, message: 'Falta el contenido del compose' });
+  }
+
+  // Proxy al agente remoto
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    try {
+      const response = await fetch(`http://${endpoint}/api/compose/${encodeURIComponent(stack)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, env }),
+        signal: AbortSignal.timeout(5000)
+      });
+      const data = await response.json();
+      return res.json(data);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: err.message });
+    }
+  }
+
+  // Local
+  const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
+  const composePath = path.join(stacksDir, stack, 'compose.yaml');
+  const envPath     = path.join(stacksDir, stack, '.env');
+
+  if (!fs.existsSync(path.dirname(composePath))) {
+    return res.status(404).json({ success: false, message: 'Stack no encontrado' });
+  }
+  try {
+    fs.writeFileSync(composePath, content, 'utf8');
+    // Guardar .env solo si tiene contenido o ya existía
+    if (env !== undefined) {
+      if (env.trim()) {
+        fs.writeFileSync(envPath, env, 'utf8');
+      } else if (fs.existsSync(envPath)) {
+        fs.unlinkSync(envPath); // borrar si está vacío y existía
+      }
+    }
+    console.log(`💾 [Compose] Guardado: ${stack}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================
+// GET /api/deploy/:stack — Ejecuta docker compose up -d con streaming SSE
+// ============================
+app.get('/api/deploy/:stack', (req, res) => {
+  const { stack } = req.params;
+  const { endpoint } = req.query;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // Proxy SSE al agente remoto
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    const [agentHost, agentPort = '5002'] = endpoint.split(':');
+    const agentPath = `/api/deploy/${encodeURIComponent(stack)}`;
+    const agentReq = http.request(
+      { host: agentHost, port: agentPort, path: agentPath, method: 'GET' },
+      agentRes => { agentRes.pipe(res); }
+    );
+    agentReq.on('error', err => {
+      res.write(`data: ❌ Error conectando con el agente: ${err.message}\n\n`);
+      res.end();
+    });
+    req.on('close', () => agentReq.destroy());
+    agentReq.end();
+    return;
+  }
+
+  // Local
+  const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
+  const composePath = path.join(stacksDir, stack, 'compose.yaml');
+  if (!fs.existsSync(composePath)) {
+    res.write(`data: ❌ Stack no encontrado: ${stack}\n\n`);
+    res.end();
+    return;
+  }
+
+  console.log(`🚀 [Deploy] Iniciando: ${stack}`);
+  const proc = spawn('docker', ['compose', '-f', composePath, 'up', '-d', '--remove-orphans']);
+
+  const sendLine = line => {
+    if (line.trim()) res.write(`data: ${line}\n\n`);
+  };
+
+  proc.stdout.on('data', chunk => chunk.toString().split('\n').forEach(sendLine));
+  proc.stderr.on('data', chunk => chunk.toString().split('\n').forEach(sendLine));
+
+  proc.on('close', (code) => {
+    res.write(`data: ${code === 0 ? '✅ Deploy completado' : '❌ Deploy finalizado con errores'}\n\n`);
+    res.end();
+    console.log(`${code === 0 ? '✅' : '❌'} [Deploy] ${stack} finalizado (code ${code})`);
+  });
+
+  req.on('close', () => proc.kill());
+});
+
+// ============================
+// POST /api/container-action — start/stop/restart de un contenedor individual
+// ============================
+app.post('/api/container-action', async (req, res) => {
+  const { container, action } = req.body;
+  const { endpoint } = req.query;
+
+  if (!container || !['start', 'stop', 'restart'].includes(action)) {
+    return res.status(400).json({ success: false, message: 'Parámetros inválidos' });
+  }
+
+  // Proxy al agente remoto
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    try {
+      const response = await fetch(`http://${endpoint}/api/container-action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ container, action }),
+        signal: AbortSignal.timeout(10000)
+      });
+      const data = await response.json();
+      return res.json(data);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: err.message });
+    }
+  }
+
+  // Local
+  exec(`docker ${action} ${container}`, (err, stdout, stderr) => {
+    if (err) return res.status(500).json({ success: false, message: stderr || err.message });
+    console.log(`🐳 [Container] ${action} ${container}`);
+    res.json({ success: true });
+  });
+});
+
+// ============================
+// POST /api/create-stack — Crea un nuevo stack (carpeta + compose.yaml + .env opcional)
+// ============================
+app.post('/api/create-stack', async (req, res) => {
+  const { stack, content, env, endpoint } = req.body;
+
+  if (!stack || !content) {
+    return res.status(400).json({ success: false, message: 'Falta nombre o contenido del compose' });
+  }
+
+  // Validar nombre — solo letras, números, guiones y guiones bajos
+  if (!/^[a-zA-Z0-9_-]+$/.test(stack)) {
+    return res.status(400).json({ success: false, message: 'Nombre inválido — solo letras, números, - y _' });
+  }
+
+  // Proxy al agente remoto
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    try {
+      const response = await fetch(`http://${endpoint}/api/create-stack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stack, content, env }),
+        signal: AbortSignal.timeout(10000)
+      });
+      const data = await response.json();
+      return res.json(data);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: err.message });
+    }
+  }
+
+  // Local
+  const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
+  const stackDir   = path.join(stacksDir, stack);
+  const composePath = path.join(stackDir, 'compose.yaml');
+  const envPath     = path.join(stackDir, '.env');
+
+  if (fs.existsSync(stackDir)) {
+    return res.status(409).json({ success: false, message: `El stack "${stack}" ya existe` });
+  }
+
+  try {
+    fs.mkdirSync(stackDir, { recursive: true });
+    fs.writeFileSync(composePath, content, 'utf8');
+    if (env && env.trim()) fs.writeFileSync(envPath, env, 'utf8');
+    console.log(`✨ [Create] Stack creado: ${stack}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 app.listen(port, () => {
   console.log(`✅ API Node lista en puerto ${port}`);
+  console.log(`🔗 [Connected] Endpoints activos: [ninguno — pendiente sincronización del frontend]`);
   setupScheduler();
 });

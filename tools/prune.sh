@@ -11,10 +11,6 @@
 PRUNE_MODE="${1:-disabled}"
 PROGRESS_FILE="/app/data/config/check-progress.json"
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[38;5;39m'
-NC='\033[0m'
 
 if [ "$PRUNE_MODE" = "disabled" ]; then
     echo "🧹 Prune desactivado"
@@ -58,7 +54,7 @@ case "$PRUNE_MODE" in
         ;;
 esac
 
-echo -e "${BLUE}=== Limpiando imágenes Docker (modo: $PRUNE_MODE) ===${NC}"
+echo "=== Limpiando imágenes Docker (modo: $PRUNE_MODE) [$(date '+%d-%m-%Y %H:%M:%S')] ==="
 prune_output=$(eval "$PRUNE_CMD" 2>&1 || true)
 echo "$prune_output"
 
@@ -92,9 +88,9 @@ if [ -n "$reclaimed" ] && ! echo "$reclaimed" | grep -qi "^0 B\|^0B"; then
 fi
 
 if [ -n "$prune_space" ]; then
-    echo -e "${YELLOW}🧹 Espacio liberado: $prune_space${NC}"
+    echo "🧹 Espacio liberado: $prune_space"
 else
-    echo -e "${GREEN}🧹 Nada que limpiar.${NC}"
+    echo "🧹 Nada que limpiar."
 fi
 
 # Actualizar pruneSpace y restaurar status a idle en check-progress.json
@@ -117,4 +113,4 @@ with open(progress_file, "w") as f:
     json.dump(data, f, separators=(',', ':'))
 PYEOF
 
-echo "✅ Prune completado"
+echo "✅ Prune completado [$(date '+%d-%m-%Y %H:%M:%S')]"

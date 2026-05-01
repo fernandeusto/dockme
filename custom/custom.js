@@ -4,6 +4,12 @@
     let dockmeLoginWasVisible = false;
     let dockmeEditMode = false;
     let dockmeEditModeFilterBackup = null;
+    let logsEventSource = null;
+    let xtermInstance = null;
+    let logsAutoScroll = true;
+    let logsCurrentStack = null;
+    let logsCurrentEndpoint = null;
+    let logsActiveTab = 'logs'; // recordar el tab activo entre stacks
     let dockmeUpdateInProgress = false;
     let dockmeIconVersion = localStorage.getItem('dockmeIconVersion') || Date.now();
     // Polling de icon-version al arrancar — detecta cuando el CDN termina de descargar iconos
@@ -269,11 +275,7 @@ async switchTo(profileName) {
         BASE_URL: window.location.origin,
         ICON_DEFAULT: `${window.location.origin}/system-icons/no-icon.svg`,
         REORDER_INTERVAL: 1000,
-        ROUTE_CHECK_INTERVAL: 250,
-        STATS_UPDATE_INTERVAL: 5000,
         RECENT_COMPOSES_LIMIT: 9,
-        NOTIFICATION_BLOCK_TIME: 24 * 60 * 60 * 1000, // 24h en ms
-        LOGO_INSERT_DELAY: 100,
         FOCUS_DELAY: 1200,
         ICON_REFRESH_DELAY: 1000
     };
@@ -352,10 +354,6 @@ async switchTo(profileName) {
             return str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
         },
 
-        removePrefix(str, prefix) {
-            return str.toLowerCase().startsWith(prefix) ? str.slice(prefix.length) : str;
-        },
-
         isEditing() {
             const el = document.activeElement;
             if (!el) return false;
@@ -374,45 +372,29 @@ async switchTo(profileName) {
             });
         },
 
-        formatDate(timestamp) {
-            const fecha = new Date(timestamp);
-            const opciones = { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' };
-            return fecha.toLocaleString('es-ES', opciones).replace(',', '');
-        }
     };
     // ==================== UI / NAVEGACIÓN ====================
-    function updatePageTitleForRoute() {
+    function ensureTitleIsCorrect() {
         const titleElement = document.querySelector('.fs-4.title');
         if (!titleElement) return;
-        let routeHostname = null;
-        if (RouteManager.isComposePath() || window.location.pathname.startsWith('/terminal/')) {
-            const resolved = RouteManager.getHostnameForRoute();
-            const endpoint = RouteManager.extractEndpoint?.();
-            if (resolved && endpoint && resolved !== endpoint) {
-                routeHostname = resolved;
-            }
-        }
-        if (RouteManager.isComposeCreatePath()) {
-            if (titleElement.textContent.trim().toLowerCase() === 'dockge') {
-                const fallback = State.hostnameLocal || 'Dockme';
-                titleElement.textContent = fallback;
-                document.title = fallback;
-            }
-            titleElement.style.visibility = '';
-            document.body.classList.add('dockme-title-ready');
-            return;
-        }
-        const hostname = routeHostname || State.hostnameLocal || 'Dockme';
+        // Actualizar título siempre con el hostname local
+        const hostname = State.hostnameLocal || 'Dockme';
         titleElement.textContent = hostname;
         document.title = `Dockme - ${hostname}`;
         titleElement.style.visibility = '';
         document.body.classList.add('dockme-title-ready');
-    }
-
-    function ensureTitleIsCorrect() {
-        const titleElement = document.querySelector('.fs-4.title');
-        if (!titleElement) return;
-        updatePageTitleForRoute();
+        // Click en el título → volver al dashboard
+        if (!titleElement.dataset.dockmeClick) {
+            titleElement.dataset.dockmeClick = '1';
+            titleElement.style.cursor = 'pointer';
+            titleElement.addEventListener('click', () => {
+                if (document.body.classList.contains('dockme-logs-mode')) {
+                    deactivateLogsMode();
+                }
+                window.history.pushState({}, '', '/');
+                window.dispatchEvent(new Event('popstate'));
+            });
+        }
     }
     // ==================== GESTIÓN DE STORAGE ====================
     const Storage = {
@@ -445,68 +427,12 @@ async switchTo(profileName) {
 
     // ==================== GESTIÓN DE RUTAS ====================
     const RouteManager = {
-        extractEndpoint() {
-            const path = window.location.pathname;
-            // /compose/stack/endpoint
-            let match = path.match(/^\/compose\/[^/]+\/([^/]+)$/);
-            if (match) return match[1];
-            // /terminal/stack/container/shell/endpoint
-            match = path.match(/^\/terminal\/[^/]+\/[^/]+\/[^/]+\/(.+)$/);
-            if (match) return match[1];
-            
-            return 'Actual';
-        },
-
-        extractStackName() {
-            const match = window.location.pathname.match(/^\/compose\/([^/]+)/);
-            return match ? match[1] : null;
-        },
-
-        extractComposeParts() {
-            const match = window.location.pathname.match(/^\/compose\/([^/]+)(?:\/([^/]+))?/);
-            if (!match) return null;
-            return {
-                name: match[1],
-                endpoint: match[2] || 'Actual'
-            };
-        },
-
-        getHostnameForRoute() {
-            const endpoint = this.extractEndpoint();
-            // Endpoint remoto
-            if (endpoint && endpoint !== 'Actual') {
-                if (Array.isArray(State.updatesDataGlobal)) {
-                    const host = State.updatesDataGlobal.find(h =>
-                        h.endpoint?.toLowerCase() === endpoint.toLowerCase()
-                    );
-                    if (host?.hostname) {
-                        return host.hostname;
-                    }
-                }
-                return endpoint;
-            }
-            // Endpoint local
-            return State.hostnameLocal || null;
-        },
-
         isRootPath() {
             return window.location.pathname === '/';
         },
 
-        isComposePath() {
-            return window.location.pathname.startsWith('/compose/');
-        },
-
-        isComposeCreatePath() {
-            return window.location.pathname === '/compose';
-        },
-
         isSetupPath() {
             return window.location.pathname === '/setup';
-        },
-
-        isSettingsPath() {
-            return window.location.pathname.startsWith('/settings');
         }
     };
 
@@ -514,32 +440,23 @@ async switchTo(profileName) {
     const RecentManager = {
         KEY: 'recentComposes',
 
-        add() {
-            const parts = RouteManager.extractComposeParts();
-            if (!parts) return;
-            setTimeout(() => {
-                const badge = document.querySelector('.badge');
-                const isNotFound = badge?.textContent.trim() === '?' || 
-                                   badge?.querySelector('span')?.textContent.trim() === '?';
-                if (isNotFound) {
-                    this.remove(parts.name, parts.endpoint);
-                    return;
-                }
-                let recientes = Storage.get(this.KEY, []);
-                recientes = recientes.filter(item =>
-                    !(item.name.toLowerCase() === parts.name.toLowerCase() &&
-                      (item.endpoint || 'Actual').toLowerCase() === parts.endpoint.toLowerCase())
-                );
-                recientes.unshift({
-                    name: parts.name,
-                    visited: Date.now(),
-                    endpoint: parts.endpoint
-                });
-                if (recientes.length > CONFIG.RECENT_COMPOSES_LIMIT) {
-                    recientes = recientes.slice(0, CONFIG.RECENT_COMPOSES_LIMIT);
-                }
-                Storage.set(this.KEY, recientes);
-            }, 500);
+        add(stackName, endpoint) {
+            if (!stackName) return;
+            const ep = endpoint || 'Actual';
+            let recientes = Storage.get(this.KEY, []);
+            recientes = recientes.filter(item =>
+                !(item.name.toLowerCase() === stackName.toLowerCase() &&
+                  (item.endpoint || 'Actual').toLowerCase() === ep.toLowerCase())
+            );
+            recientes.unshift({
+                name: stackName,
+                visited: Date.now(),
+                endpoint: ep
+            });
+            if (recientes.length > CONFIG.RECENT_COMPOSES_LIMIT) {
+                recientes = recientes.slice(0, CONFIG.RECENT_COMPOSES_LIMIT);
+            }
+            Storage.set(this.KEY, recientes);
         },
 
         remove(nombre, endpoint) {
@@ -713,8 +630,7 @@ async switchTo(profileName) {
             if (!span) return '';
             
             const original = span.textContent.trim();
-            let texto = Utils.removePrefix(original, 'ix-');
-            texto = Utils.capitalizeFirst(texto);
+            let texto = Utils.capitalizeFirst(original);
             
             if (texto !== original) span.textContent = texto;
             
@@ -920,7 +836,7 @@ async switchTo(profileName) {
         },
 
         createCard(item, idBase, blockTitle, blockRow) {
-            const { nombre, displayName, endpoint, composePath, fechaFormateada, dockerExtra } = 
+            const { nombre, displayName, endpoint, composePath, dockerExtra } = 
                 this.extractCardData(item, idBase);
 
             const iconoUrl = getStackIconUrl(nombre, endpoint || 'Actual');
@@ -942,33 +858,29 @@ async switchTo(profileName) {
 
                 if (e.target.closest('a[target="_blank"]')) return;
                 
-                // Gestionar checkbox en updates (todas las pantallas)
-                if (idBase.startsWith('updates')) {        
+                // Gestionar checkbox en updates — click siempre toggle, nunca navegar
+                if (idBase.startsWith('updates')) {
+                    e.preventDefault();
+                    if (BulkUpdatePanel.panel) return;
                     const checkbox = card.querySelector('.stack-checkbox');
                     if (checkbox && !e.target.closest('.stack-checkbox')) {
-                        e.preventDefault();
-                        // Si el panel bulk está abierto, no permitir selección
-                        if (BulkUpdatePanel.panel) return;
-                        
-                        const allCheckboxes = document.querySelectorAll('.stack-checkbox:checked');
-                        const totalChecked = allCheckboxes.length;
-                        
-                        // Si hay exactamente 1 marcada Y es esta → navegar
-                        if (totalChecked === 1 && checkbox.checked) {
-                            window.history.pushState({}, '', link.href);
-                            window.dispatchEvent(new Event('popstate'));
-                            return;
-                        }
-                        
-                        // Si no → toggle
                         checkbox.checked = !checkbox.checked;
                         syncBulkButtons();
-                        return;
                     }
+                    return;
                 }
                 
-                // Comportamiento normal
+                // Comportamiento normal — si no es updates, ir a logs
                 e.preventDefault();
+                if (!idBase.startsWith('updates')) {
+                    if (!document.body.classList.contains('dockme-logs-mode')) {
+                        activateLogsMode();
+                        setTimeout(() => openLogsForStack(nombre, endpoint || 'Actual'), 100);
+                    } else {
+                        openLogsForStack(nombre, endpoint || 'Actual');
+                    }
+                    return;
+                }
                 window.history.pushState({}, '', link.href);
                 window.dispatchEvent(new Event('popstate'));
             });
@@ -979,7 +891,7 @@ async switchTo(profileName) {
             if (idBase.startsWith('updates')) {
                 this.setupUpdateCard(card, item, nombre, displayName, iconoUrl, endpoint, blockTitle, blockRow);
             } else if (idBase.startsWith('recientes')) {
-                this.setupRecentCard(card, item, displayName, iconoUrl, fechaFormateada);
+                this.setupRecentCard(card, item, displayName, iconoUrl);
             } else if (idBase.startsWith('favoritos')) {
                 this.setupFavoriteCard(card, item, displayName, iconoUrl, endpoint);
             }
@@ -1093,12 +1005,11 @@ async switchTo(profileName) {
         },
 
         extractCardData(item, idBase) {
-            let nombre, displayName, endpoint, dockerExtra = '', fechaFormateada = '';
+            let nombre, displayName, endpoint, dockerExtra = '';
 
             if (idBase.startsWith('recientes') || idBase.startsWith('favoritos')) {
                 nombre = item.name;
                 endpoint = item.endpoint || 'Actual';
-                fechaFormateada = Utils.formatDate(item.visited);
 
             } else if (idBase.startsWith('updates')) {
                 nombre = item.stack;
@@ -1117,22 +1028,12 @@ async switchTo(profileName) {
                 endpoint = 'Actual';
             }
 
-            displayName = Utils.removePrefix(nombre, 'ix-');
-            displayName = Utils.capitalizeFirst(displayName) + dockerExtra;
+            displayName = Utils.capitalizeFirst(nombre) + dockerExtra;
 
             const isRemote = endpoint && endpoint.toLowerCase() !== 'actual';
-            const composePath = isRemote
-                ? `/compose/${nombre}/${endpoint}`
-                : `/compose/${nombre}`;
+            const composePath = isRemote ? `/compose/${nombre}/${endpoint}` : `/compose/${nombre}`;
 
-            return {
-                nombre,
-                displayName,
-                endpoint,
-                composePath,
-                fechaFormateada,
-                dockerExtra
-            };
+            return { nombre, displayName, endpoint, composePath, dockerExtra };
         },
 
         setupUpdateCard(card, item, nombre, displayName, iconoUrl, endpoint, blockTitle, blockRow) {
@@ -1181,7 +1082,7 @@ async switchTo(profileName) {
             }
         },
 
-        setupRecentCard(card, item, displayName, iconoUrl, fechaFormateada) {
+        setupRecentCard(card, item, displayName, iconoUrl) {
             const mostrarHostname = 
                 item.hostname &&
                 State.hostnameLocal &&
@@ -1204,7 +1105,6 @@ async switchTo(profileName) {
                 <div class="stack-info">
                     <div class="stack-name">${displayName}</div>
                     <div class="stack-hostname">${mostrarHostname ? item.hostname : '&nbsp;'}</div>
-                    <div class="stack-status">${fechaFormateada}</div>
                 </div>
             `;
             const img = card.querySelector('img');
@@ -1262,6 +1162,7 @@ async switchTo(profileName) {
         async loadAndDisplay() {
             if (!RouteManager.isRootPath()) return;
             if (!!State.settingsData?.centralUrl) return; // agente: no dibujar dashboard
+            if (document.body.classList.contains('dockme-logs-mode')) return; // logs activo: no redibujar
             await loadStacksConfig();
             await loadLinksConfig();
             const layoutBlocks = await LayoutManager.load();
@@ -1355,8 +1256,15 @@ async switchTo(profileName) {
                 });
             }
 
-            // Renderizar bloques en orden guardado
-            const sortedBlocks = [...linksConfig].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+            // Renderizar bloques en orden guardado (o fijo en móvil)
+            const esMobil = window.innerWidth <= 700;
+            const sortedBlocks = esMobil
+                ? [
+                    ...(linksConfig.filter(b => b.type === 'metrics')),
+                    ...(linksConfig.filter(b => b.type === 'favoritos')),
+                    ...(linksConfig.filter(b => b.category).sort((a, b) => (a.order ?? 999) - (b.order ?? 999)))
+                  ]
+                : [...linksConfig].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
 
             for (const block of sortedBlocks) {
                 if (block.type === 'metrics') {
@@ -1923,174 +1831,16 @@ let layoutDirty = false;
         setupBlockDrag(catBox, blocksRow);
     }
 
-    // ==================== UI COMPONENTS ====================
-    const UIComponents = {
-        fixPortLinks() {
-            if (!primaryHostLocal) return;
-            // Solo aplicar en stacks locales (/compose/stack/) — los remotos (/compose/stack/endpoint) ya tienen el host correcto
-            const endpoint = RouteManager.extractEndpoint?.();
-            if (endpoint && endpoint.toLowerCase() !== 'actual') return;
-            document.querySelectorAll('.col-7 a[href]').forEach(a => {
-                try {
-                    const url = new URL(a.href);
-                    if (!url.port || url.hostname === primaryHostLocal) return;
-                    url.hostname = primaryHostLocal;
-                    a.href = url.toString();
-                } catch {}
-            });
-        },
-
-        async insertLogo() {
-            const stackName = RouteManager.extractStackName();
-            if (!stackName) return;
-            if (document.querySelector('.compose-header')) return;
-            const h1 = document.querySelector('h1.mb-3');
-            if (!h1) return;
-            // Capitalizar solo el nodo de texto con el nombre del stack (no los elementos hijo)
-            h1.childNodes.forEach(node => {
-                if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
-                    node.textContent = ' ' + Utils.capitalizeFirst(node.textContent.trim()) + ' ';
-                }
-            });
-            const container = h1.parentElement;
-            if (!container) return;
-            const endpoint = RouteManager.extractEndpoint();
-            const iconUrl = getStackIconUrl(stackName, endpoint);
-            const githubUrl = getStackRepo(stackName, endpoint);
-            // Si no tiene icono asignado, intentar descargarlo del CDN en background
-            const currentEntry = stacksConfig.find(s =>
-                s.name.toLowerCase() === stackName.toLowerCase() &&
-                s.endpoint.toLowerCase() === endpoint.toLowerCase()
-            );
-            if (!currentEntry?.icon) {
-                fetch(`/api/auto-icon?name=${encodeURIComponent(stackName)}&endpoint=${encodeURIComponent(endpoint)}`)
-                    .then(r => r.json())
-                    .then(data => {
-                        if (data.success && data.iconFile) {
-                            if (currentEntry) currentEntry.icon = data.iconFile;
-                            dockmeIconVersion = Date.now();
-                            localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
-                            const logoImg = document.querySelector('.compose-header .cp-icon');
-                            if (logoImg) logoImg.src = getStackIconUrl(stackName, endpoint);
-                            reasignarIconos();
-                        }
-                    })
-                    .catch(() => {});
-            }
-            const serviceUrl = stacksConfig.find(s =>
-                s.name.toLowerCase() === stackName.toLowerCase() &&
-                s.endpoint.toLowerCase() === endpoint.toLowerCase()
-            )?.url || '';
-            const row = document.createElement('div');
-            row.className = 'row mb-4 compose-header align-items-start';
-            const colLogo = document.createElement('div');
-            colLogo.className = 'col-auto';
-            const img = document.createElement('img');
-            img.className = 'cp-icon';
-            img.src = iconUrl;
-            img.onerror = () => {
-                if (img.src !== CONFIG.ICON_DEFAULT) {
-                    img.src = CONFIG.ICON_DEFAULT;
-                }
-            };
-            if (serviceUrl) {
-                const logoWrap = document.createElement('div');
-                logoWrap.className = 'stack-logo-left has-url';
-                logoWrap.style.width = '96px';
-                logoWrap.style.height = '96px';
-                const flipDiv = document.createElement('div');
-                flipDiv.className = 'stack-logo-flip';
-                const front = document.createElement('div');
-                front.className = 'logo-front';
-                front.appendChild(img);
-                const back = document.createElement('div');
-                back.className = 'logo-back';
-                flipDiv.appendChild(front);
-                flipDiv.appendChild(back);
-                logoWrap.appendChild(flipDiv);
-                logoWrap.addEventListener('click', () => window.open(serviceUrl, '_blank'));
-                colLogo.appendChild(logoWrap);
-            } else {
-                img.style.height = '96px';
-                img.style.width = 'auto';
-                colLogo.appendChild(img);
-            }
-            const colContent = document.createElement('div');
-            colContent.className = 'col';
-            colContent.appendChild(h1);
-            let next = h1.nextElementSibling;
-            while (next && next.tagName !== 'HR') {
-                const current = next;
-                next = next.nextElementSibling;
-                colContent.appendChild(current);
-            }
-            const btnRow = document.createElement('div');
-            btnRow.style.display = 'flex';
-            btnRow.style.gap = '8px';
-            btnRow.style.flexWrap = 'wrap';
-            btnRow.style.marginTop = '8px';
-            const volverBtn = document.createElement('button');
-            volverBtn.className = 'btn btn-normal';
-            volverBtn.innerHTML = '⬅️ Volver';
-            volverBtn.addEventListener('click', () => {
-                document.querySelector('header .fs-4.title')?.click();
-            });
-            btnRow.appendChild(volverBtn);
-            if (githubUrl) {
-                const repoBtn = document.createElement('a');
-                repoBtn.className = 'btn btn-normal';
-                repoBtn.href = githubUrl;
-                repoBtn.target = '_blank';
-                repoBtn.rel = 'noopener noreferrer';
-                repoBtn.style.display = 'inline-flex';
-                repoBtn.style.alignItems = 'center';
-                repoBtn.style.gap = '6px';
-                repoBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>Repositorio GitHub';
-                btnRow.appendChild(repoBtn);
-            }
-            colContent.appendChild(btnRow);
-            row.appendChild(colLogo);
-            row.appendChild(colContent);
-            container.insertBefore(row, container.firstChild);
-        },
-
-        replaceEndpointsInSelect() {
-            if (!State.updatesDataGlobal) return;
-
-            const endpointToHost = {};
-            State.updatesDataGlobal.forEach(h => {
-                if (h.endpoint && h.hostname) {
-                    endpointToHost[h.endpoint] = h.hostname;
-                }
-            });
-
-            const selects = document.querySelectorAll('select.form-select');
-            selects.forEach(select => {
-                select.querySelectorAll('option').forEach(option => {
-                    const endpoint = option.value;
-                    if (!endpoint) {
-                        option.textContent = `(local) ${endpointToHost['Actual']}`;
-                        return;
-                    }
-                    const hostname = endpointToHost[endpoint];
-                    if (hostname) {
-                        option.textContent = option.textContent.replace(endpoint, hostname);
-                    }
-                });
-            });
-        }
-    };
-
     // ==================== EVENT HANDLERS ====================
-    function autoAssignServiceUrl(stackName, endpoint) {
+    function autoAssignServiceUrl(stackName, endpoint, composeContent) {
         if (!stackName) return;
         // Solo si no tiene URL asignada
         const entry = stacksConfig.find(s =>
             s.name.toLowerCase() === stackName.toLowerCase() &&
             s.endpoint.toLowerCase() === endpoint.toLowerCase()
         );
-        // Leer el puerto directamente del editor CodeMirror (YAML del compose)
-        const lines = [...document.querySelectorAll('.cm-content .cm-line')]
+        // Leer el puerto del contenido pasado o del editor CodeMirror en el DOM
+        const lines = composeContent || [...document.querySelectorAll('.cm-content .cm-line')]
             .map(l => l.textContent).join('\n');
         const portMatch = lines.match(/^\s*-\s*["']?(?:[\d.]+:)?(\d+):\d+/m);
         const port = portMatch?.[1];
@@ -2148,195 +1898,6 @@ let layoutDirty = false;
     }
 
     const EventHandlers = {
-        handleButtonClick(e) {
-            // Detectar "Detener y desactivar" en dropdown
-            const menuItem = e.target.closest('[role="menuitem"]');
-            if (menuItem) {
-                const text = menuItem.textContent.trim();
-                if (text.includes('Detener y desactivar')) {
-                    const parts = RouteManager.extractComposeParts();
-                    if (parts) {
-                        RecentManager.remove(parts.name, parts.endpoint);
-                        if (Array.isArray(State.updatesDataGlobal)) {
-                            const hostEntry = State.updatesDataGlobal.find(
-                                h => h.endpoint?.toLowerCase() === parts.endpoint.toLowerCase()
-                            );
-                            if (hostEntry?.hostname) {
-                                API.removeUpdate(parts.name, hostEntry.hostname)
-                                    .then(() => API.loadUpdates())
-                                    .then(updatesData => { State.setUpdatesData(updatesData); });
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (dockmeEditMode) {
-                const stackItem = e.target.closest('a.item');
-                if (stackItem) {
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                    const href = stackItem.getAttribute('href');
-                    if (!href) return;
-
-                    handleEditStackSelection(href);
-                    return;
-                }
-            }
-
-            const btn = e.target.closest('button.btn');
-            if (!btn) return;
-
-            const icon = btn.querySelector('svg[data-icon]');
-            const iconName = icon?.getAttribute('data-icon');
-
-            if (iconName === 'cloud-arrow-down' || iconName === 'rocket') {
-                const pathParts = location.pathname.split('/');
-                const endpoint = pathParts.length > 3 ? pathParts[3] : 'Actual';
-
-                // Scroll al inicio para ver el terminal (en caso de rocket)
-                if (iconName === 'rocket') {
-                    const scrollContainer = document.querySelector('.col-12.col-md-8.col-xl-9.mb-3');
-                    if (scrollContainer) {
-                        scrollContainer.scrollTo({ top: 0, behavior: 'smooth' });
-                    } else {
-                        window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }
-                }
-
-                if (isDockmeCompose()) {
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                    if (iconName === 'rocket') {
-                        const saveBtn = document.querySelector(
-                            'button.btn.btn-normal svg[data-icon="floppy-disk"]'
-                        )?.closest('button');
-                        if (saveBtn) saveBtn.click();
-                    }
-
-                    this.updateDockme(endpoint);
-                    return;
-                }
-
-                if (iconName === 'cloud-arrow-down') {
-                    this.handleUpdateButton();
-                    const parts = RouteManager.extractComposeParts();
-                    if (parts) autoAssignServiceUrl(parts.name, parts.endpoint || 'Actual');
-                    return;
-                }
-
-                if (iconName === 'rocket') {
-                    let parts = RouteManager.extractComposeParts();
-                    // Stack nuevo en /compose: leer nombre e endpoint del formulario o del h1
-                    if (!parts?.name) {
-                        // Primero intentar input#name (stack nunca desplegado)
-                        let stackName = document.querySelector('input#name')?.value?.trim();
-                        // Si ya fue desplegado (fallido), leer del h1
-                        if (!stackName) {
-                            const h1 = document.querySelector('h1.mb-3');
-                            if (h1) {
-                                const clone = h1.cloneNode(true);
-                                clone.querySelectorAll('.badge, .agent-name').forEach(el => el.remove());
-                                stackName = clone.textContent.trim();
-                            }
-                        }
-                        const selectVal = document.querySelector('select.form-select')?.value || '';
-                        const ep = selectVal ? selectVal : 'Actual';
-                        if (stackName) parts = { name: stackName, endpoint: ep };
-                    }
-                    if (parts?.name) autoAssignServiceUrl(parts.name, parts.endpoint || 'Actual');
-                    return;
-                }
-            }
-
-            if (iconName === 'rotate') {
-                const parts = RouteManager.extractComposeParts();
-                if (parts) autoAssignServiceUrl(parts.name, parts.endpoint || 'Actual');
-            }
-
-            if (iconName === 'trash') {
-                this.handleDeleteButton();
-            }
-        },
-
-        handleUpdateButton() {
-            const pathParts = location.pathname.split('/');
-            const stack = pathParts.length > 2 ? pathParts[2] : null;
-            if (!stack) return;
-            if (!Array.isArray(State.updatesDataGlobal)) return;
-            const endpoint = pathParts.length > 3 ? pathParts[3] : 'Actual';
-            const hostEntry = State.updatesDataGlobal.find(
-                h => h.endpoint?.toLowerCase() === endpoint.toLowerCase()
-            );
-            if (!hostEntry?.hostname) return;
-            API.removeUpdate(stack, hostEntry.hostname)
-                .then(() => API.loadUpdates())
-                .then(updatesData => {
-                    State.setUpdatesData(updatesData);
-                });
-        },
-
-        handleDeleteButton() {
-            let parts = RouteManager.extractComposeParts();
-            // Si estamos en /compose sin nombre (deploy fallido), leer del h1
-            if (!parts?.name) {
-                const h1 = document.querySelector('h1.mb-3');
-                if (h1) {
-                    const clone = h1.cloneNode(true);
-                    clone.querySelectorAll('.badge, .agent-name').forEach(el => el.remove());
-                    const stackName = clone.textContent.trim();
-                    const agentName = h1.querySelector('.agent-name')?.textContent?.replace(/[()]/g, '').trim();
-                    const ep = (!agentName || agentName === 'Actual') ? 'Actual' : agentName;
-                    if (stackName) parts = { name: stackName, endpoint: ep };
-                }
-            }
-            if (!parts?.name) return;
-            // Esperar a que el usuario confirme en el modal de Dockge
-            // El botón .btn-danger dentro del modal es la confirmación real
-            const waitForConfirm = () => {
-                const confirmBtn = document.querySelector('.modal.show .btn-danger');
-                if (!confirmBtn) {
-                    setTimeout(waitForConfirm, 100);
-                    return;
-                }
-                confirmBtn.addEventListener('click', () => {
-                    RecentManager.remove(parts.name, parts.endpoint);
-                    if (!Array.isArray(State.updatesDataGlobal)) return;
-                    const hostEntry = State.updatesDataGlobal.find(
-                        h => h.endpoint?.toLowerCase() === parts.endpoint.toLowerCase()
-                    );
-                    if (hostEntry?.hostname) {
-                        API.removeUpdate(parts.name, hostEntry.hostname)
-                            .then(() => API.loadUpdates())
-                            .then(updatesData => {
-                                State.setUpdatesData(updatesData);
-                                setTimeout(() => {
-                                    if (RouteManager.isRootPath()) {
-                                        Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
-                                    }
-                                }, 300);
-                            });
-                    }
-                    // Limpiar stacks.json
-                    const stackIdx = stacksConfig.findIndex(s =>
-                        s.name?.toLowerCase() === parts.name?.toLowerCase() &&
-                        s.endpoint?.toLowerCase() === (parts.endpoint || 'Actual').toLowerCase()
-                    );
-                    if (stackIdx >= 0) {
-                        stacksConfig.splice(stackIdx, 1);
-                        fetch('/api/set-stack', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ name: parts.name, endpoint: parts.endpoint || 'Actual', _delete: true })
-                        }).catch(() => {});
-                    }
-                }, { once: true });
-            };
-            setTimeout(waitForConfirm, 100);
-        },
-
         updateDockme(endpoint) {
             if (window.dockmeUpdateInProgress) return;
             window.dockmeUpdateInProgress = true;
@@ -2378,8 +1939,9 @@ let layoutDirty = false;
                 .then(res => (res.ok ? res.json() : null))
                 .then(() => {
                     window.dockmeUpdateInProgress = false;
-                    window.history.pushState({}, '', '/');
-                    window.dispatchEvent(new Event('popstate'));
+                    if (document.body.classList.contains('dockme-logs-mode')) {
+                        deactivateLogsMode();
+                    }
                     const serverName = isLocalDockme ? 'este servidor' : 'Dockme remoto';
                     setTimeout(() => {
                         showMetricsAlert(`⏳ Actualizando y reconectando ${serverName}...`, 20000);
@@ -2543,7 +2105,7 @@ let layoutDirty = false;
                            </span>`
                         : `<img src="${iconUrl}" class="stack-update-icon" alt="${s.name}">`;
                     bodyHTML += `
-                        <div class="stack-update-row" data-stack="${s.name}" data-endpoint="${s.endpoint}">
+                        <div class="stack-update-row" data-stack="${s.name}" data-endpoint="${s.endpoint || 'Actual'}" style="cursor:pointer;">
                             ${iconHtml}
                             <span class="stack-update-name">${Utils.capitalizeFirst(s.name)}</span>
                             <span class="stack-update-status">⏳ Pendiente</span>
@@ -2564,6 +2126,20 @@ let layoutDirty = false;
             `;
             
             document.body.appendChild(this.panel);
+
+            // Click en tarjeta → modo logs del stack
+            this.panel.querySelectorAll('.stack-update-row').forEach(row => {
+                row.addEventListener('click', (e) => {
+                    if (e.target.closest('.stack-update-icon-wrap.has-url')) return;
+                    const stackName = row.dataset.stack;
+                    const ep = row.dataset.endpoint;
+                    const isUpdating = row.dataset.needsPolling === 'true' || row.dataset.checkingServices === 'true';
+                    logsActiveTab = 'logs';
+                    activateLogsMode();
+                    if (isUpdating) window._dockme_force_badge = 'deploying';
+                    setTimeout(() => openLogsForStack(stackName, ep), 100);
+                });
+            });
             
             // Listener cerrar
             this.panel.querySelector('.btn-close-panel').addEventListener('click', (e) => {
@@ -2966,7 +2542,7 @@ let layoutDirty = false;
         },
 
         handleRouteChange(route) {
-            updatePageTitleForRoute();
+            ensureTitleIsCorrect();
             MobileMenu.close();
             MobileMenu.ensureToggle();
 
@@ -2974,17 +2550,15 @@ let layoutDirty = false;
                 forceSetupLanguageES();
                 replaceSetupBranding();
             }
-            if (RouteManager.isSettingsPath()) {
-                if (window.location.pathname === '/settings/security') {
-                    document.body.classList.add('settings-security');
-                } else {
-                    document.body.classList.remove('settings-security');
-                    goToSettingsSecurity();
-                }
-            }
             if (RouteManager.isRootPath()) {
                 hideDockgeHomeBlock();
                 ensureDockmeRoot();
+                // Si modo logs activo, ocultar bloques nativos de Dockge inmediatamente
+                if (document.body.classList.contains('dockme-logs-mode')) {
+                    document.querySelectorAll('.main > *:not(#dockme-dashboard), .container-fluid > *:not(#dockme-dashboard)').forEach(el => {
+                        if (el.id !== 'dockme-dashboard') el.style.visibility = 'hidden';
+                    });
+                }
                 readAgentsFromDockgeDOM();
                 const tryLoadDashboard = (attemptsLeft) => {
                     Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
@@ -2993,8 +2567,32 @@ let layoutDirty = false;
                         }
                         const dashboard = ensureDockmeRoot();
                         if (dashboard) {
-                            DataLoader.loadAndDisplay();
-                            if (!State.settingsData?.centralUrl) MetricsManager.start();
+                            if (!document.body.classList.contains('dockme-logs-mode')) {
+                                DataLoader.loadAndDisplay();
+                            }
+                            if (!State.settingsData?.centralUrl && !document.body.classList.contains('dockme-logs-mode')) MetricsManager.start();
+                            // Si el modo logs estaba activo, restaurarlo
+                            if (document.body.classList.contains('dockme-logs-mode')) {
+                                setTimeout(() => {
+                                    // Restaurar visibilidad de elementos ocultos
+                                    document.querySelectorAll('.main > *:not(#dockme-dashboard), .container-fluid > *:not(#dockme-dashboard)').forEach(el => {
+                                        el.style.visibility = '';
+                                    });
+                                    const blocksRow = document.querySelector('#dockme-blocks-row');
+                                    if (blocksRow) blocksRow.style.display = 'none';
+                                    MetricsManager.stop();
+
+                                    // Asegurar que el panel existe
+                                    let panel = document.querySelector('#dockme-logs-panel');
+                                    if (!panel) {
+                                        const dashboard = document.querySelector('#dockme-dashboard');
+                                        panel = document.createElement('div');
+                                        panel.id = 'dockme-logs-panel';
+                                        dashboard?.appendChild(panel);
+                                    }
+                                    panel.style.display = '';
+                                }, 600);
+                            }
                         } else if (attemptsLeft > 0) {
                             setTimeout(() => tryLoadDashboard(attemptsLeft - 1), 200);
                         }
@@ -3004,35 +2602,7 @@ let layoutDirty = false;
             } else {
                 MetricsManager.stop();
             }
-            if (RouteManager.isComposeCreatePath()) {
-                setTimeout(() => {
-                    UIComponents.replaceEndpointsInSelect();
-                    this.setupSelectListener();
-                }, CONFIG.LOGO_INSERT_DELAY);
-            } else if (RouteManager.isComposePath()) {
-                UIComponents.insertLogo();
-                UIComponents.fixPortLinks();
-                wrapComposeHeader();
-                RecentManager.add();
-            }
         },
-
-
-        setupSelectListener() {
-            const select = document.querySelector(".form-select");
-            if (select && !select.dataset.listenerAttached) {
-                select.dataset.listenerAttached = "true";
-                select.addEventListener("change", function () {
-                    let texto = this.options[this.selectedIndex].textContent.trim();
-                    const titulo = texto.replace(/\(.*?\)\s*/g, "");
-                    document.title = `Dockme - ${titulo}`;
-                    const titleElement = document.querySelector('.fs-4.title');
-                    if (titleElement) {
-                        titleElement.textContent = titulo;
-                    }
-                });
-            }
-        }
     };
 
     // ==================== DYNAMIC STYLES ====================
@@ -3089,20 +2659,18 @@ let layoutDirty = false;
             State.setUpdatesData(updatesData);
             State.setSourcesData(sourcesData);
             if (Array.isArray(updatesData) && updatesData.length > 0) {
-                if (Array.isArray(updatesData) && updatesData.length > 0) {
-                    const localHost = updatesData.find(h =>
-                        h.endpoint?.toLowerCase() === 'actual'
-                    ) || updatesData[0];
+                const localHost = updatesData.find(h =>
+                    h.endpoint?.toLowerCase() === 'actual'
+                ) || updatesData[0];
 
-                    if (localHost?.hostname) {
-                        State.setLocalHostname(localHost.hostname);
-                    }
+                if (localHost?.hostname) {
+                    State.setLocalHostname(localHost.hostname);
                 }
             }
             this.loaded = true;
             RouteObserver.handleRouteChange(window.location.pathname);
 
-            // TODO: eliminar en v2.3 — avisar variables obsoletas en el compose (solo una vez)
+            // TODO: eliminar en v3.1 — avisar variables obsoletas en el compose (solo una vez)
             if (!settingsData?.centralUrl) setTimeout(() => checkDeprecatedVars(), 2000);
 
             // Bloqueo UI agente remoto
@@ -3160,30 +2728,6 @@ let layoutDirty = false;
     };
 
     // ==================== HELPER: FUNCIONES GENERICAS ====================
-    function wrapComposeHeader() {
-        const header = document.querySelector('.compose-header');
-        if (!header) return;
-        const buttons = header.nextElementSibling;
-        if (!buttons || !buttons.classList.contains('mb-3')) return;
-        if (header.parentElement.classList.contains('compose-sticky-wrapper')) {return;}
-        const wrapper = document.createElement('div');
-        wrapper.className = 'compose-sticky-wrapper';
-        header.parentNode.insertBefore(wrapper, header);
-        wrapper.appendChild(header);
-        wrapper.appendChild(buttons);
-    }
-    function isDockmeCompose() {
-        const imageBlocks = document.querySelectorAll('.image.mb-2');
-        for (const block of imageBlocks) {
-            const repoSpan = block.querySelector('.me-1');
-            if (!repoSpan) continue;
-            const repo = repoSpan.textContent.trim().toLowerCase();
-            if (repo === 'dockme:' || repo.endsWith('/dockme:')) {
-                return true;
-            }
-        }
-        return false;
-    }
     function getStackRepo(stackName, endpoint) {
         if (!stackName) return '';
         const entry = endpoint
@@ -3239,7 +2783,6 @@ let layoutDirty = false;
     function setupSidebarResizeHandle() {
         if (document.querySelector('#dockme-sidebar-handle')) return;
         const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
-        const sidebarW = sidebar.offsetWidth;
         if (!sidebar) return;
 
         sidebar.style.position = 'relative';
@@ -3295,6 +2838,1839 @@ let layoutDirty = false;
             document.addEventListener('touchend', touchEnd);
         }, { passive: false });
     }
+    function openNewStackPanel() {
+        // Activar modo logs si no está activo
+        if (!document.body.classList.contains('dockme-logs-mode')) {
+            activateLogsMode();
+        }
+
+        const panel = document.querySelector('#dockme-logs-panel');
+        if (!panel) return;
+
+        // Cerrar SSE si hay
+        if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+        if (window._logsStatusInterval) { clearInterval(window._logsStatusInterval); window._logsStatusInterval = null; }
+        logsCurrentStack = null;
+        logsCurrentEndpoint = null;
+
+        // Obtener lista de servidores disponibles
+        const servers = [{ name: 'Local', endpoint: 'Actual' }];
+        (State.updatesDataGlobal || []).forEach(h => {
+            if ((h.endpoint || 'Actual').toLowerCase() !== 'actual') {
+                servers.push({ name: h.hostname || h.endpoint, endpoint: h.endpoint });
+            }
+        });
+        const serverOptions = servers.map(s =>
+            `<option value="${s.endpoint}">${s.name}</option>`
+        ).join('');
+
+        const defaultCompose = `services:\n  nginx:\n    image: nginx:latest\n    container_name: nginx\n    restart: unless-stopped\n`;
+        const createBtnHTML = `<svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M256 80c0-17.7-14.3-32-32-32s-32 14.3-32 32V224H48c-17.7 0-32 14.3-32 32s14.3 32 32 32H192V432c0 17.7 14.3 32 32 32s32-14.3 32-32V288H400c17.7 0 32-14.3 32-32s-14.3-32-32-32H256V80z"/></svg> Crear y Desplegar`;
+
+        panel.innerHTML = `
+            <div id="logs-header-bar">
+                <div class="logs-header-row1">
+                    <div class="logs-stack-info">
+                        <span class="logs-stack-name" id="new-stack-title">Nuevo Stack</span>
+                        <span class="logs-stack-sep" id="new-stack-title-sep" style="display:none;">&mdash;</span>
+                        <span class="logs-stack-host" id="new-stack-title-host" style="display:none;"></span>
+                    </div>
+                </div>
+                <div class="logs-header-row2">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <button class="btn btn-normal logs-action-btn btn-back-dashboard" id="new-stack-back" title="Volver al dashboard">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                        </button>
+                    </div>
+                    <div></div>
+                </div>
+            </div>
+            <div style="display:flex;flex-direction:column;flex:1;min-height:0;gap:10px;padding:12px 0;">
+                <div style="display:flex;gap:12px;align-items:flex-end;flex-shrink:0;">
+                    <div style="display:flex;flex-direction:column;gap:4px;">
+                        <label style="font-size:0.82em;color:#888;">Nombre del stack</label>
+                        <input id="new-stack-name" type="text" class="form-control" placeholder="mi-stack" style="width:220px;border-color:#ef5350;" autocomplete="off">
+                    </div>
+                    <div id="new-stack-server-wrap" style="display:flex;flex-direction:column;gap:4px;${servers.length <= 1 ? 'display:none;' : ''}">
+                        <label style="font-size:0.82em;color:#888;">Servidor</label>
+                        <select id="new-stack-server" class="form-control" style="width:180px;">${serverOptions}</select>
+                    </div>
+                    <div id="new-stack-error" style="color:#ef5350;padding-left:6px;padding-bottom:6px;display:none;"></div>
+                </div>
+                <div id="new-stack-compose-wrap" style="flex:1;min-height:0;overflow:hidden;background:#0d1117;border:1px solid #2a3441;border-radius:8px 8px 0 0;"></div>
+                <div style="height:22px;background:#1a2535;">
+                    <div style="display:flex;gap:3px;align-items:center;">
+                        <span style="width:20px;height:2px;background:#4f84c8;"></span>
+                        <span style="color:#4f84c8;">⚙️ .env</span>
+                        <span style="height:2px;background:#4f84c8;flex:1;"></span>
+                    </div>
+                </div>
+                <div id="new-stack-env-wrap" style="height:80px;overflow:hidden;background:#0d1117;border:1px solid #2a3441;border-top:none;border-radius:0 0 8px 8px;width:100%;"></div>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:flex-start;gap:8px;padding:6px 12px;background:#1c2431;border:1px solid #2a3441;border-radius:8px;flex-shrink:0;margin-top:4px;">
+                <button class="btn btn-primary" id="new-stack-create">__CREATE_BTN__</button>
+            </div>
+        `;
+
+        panel.querySelector('#new-stack-create').innerHTML = createBtnHTML;
+
+        // Focus en el nombre
+        setTimeout(() => panel.querySelector('#new-stack-name')?.focus(), 100);
+
+        // Actualizar título dinámicamente
+        const titleEl     = panel.querySelector('#new-stack-title');
+        const titleSep    = panel.querySelector('#new-stack-title-sep');
+        const titleHost   = panel.querySelector('#new-stack-title-host');
+        const nameInput   = panel.querySelector('#new-stack-name');
+        const serverSel   = panel.querySelector('#new-stack-server');
+
+        const updateTitle = () => {
+            const raw  = nameInput.value.trim();
+            const name = raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : 'Nuevo Stack';
+            const ep   = serverSel.value;
+            const host = servers.find(s => s.endpoint === ep)?.name || ep;
+            titleEl.textContent = name;
+            if (ep !== 'Actual') {
+                titleSep.style.display = '';
+                titleHost.style.display = '';
+                titleHost.textContent = host;
+            } else {
+                titleSep.style.display = 'none';
+                titleHost.style.display = 'none';
+            }
+        };
+
+        nameInput.addEventListener('input', () => {
+            updateTitle();
+            nameInput.style.borderColor = nameInput.value.trim() ? '' : '#ef5350';
+        });
+        serverSel.addEventListener('change', updateTitle);
+
+        // Validar y limpiar nombre al salir del input
+        nameInput.addEventListener('blur', () => {
+            let val = nameInput.value.trim().toLowerCase();
+            val = val.replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
+            nameInput.value = val;
+            nameInput.style.borderColor = val ? '' : '#ef5350';
+            if (!val) {
+                errorEl.textContent = '⚠️ El nombre es obligatorio';
+                errorEl.style.display = '';
+            } else {
+                errorEl.style.display = 'none';
+            }
+            updateTitle();
+        });
+
+        // Enter en nombre → foco al compose con todo seleccionado
+        nameInput.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            let val = nameInput.value.trim().toLowerCase();
+            val = val.replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
+            nameInput.value = val;
+            nameInput.style.borderColor = val ? '' : '#ef5350';
+            updateTitle();
+            if (!val) return;
+            setTimeout(() => {
+                if (cmNew?.focus) {
+                    cmNew.focus();
+                    cmNew.execCommand?.('selectAll');
+                }
+            }, 50);
+        });
+
+        // Botón volver
+        panel.querySelector('#new-stack-back').addEventListener('click', () => {
+            deactivateLogsMode();
+        });
+
+        // Cargar CodeMirror si no está
+        const initEditor = () => {
+            const wrap = panel.querySelector('#new-stack-compose-wrap');
+            const envWrap = panel.querySelector('#new-stack-env-wrap');
+            const errorEl = panel.querySelector('#new-stack-error');
+            const createBtn = panel.querySelector('#new-stack-create');
+            let cmNew = null;
+            if (window.CodeMirror) {
+                const opts = {
+                    value: defaultCompose,
+                    mode: 'yaml',
+                    theme: 'dracula',
+                    lineNumbers: true,
+                    lineWrapping: true,
+                    tabSize: 2,
+                    indentWithTabs: false,
+                    extraKeys: { Tab: (cm) => cm.execCommand('insertSoftTab') },
+                };
+                if (window.jsyaml) {
+                    opts.lint = true;
+                    opts.gutters = ['CodeMirror-lint-markers'];
+                }
+                cmNew = window.CodeMirror(wrap, opts);
+                cmNew.setSize('100%', '100%');
+                // Validación en tiempo real
+                if (window.jsyaml) {
+                    cmNew.on('change', (cm, change) => {
+                        // Sanitizar tabs al pegar o escribir
+                        const val = cm.getValue();
+                        if (val.includes('\t')) {
+                            const cursor = cm.getCursor();
+                            cm.setValue(val.replace(/\t/g, '  '));
+                            cm.setCursor(cursor);
+                        }
+                        clearTimeout(cmNew._validateTimer);
+                        cmNew._validateTimer = setTimeout(() => {
+                            try {
+                                window.jsyaml.load(cmNew.getValue());
+                                wrap.style.borderColor = '#2a3441';
+                                if (createBtn) createBtn.disabled = false;
+                                // Limpiar error YAML si no hay otro error activo
+                                if (errorEl.dataset.yamlError) {
+                                    errorEl.style.display = 'none';
+                                    delete errorEl.dataset.yamlError;
+                                }
+                            } catch (e) {
+                                wrap.style.borderColor = '#ef5350';
+                                if (createBtn) createBtn.disabled = true;
+                                errorEl.textContent = `⚠️ ${e.reason || e.message}`;
+                                errorEl.style.display = '';
+                                errorEl.dataset.yamlError = '1';
+                            }
+                        }, 400);
+                    });
+                }
+            } else {
+                const ta = document.createElement('textarea');
+                ta.value = defaultCompose;
+                ta.style.cssText = 'width:100%;height:100%;background:transparent;color:#ccc;border:none;outline:none;resize:none;padding:12px;font-family:"Courier New",monospace;font-size:0.85em;';
+                wrap.appendChild(ta);
+                cmNew = ta;
+            }
+            // Editor .env
+            let cmEnvNew = null;
+            if (window.CodeMirror && envWrap) {
+                cmEnvNew = window.CodeMirror(envWrap, {
+                    value: '',
+                    mode: 'shell',
+                    theme: 'dracula',
+                    lineNumbers: true,
+                    lineWrapping: true,
+                    tabSize: 2,
+                    indentWithTabs: false,
+                    placeholder: '# Variables de entorno\n# VARIABLE=valor',
+                });
+                cmEnvNew.setSize('100%', '80px');
+            }
+            return { cmNew, cmEnvNew };
+        };
+
+        let cmNew = null;
+        let cmEnvNew = null;
+        if (window.CodeMirror) {
+            ({ cmNew, cmEnvNew } = initEditor());
+        } else {
+            // Cargar CodeMirror
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css';
+            document.head.appendChild(link);
+            const linkTheme = document.createElement('link');
+            linkTheme.rel = 'stylesheet';
+            linkTheme.href = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css';
+            document.head.appendChild(linkTheme);
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js';
+            script.onload = () => {
+                const scriptYaml = document.createElement('script');
+                scriptYaml.src = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js';
+                scriptYaml.onload = () => {
+                    // Cargar js-yaml y lint si no están
+                    let loaded = 0;
+                    const tryInit = () => { if (++loaded === 2) ({ cmNew, cmEnvNew } = initEditor()); };
+                    if (!window.jsyaml) {
+                        const sJsYaml = document.createElement('script');
+                        sJsYaml.src = 'https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js';
+                        sJsYaml.onload = tryInit;
+                        document.head.appendChild(sJsYaml);
+                    } else { tryInit(); }
+                    if (!window.CodeMirror?.helpers?.lint) {
+                        const linkLint = document.createElement('link');
+                        linkLint.rel = 'stylesheet';
+                        linkLint.href = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.css';
+                        document.head.appendChild(linkLint);
+                        const sLint = document.createElement('script');
+                        sLint.src = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.js';
+                        sLint.onload = tryInit;
+                        document.head.appendChild(sLint);
+                    } else { tryInit(); }
+                };
+                document.head.appendChild(scriptYaml);
+            };
+            document.head.appendChild(script);
+        }
+
+        // Crear y desplegar
+        panel.querySelector('#new-stack-create').addEventListener('click', async () => {
+            const errorEl   = panel.querySelector('#new-stack-error');
+            const stackName = nameInput.value.trim();
+            const endpoint  = serverSel.value;
+            const content   = cmNew?.getValue ? cmNew.getValue().replace(/\t/g, '  ') : (cmNew?.value || defaultCompose).replace(/\t/g, '  ');
+            const envContent = cmEnvNew?.getValue ? cmEnvNew.getValue() : (cmEnvNew?.value || '');
+
+            if (!stackName) {
+                errorEl.textContent = '⚠️ El nombre es obligatorio';
+                errorEl.style.display = '';
+                nameInput.focus();
+                return;
+            }
+            if (!/^[a-zA-Z0-9_-]+$/.test(stackName)) {
+                errorEl.textContent = '⚠️ Solo letras, números, - y _';
+                errorEl.style.display = '';
+                nameInput.focus();
+                return;
+            }
+            // Validar YAML
+            if (window.jsyaml) {
+                try { window.jsyaml.load(content); }
+                catch (e) {
+                    errorEl.textContent = `⚠️ Error YAML: ${e.reason || e.message}`;
+                    errorEl.style.display = '';
+                    return;
+                }
+            }
+
+            errorEl.style.display = 'none';
+            const btn = panel.querySelector('#new-stack-create');
+            btn.disabled = true;
+            btn.textContent = 'Verificando...';
+
+            // Verificar que no existe ya ese stack en ese servidor
+            const epCheck = endpoint !== 'Actual' ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+            try {
+                const check = await fetch(`/api/compose/${encodeURIComponent(stackName)}${epCheck}`);
+                const checkData = await check.json();
+                if (checkData.success) {
+                    errorEl.textContent = `⚠️ El stack "${stackName}" ya existe en este servidor`;
+                    errorEl.style.display = '';
+                    btn.disabled = false;
+                    btn.innerHTML = createBtnHTML;
+                    return;
+                }
+            } catch (_) {} // 404 = no existe, perfecto
+
+            btn.textContent = 'Creando...';
+
+            const epParam = endpoint !== 'Actual' ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+            try {
+                const r = await fetch(`/api/create-stack${epParam}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ stack: stackName, content, env: envContent, endpoint })
+                });
+                const d = await r.json();
+                if (!d.success) throw new Error(d.message);
+            } catch (e) {
+                const msg = e.message?.toLowerCase().includes('fetch') || e.message?.toLowerCase().includes('network') || e.message?.toLowerCase().includes('failed')
+                    ? `⚠️ No se puede conectar con el servidor "${servers.find(s=>s.endpoint===endpoint)?.name || endpoint}". Comprueba que el agente está activo.`
+                    : `⚠️ ${e.message}`;
+                errorEl.textContent = msg;
+                errorEl.style.display = '';
+                btn.disabled = false;
+                btn.innerHTML = createBtnHTML;
+                return;
+            }
+
+            // Capturar contenido antes de que openLogsForStack destruya el panel
+            const composeVal = cmNew?.getValue ? cmNew.getValue() : (cmNew?.value || content);
+
+            // Navegar a logs del nuevo stack y desplegar
+            logsActiveTab = 'logs';
+            openLogsForStack(stackName, endpoint);
+            // Dar tiempo a que el panel se inicialice y lanzar deploy
+            setTimeout(async () => {
+                const logsArea = document.querySelector('#logs-area');
+                if (!logsArea) return;
+                if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+                logsArea.innerHTML = '';
+                const epDeploy = endpoint !== 'Actual' ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+
+                // Registrar en stacks.json e intentar icono siempre, antes del deploy
+                autoAssignServiceUrl(stackName, endpoint || 'Actual', composeVal);
+
+                const deploySource = new EventSource(`/api/deploy/${encodeURIComponent(stackName)}${epDeploy}`);
+                deploySource.onmessage = (e) => {
+                    const line = document.createElement('div');
+                    line.className = 'logs-line';
+                    line.dataset.raw = e.data;
+                    const lower = e.data.toLowerCase();
+                    let color = '#888';
+                    if (lower.includes('started') || lower.includes('✅')) color = '#4caf50';
+                    else if (lower.includes('starting') || lower.includes('pulling') || lower.includes('pulled')) color = '#4f84c8';
+                    else if (lower.includes('error') || lower.includes('❌')) color = '#ef5350';
+                    line.innerHTML = `<span class="logs-msg" style="color:${color};">${e.data.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+                    logsArea.appendChild(line);
+                    logsArea.scrollTop = logsArea.scrollHeight;
+                    if (e.data.includes('✅') || e.data.includes('❌')) {
+                        deploySource.close();
+                    }
+                };
+                deploySource.onerror = () => { deploySource.close(); };
+            }, 800);
+        });
+    }
+
+    function openLogsForStack(stackName, endpoint) {
+        if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+
+        logsCurrentStack    = stackName;
+        logsCurrentEndpoint = endpoint;
+        RecentManager.add(stackName, endpoint);
+
+        // Timer de inactividad — volver al dashboard tras 10s sin actividad
+        const INACTIVITY_MS = 5 * 60 * 1000;
+        let inactivityTimer = null;
+        const resetInactivity = () => {
+            clearTimeout(inactivityTimer);
+            inactivityTimer = setTimeout(() => {
+                if (document.body.classList.contains('dockme-logs-mode')) {
+                    deactivateLogsMode();
+                }
+            }, INACTIVITY_MS);
+        };
+        const activityEvents = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+        activityEvents.forEach(ev => document.addEventListener(ev, resetInactivity, { passive: true }));
+        resetInactivity();
+
+        // Limpiar timer al salir del modo logs
+        const cleanupInactivity = () => {
+            clearTimeout(inactivityTimer);
+            activityEvents.forEach(ev => document.removeEventListener(ev, resetInactivity));
+            document.removeEventListener('dockme-logs-deactivated', cleanupInactivity);
+        };
+        document.addEventListener('dockme-logs-deactivated', cleanupInactivity, { once: true });
+
+        const panel = document.querySelector('#dockme-logs-panel');
+        if (!panel) return;
+
+        // Auto-expandir si el panel de logs quedaría menor de 700px con la lista visible
+        if (!document.body.classList.contains('logs-expanded')) {
+            const sidebar = document.querySelector('.sidebar, nav.side-nav, .stack-list')?.closest('.col-auto, .col, [class*="col-"]');
+            const sidebarWidth = sidebar ? sidebar.offsetWidth : 250;
+            const availableWidth = window.innerWidth - sidebarWidth;
+            if (availableWidth < 700) {
+                document.body.classList.add('logs-expanded');
+            }
+        }
+
+        const hostEntry = State.updatesDataGlobal?.find(h =>
+            h.endpoint.toLowerCase() === (endpoint || 'Actual').toLowerCase()
+        );
+        const hostname   = hostEntry?.hostname || endpoint || 'Actual';
+        const iconUrl    = getStackIconUrl(stackName, endpoint || 'Actual');
+        const githubUrl  = getStackRepo(stackName, endpoint || 'Actual');
+        const serviceUrl = stacksConfig.find(s =>
+            s.name?.toLowerCase() === stackName?.toLowerCase() &&
+            s.endpoint?.toLowerCase() === (endpoint || 'Actual').toLowerCase()
+        )?.url || '';
+
+        const iconHtml = serviceUrl
+            ? `<div class="stack-logo-left has-url" style="width:60px;height:60px;flex-shrink:0;cursor:pointer;" onclick="window.open('${serviceUrl}','_blank')">
+                <div class="stack-logo-flip">
+                    <div class="logo-front"><img src="${iconUrl}" class="logs-stack-icon" style="width:60px;height:60px;object-fit:contain;" onerror="this.src='/system-icons/no-icon.svg'"></div>
+                    <div class="logo-back"></div>
+                </div>
+               </div>`
+            : `<img src="${iconUrl}" class="logs-stack-icon" style="width:60px;height:60px;" onerror="this.src='/system-icons/no-icon.svg'">`;
+
+        panel.innerHTML = `
+            <div id="logs-header-bar">
+                <div style="display:flex;flex-direction:row;align-items:stretch;gap:inherit;">
+                    <div style="display:flex;align-items:center;flex-shrink:0;justify-content:center;width:75px;">
+                        ${iconHtml}
+                    </div>
+                    <div style="display:flex;flex-direction:column;flex:1;min-width:0;gap:6px;">
+                        <div class="logs-header-row1">
+                            <div class="logs-stack-info">
+                                <span class="logs-stack-name">${stackName}</span>
+                                <span class="logs-stack-sep">&mdash;</span>
+                                <span class="logs-stack-host">${hostname}</span>
+                            </div>
+                            ${githubUrl ? `<a href="${githubUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-normal" style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>Repositorio de GitHub</a>` : ''}
+                        </div>
+                        <div class="logs-header-row2">
+                            <div style="display:flex;align-items:center;gap:8px;">
+                                <button class="btn btn-normal logs-action-btn btn-back-dashboard" id="logs-btn-back" title="Volver al dashboard">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                                </button>
+                                <div id="logs-badges"></div>
+                            </div>
+                            <div class="logs-action-btns">
+                                <button class="btn btn-normal logs-action-btn" id="logs-btn-startstop" title="Iniciar/Detener"></button>
+                                <button class="btn btn-normal logs-action-btn" id="logs-btn-restart" title="Reiniciar">
+                                    <svg class="svg-inline--fa fa-rotate-right" aria-hidden="true" focusable="false" data-prefix="fas" data-icon="rotate-right" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M463.5 224H472c13.3 0 24-10.7 24-24V72c0-9.7-5.8-18.5-14.8-22.2s-19.3-1.7-26.2 5.2L413.4 96.6c-87.6-86.5-228.7-86.2-315.8 1c-87.5 87.5-87.5 229.3 0 316.8s229.3 87.5 316.8 0c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0c-62.5 62.5-163.8 62.5-226.3 0s-62.5-163.8 0-226.3c62.2-62.2 162.7-62.5 225.3-1L327 183c-6.9 6.9-8.9 17.2-5.2 26.2s12.5 14.8 22.2 14.8H463.5z"/></svg>
+                                    Reiniciar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="logs-tabs">
+                <button class="logs-tab active" data-tab="logs">\uD83D\uDCCB Logs</button>
+                <button class="logs-tab" data-tab="compose">\uD83D\uDCC4 Compose</button>
+                <button class="logs-tab" data-tab="terminal">\uD83D\uDCBB Terminal</button>
+                <button id="logs-expand-btn" title="Expandir" style="position:absolute;top:45px;left:-20px;z-index:10;width:25px;height:30px;border-radius:6px;background:#1c2431;border:2px solid #4f84c8;color:#4f84c8;cursor:pointer;display:flex;align-items:center;justify-content:center;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;"><polyline points="10,3 5,8 10,13"></polyline><polyline points="14,3 9,8 14,13"></polyline></svg></button>
+            </div>
+            <div id="logs-area"></div>
+            <div id="compose-area" style="display:none;flex:1;flex-direction:column;min-height:0;position:relative;">
+                <div id="compose-editor-wrap" style="flex:1;min-height:0;overflow:hidden;background:#0d1117;border:1px solid #2a3441;border-radius:8px 8px 0 0;width:100%;"></div>
+                <div id="compose-resize-handle" style="height:22px;background:#1a2535;cursor:row-resize;">
+                    <div style="display:flex;gap:3px;align-items:center;">
+                        <span style="width:20px;height:2px;background:#4f84c8;"></span>
+                        <span style="color:#4f84c8;">⚙️ .env</span>
+                        <span style="height:2px;background:#4f84c8;flex:1;"></span>
+                    </div>
+                </div>
+                <div id="env-editor-wrap" style="overflow:hidden;background:#0d1117;border:1px solid #2a3441;border-top:none;border-radius:0 0 8px 8px;width:100%;"></div>
+            </div>
+            </div>
+            <div id="logs-footer-bar">
+                <div class="logs-filter-wrap">
+                        <input type="text" id="logs-filter" class="profile-bar-input" placeholder="Filtrar...">
+                        <button id="logs-filter-clear" class="logs-filter-clear-btn" style="display:none">×</button>
+                    </div><div class="logs-footer-controls">
+                    
+                    <label class="logs-autoscroll-wrap">
+                        <span class="logs-autoscroll-label">Hora</span>
+                        <label class="general-toggle">
+                            <input type="checkbox" id="logs-show-ts" checked="">
+                            <span class="general-toggle-slider"></span>
+                        </label>
+                    </label><label class="logs-autoscroll-wrap">
+                        <span class="logs-autoscroll-label">Auto</span>
+                        <label class="general-toggle">
+                            <input type="checkbox" id="logs-autoscroll" checked="">
+                            <span class="general-toggle-slider"></span>
+                        </label>
+                    </label><div class="logs-controls-sep"></div><button class="btn btn-normal" id="logs-clear">🗑 Limpiar</button>
+                </div>
+            </div>
+            <div id="terminal-area" style="display:none;flex:1;flex-direction:column;min-height:0;gap:0;">
+                <div id="terminal-xterm-wrap" style="flex:1;min-height:0;background:#0d1117;border:1px solid #2a3441;border-radius:8px 8px 0 0;overflow:hidden;padding:12px;"></div>
+                <div id="terminal-footer" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 12px;background:#1c2431;border:1px solid #2a3441;border-top:none;border-radius:0 0 8px 8px;flex-shrink:0;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <div id="terminal-container-wrap" style="display:none;align-items:center;gap:6px;">
+                            <label style="font-size:0.82em;color:#888;white-space:nowrap;">Contenedor</label>
+                            <select id="terminal-container-select" class="form-control" style="width:180px;padding:3px 8px;font-size:0.82em;"></select>
+                        </div>
+                    </div>
+                    <button class="btn btn-normal" id="terminal-shell-btn" style="padding:3px 10px;font-size:0.82em;">Reconectar con sh</button>
+                </div>
+            </div>
+            <div id="compose-footer-bar" style="display:none;">
+                <div class="logs-footer-controls" style="justify-content:flex-start;gap:8px;flex-wrap:wrap;">
+                    <button class="btn btn-normal" id="compose-btn-edit">
+                        <svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M471.6 21.7c-21.9-21.9-57.3-21.9-79.2 0L362.3 51.7l97.9 97.9 30.1-30.1c21.9-21.9 21.9-57.3 0-79.2L471.6 21.7zm-299.2 220c-6.1 6.1-10.8 13.6-13.5 21.9l-29.6 88.8c-2.9 8.6-.6 18.1 5.8 24.6s15.9 8.7 24.6 5.8l88.8-29.6c8.2-2.7 15.7-7.4 21.9-13.5L437.7 172.3 339.7 74.3 172.4 241.7zM96 64C43 64 0 107 0 160V416c0 53 43 96 96 96H352c53 0 96-43 96-96V320c0-17.7-14.3-32-32-32s-32 14.3-32 32v96c0 17.7-14.3 32-32 32H96c-17.7 0-32-14.3-32-32V160c0-17.7 14.3-32 32-32h96c17.7 0 32-14.3 32-32s-14.3-32-32-32H96z"/></svg>
+                        Editar
+                    </button>
+                    <button class="btn btn-normal" id="compose-btn-cancel" style="display:none;">✕ Cancelar</button>
+                    <button class="btn btn-normal" id="compose-btn-save" style="display:none;">
+                        <svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M64 32C28.7 32 0 60.7 0 96V416c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V173.3c0-17-6.7-33.3-18.7-45.3L352 50.7C340 38.7 323.7 32 306.7 32H64zm0 96c0-17.7 14.3-32 32-32H288c17.7 0 32 14.3 32 32v64c0 17.7-14.3 32-32 32H96c-17.7 0-32-14.3-32-32V128zM224 288a64 64 0 1 1 0 128 64 64 0 1 1 0-128z"/></svg>
+                        Guardar
+                    </button>
+                    <button class="btn btn-primary" id="compose-btn-deploy" style="display:none;">
+                        <svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M156.6 384.9L125.7 354c-8.5-8.5-11.5-20.8-7.7-32.2l22-63.9-44.9-44.9-9.9 7.4c-14.7 11-21.2 28.2-18.1 45.6l21.1 118.2c2.2 12.5 9.3 23.6 19.6 31.2l87.7 63.1c10.9 7.9 25.9 7.9 36.8 0l87.7-63.1c10.4-7.5 17.4-18.6 19.6-31.2l21.1-118.2c3.1-17.4-3.4-34.6-18.1-45.6l-9.9-7.4-44.9 44.9 22 63.9c3.8 11.4.8 23.7-7.7 32.2L355.4 384.9l-99.4 71.6-99.4-71.6zM416 32L32 32C14.3 32 0 46.3 0 64v128c0 17.7 14.3 32 32 32h384c17.7 0 32-14.3 32-32V64c0-17.7-14.3-32-32-32zM64 112a16 16 0 1 1 32 0 16 16 0 1 1 -32 0z"/></svg>
+                        Desplegar
+                    </button>
+                    <span class="compose-running-warning" style="display:none;color:#ffa726;font-size:0.85em;align-self:center;"></span>
+                </div>
+                <div style="display:flex;gap:8px;">
+                    <button class="btn btn-normal" id="compose-btn-pause">
+                        <svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" style="width:0.75em;height:1em;margin-right:5px;"><path fill="currentColor" d="M0 128C0 92.7 28.7 64 64 64H320c35.3 0 64 28.7 64 64V384c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V128z"/></svg>
+                        Desactivar
+                    </button>
+                    <button class="btn btn-danger" id="compose-btn-delete">
+                        <svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" style="width:0.75em;height:1em;margin-right:5px;"><path fill="currentColor" d="M135.2 17.7C140.6 6.8 151.7 0 163.8 0H284.2c12.1 0 23.2 6.8 28.6 17.7L320 32h96c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 96 0 81.7 0 64S14.3 32 32 32h96l7.2-14.3zM32 128H416V448c0 35.3-28.7 64-64 64H96c-35.3 0-64-28.7-64-64V128zm96 64c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16zm96 0c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16zm96 0c-8.8 0-16 7.2-16 16V432c0 8.8 7.2 16 16 16s16-7.2 16-16V208c0-8.8-7.2-16-16-16z"/></svg>
+                        Eliminar
+                    </button>
+                </div>
+            </div>
+        `;
+
+        const filterInput  = panel.querySelector('#logs-filter');
+        const filterClear  = panel.querySelector('#logs-filter-clear');
+        const autoToggle   = panel.querySelector('#logs-autoscroll');
+        const clearBtn     = panel.querySelector('#logs-clear');
+        const logsArea     = panel.querySelector('#logs-area');
+        const btnBack      = panel.querySelector('#logs-btn-back');
+        const btnStartStop = panel.querySelector('#logs-btn-startstop');
+        const cmpBtnEdit   = panel.querySelector('#compose-btn-edit');
+
+        btnBack.addEventListener('click', () => {
+            deactivateLogsMode();
+        });
+        const btnRestart   = panel.querySelector('#logs-btn-restart');
+        // Botones start/stop y restart via socket de Dockge
+        const getSocket = () => document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+        const ep = (endpoint && endpoint.toLowerCase() !== 'actual') ? endpoint : '';
+
+        let stackIsRunning = false; // se actualiza con el polling
+
+        const svgRestartBtn = `<svg class="svg-inline--fa fa-rotate-right" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M463.5 224H472c13.3 0 24-10.7 24-24V72c0-9.7-5.8-18.5-14.8-22.2s-19.3-1.7-26.2 5.2L413.4 96.6c-87.6-86.5-228.7-86.2-315.8 1c-87.5 87.5-87.5 229.3 0 316.8s229.3 87.5 316.8 0c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0c-62.5 62.5-163.8 62.5-226.3 0s-62.5-163.8 0-226.3c62.2-62.2 162.7-62.5 225.3-1L327 183c-6.9 6.9-8.9 17.2-5.2 26.2s12.5 14.8 22.2 14.8H463.5z"/></svg> Reiniciar`;
+
+        const waitForStateChange = (targetRunning) => {
+            const socket = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            if (!socket) return;
+            const check = setInterval(() => {
+                socket.emit('agent', ep, 'serviceStatusList', stackName, (res) => {
+                    if (!res?.ok || !res.serviceStatusList) return;
+                    const services = Object.entries(res.serviceStatusList);
+                    const anyRunning = services.some(([, s]) =>
+                        s.state === 'running' || s.state === 'healthy'
+                    );
+                    const allStopped = services.length === 0 || services.every(([, s]) =>
+                        s.state === 'exited' || s.state === 'stopped'
+                    );
+                    // Si el estado ya coincide con lo esperado, reanudar
+                    if ((targetRunning && anyRunning) || (!targetRunning && allStopped)) {
+                        clearInterval(check);
+                        actionInProgress = false;
+                        setButtonsDisabled(false);
+                        if (btnRestart) btnRestart.innerHTML = svgRestartBtn;
+                        renderBadges(services);
+                        // Si vuelve a running, mostrar btnPause y reanudar polling si estaba parado
+                        if (targetRunning && anyRunning) {
+                            
+                            if (!logsStatusInterval) startStatusPolling();
+                            // Refrescar puertos tras deploy exitoso
+                            fetch(`/api/stack-containers/${encodeURIComponent(stackName)}${epParam}`)
+                                .then(r => r.json())
+                                .then(d => {
+                                    if (d.containers?.length > 0) {
+                                        window._dockme_ports = {};
+                                        window._dockme_containers = {};
+                                        d.containers.forEach(c => {
+                                            const key = c.service || c.name;
+                                            window._dockme_ports[key] = c.ports || [];
+                                            window._dockme_containers[key] = c.name;
+                                        });
+                                        renderBadges(lastKnownServices);
+                                    }
+                                }).catch(() => {});
+                            // Reconectar logs si el tab activo es logs
+                            if (logsActiveTab === 'logs') {
+                                if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+                                const sseEpParam = ep ? `&endpoint=${encodeURIComponent(endpoint)}` : '';
+                                logsEventSource = new EventSource(`/api/logs/${encodeURIComponent(stackName)}?tail=50${sseEpParam}`);
+                                logsEventSource.onmessage = (e) => {
+                                    const line = buildLine(e.data, filterInput.value);
+                                    logsArea.appendChild(line);
+                                    if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+                                };
+                                logsEventSource.onerror = () => {
+                                    const errLine = document.createElement('div');
+                                    errLine.className = 'logs-error-line';
+                                    errLine.dataset.raw = '';
+                                    errLine.textContent = '\u26A0\uFE0F Conexi\u00F3n perdida con el servidor de logs';
+                                    logsArea.appendChild(errLine);
+                                    if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+                                };
+                            }
+                        }
+                    }
+                });
+            }, 2000);
+            // Timeout de seguridad: 2 minutos
+            setTimeout(() => {
+                clearInterval(check);
+                actionInProgress = false;
+                setButtonsDisabled(false);
+                if (btnRestart) btnRestart.innerHTML = svgRestartBtn;
+            }, 2 * 60 * 1000);
+        };
+
+        btnStartStop.addEventListener('click', () => {
+            const socket = getSocket();
+            if (!socket) return;
+            const action = stackIsRunning ? 'stopStack' : 'startStack';
+            const forceState = stackIsRunning ? 'stopping' : 'starting';
+            const targetRunning = !stackIsRunning;
+            actionInProgress = true;
+            setButtonsDisabled(true);
+            btnStartStop.innerHTML = svgSpin;
+            renderBadges(lastKnownServices, forceState);
+            socket.emit('agent', ep, action, stackName, () => {});
+            waitForStateChange(targetRunning);
+        });
+
+        btnRestart.addEventListener('click', () => {
+            const socket = getSocket();
+            if (!socket) return;
+            actionInProgress = true;
+            setButtonsDisabled(true);
+            btnRestart.innerHTML = svgSpin;
+            renderBadges(lastKnownServices, 'restarting');
+            socket.emit('agent', ep, 'restartStack', stackName, () => {});
+            waitForStateChange(true);
+        });
+
+        // Número de contenedores para decidir si mostrar el nombre
+        let multiContainer = false;
+
+        // Leer estado del stack desde el cp-circle de la lista de Dockge
+        const getDockgeStackColor = () => {
+            const composePath = endpoint && endpoint.toLowerCase() !== 'actual'
+                ? `/compose/${stackName}/${endpoint}`
+                : `/compose/${stackName}`;
+            const item = document.querySelector(`a.item[href="${composePath}"]`);
+            return item?.querySelector('.cp-circle')?.dataset.colorEstado || null;
+        };
+
+        const epParam = (endpoint && endpoint.toLowerCase() !== 'actual')
+            ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+        fetch(`/api/stack-containers/${encodeURIComponent(stackName)}${epParam}`)
+            .then(r => r.json())
+            .then(d => {
+                multiContainer = (d.containers?.length || 0) > 1;
+                if (d.containers?.length > 0) {
+                    lastKnownServices = d.containers.map(c => [c.service || c.name, { state: c.state || 'exited' }]);
+                    // Guardar puertos y container name por nombre de servicio
+                    window._dockme_ports = {};
+                    window._dockme_containers = {};
+                    d.containers.forEach(c => {
+                        const key = c.service || c.name;
+                        window._dockme_ports[key] = c.ports || [];
+                        window._dockme_containers[key] = c.name;
+                    });
+                    // Renderizar badges iniciales con estado real de todos los contenedores
+                    renderBadges(lastKnownServices);
+                } else {
+                    stackIsRunning = false;
+                    if (btnStartStop) btnStartStop.innerHTML = svgPlay;
+                    // Distinguir inactivo (gris) de parado (rojo)
+                    const color = getDockgeStackColor();
+                    if (color === 'gray') {
+                        badgesEl.innerHTML = `<span class="badge bg-secondary" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Inactivo</span>`;
+                        
+                    } else {
+                        // Stack parado (rojo) — mostrar badge exited
+                        badgesEl.innerHTML = `<span class="badge bg-danger" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Stack detenido</span>`;
+                    }
+                }
+            })
+            .catch(() => { multiContainer = true; });
+
+        // Escapar HTML
+        const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+        // Resaltar término en texto ya escapado
+        const highlight = (text, term) => {
+            if (!term) return text;
+            const re = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'), 'gi');
+            return text.replace(re, m => `<span class="logs-highlight">${m}</span>`);
+        };
+
+        // Crear línea DOM a partir de raw SSE
+        const buildLine = (raw, filterVal) => {
+            const line = document.createElement('div');
+            line.className = 'logs-line';
+            line.dataset.raw = raw;
+
+            const match = raw.match(/^(\S+)\s+\|\s+(\S+Z)\s+([\s\S]*)$/);
+            if (match) {
+                const container = match[1];
+                const tsRaw     = match[2];
+                const msg       = match[3];
+                const d  = new Date(tsRaw);
+                const ts = isNaN(d) ? tsRaw : d.toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+
+                const escapedMsg = esc(msg);
+                const highlightedMsg = highlight(escapedMsg, filterVal);
+                // Siempre generamos logs-cn — CSS decide si mostrarlo
+                const cnClass = multiContainer ? 'logs-cn' : 'logs-cn logs-cn-single';
+                if (!multiContainer) line.classList.add('logs-single-cn');
+                line.innerHTML =
+                    `<span class="logs-ts">${ts}&nbsp;</span>` +
+                    `<span class="${cnClass}">${esc(container)}&nbsp;</span>` +
+                    `<span class="logs-msg">${highlightedMsg}</span>`;
+            } else {
+                line.innerHTML = `<span class="logs-msg">${highlight(esc(raw), filterVal)}</span>`;
+            }
+
+            if (filterVal && !raw.toLowerCase().includes(filterVal.toLowerCase())) {
+                line.style.display = 'none';
+            }
+            return line;
+        };
+
+        // Re-aplicar filtro + highlight a todas las líneas existentes
+        const applyFilter = (val) => {
+            filterClear.style.display = val ? '' : 'none';
+            logsArea.querySelectorAll('.logs-line').forEach(line => {
+                const raw = line.dataset.raw || '';
+                const match = raw.match(/^(\S+)\s+\|\s+(\S+Z)\s+([\s\S]*)$/);
+                if (match) {
+                    const container = match[1];
+                    const tsRaw     = match[2];
+                    const msg       = match[3];
+                    const d  = new Date(tsRaw);
+                    const ts = isNaN(d) ? tsRaw : d.toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+                    const cnClass = line.classList.contains('logs-single-cn') ? 'logs-cn logs-cn-single' : 'logs-cn';
+                    line.innerHTML =
+                        `<span class="logs-ts">${ts}&nbsp;</span>` +
+                        `<span class="${cnClass}">${esc(container)}&nbsp;</span>` +
+                        `<span class="logs-msg">${highlight(esc(msg), val)}</span>`;
+                } else {
+                    line.innerHTML = `<span class="logs-msg">${highlight(esc(raw), val)}</span>`;
+                }
+                line.style.display = (val && !raw.toLowerCase().includes(val.toLowerCase())) ? 'none' : '';
+            });
+        };
+
+        autoToggle.addEventListener('change', () => { logsAutoScroll = autoToggle.checked; });
+
+        const tsToggle = panel.querySelector('#logs-show-ts');
+        tsToggle.addEventListener('change', () => {
+            document.body.classList.toggle('logs-hide-ts', !tsToggle.checked);
+        });
+
+        const expandBtn = panel.querySelector('#logs-expand-btn');
+        const svgExpand  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="10,3 5,8 10,13"/><polyline points="14,3 9,8 14,13"/></svg>`;
+        const svgCollapse = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6,3 11,8 6,13"/><polyline points="2,3 7,8 2,13"/></svg>`;
+        expandBtn.addEventListener('click', () => {
+            const expanded = document.body.classList.toggle('logs-expanded');
+            expandBtn.title = expanded ? 'Contraer' : 'Expandir';
+            expandBtn.innerHTML = expanded ? svgCollapse : svgExpand;
+        });
+
+        filterInput.addEventListener('input', () => applyFilter(filterInput.value));
+
+        filterClear.addEventListener('click', () => {
+            filterInput.value = '';
+            applyFilter('');
+        });
+
+        clearBtn.addEventListener('click', () => { logsArea.innerHTML = ''; });
+
+        // ── Tabs ──
+        const composeArea        = panel.querySelector('#compose-area');
+        const composeEditorWrap  = panel.querySelector('#compose-editor-wrap');
+        const envEditorWrap      = panel.querySelector('#env-editor-wrap');
+        const resizeHandle       = panel.querySelector('#compose-resize-handle');
+        const logsFooter         = panel.querySelector('#logs-footer-bar');
+        const composeFooter      = panel.querySelector('#compose-footer-bar');
+        const btnDeploy          = panel.querySelector('#compose-btn-deploy');
+        const btnSave            = panel.querySelector('#compose-btn-save');
+        const btnCancel          = panel.querySelector('#compose-btn-cancel');
+        const btnPause           = panel.querySelector('#compose-btn-pause');
+        const btnDelete          = panel.querySelector('#compose-btn-delete');
+
+        let composeContent  = '';
+        let envContent      = '';
+        let composeEditing  = false;
+        let cmCompose       = null;
+        let cmEnv           = null;
+
+        const LINE_H = 21; // altura aproximada por línea en CodeMirror
+        const ENV_MIN_LINES = 1;
+        const ENV_MAX_LINES = 8;
+
+        const applySplit = () => {
+            const totalH = composeArea.clientHeight;
+            const handleH = 10;
+            const envLines = Math.min(ENV_MAX_LINES, Math.max(ENV_MIN_LINES, (envContent || '').split('\n').length));
+            const envH = envLines * LINE_H + 24; // padding
+            const compH = Math.max(60, totalH - handleH - envH);
+            composeEditorWrap.style.height = compH + 'px';
+            envEditorWrap.style.height     = envH + 'px';
+            if (cmCompose?.setSize) cmCompose.setSize('100%', compH);
+            if (cmEnv?.setSize)     cmEnv.setSize('100%', envH);
+        };
+
+        // Drag resize manual
+        resizeHandle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const startY   = e.clientY;
+            const startEnvH = envEditorWrap.clientHeight;
+            const startCompH = composeEditorWrap.clientHeight;
+            const onMove = (ev) => {
+                const delta = startY - ev.clientY; // arrastrar arriba = env más grande
+                const newEnvH  = Math.max(LINE_H + 8, Math.min(startEnvH + delta, startEnvH + startCompH - 60));
+                const newCompH = startCompH + startEnvH - newEnvH;
+                composeEditorWrap.style.height = newCompH + 'px';
+                envEditorWrap.style.height     = newEnvH + 'px';
+                if (cmCompose?.setSize) cmCompose.setSize('100%', newCompH);
+                if (cmEnv?.setSize)     cmEnv.setSize('100%', newEnvH);
+            };
+            const onUp = () => {
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+
+        const epParam2 = (endpoint && endpoint.toLowerCase() !== 'actual')
+            ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+
+        const makeEditor = (container, content, editable, mode) => {
+            container.innerHTML = '';
+            let ed;
+            if (window.CodeMirror) {
+                const options = {
+                    value: content,
+                    mode: mode || null,
+                    theme: 'dracula',
+                    lineNumbers: true,
+                    readOnly: editable ? false : true,
+                    lineWrapping: true,
+                    tabSize: 2,
+                    indentWithTabs: false,
+                    extraKeys: { Tab: (cm) => cm.execCommand('insertSoftTab') },
+                };
+                // Activar lint solo en yaml y en modo edición
+                if (mode === 'yaml' && editable && window.jsyaml) {
+                    options.lint = true;
+                    options.gutters = ['CodeMirror-lint-markers'];
+                }
+                ed = window.CodeMirror(container, options);
+                // Validación en tiempo real para yaml
+                if (mode === 'yaml' && window.jsyaml) {
+                    ed.on('change', (cm, change) => {
+                        // Sanitizar tabs al pegar o escribir
+                        const val = cm.getValue();
+                        if (val.includes('\t')) {
+                            const cursor = cm.getCursor();
+                            cm.setValue(val.replace(/\t/g, '  '));
+                            cm.setCursor(cursor);
+                        }
+                        clearTimeout(ed._validateTimer);
+                        ed._validateTimer = setTimeout(() => {
+                            const warningEl = composeFooter?.querySelector('.compose-running-warning');
+                            try {
+                                window.jsyaml.load(ed.getValue());
+                                container.style.borderColor = '#2a3441';
+                                if (btnDeploy) btnDeploy.disabled = false;
+                                if (btnSave) btnSave.disabled = false;
+                                if (warningEl) warningEl.style.display = 'none';
+                            } catch (e) {
+                                container.style.borderColor = '#ef5350';
+                                if (btnDeploy) btnDeploy.disabled = true;
+                                if (btnSave) btnSave.disabled = true;
+                                if (warningEl) {
+                                    warningEl.textContent = `⚠️ ${e.reason || e.message}`;
+                                    warningEl.style.display = '';
+                                }
+                            }
+                        }, 400);
+                    });
+                }
+            } else {
+                const ta = document.createElement('textarea');
+                ta.value = content;
+                ta.readOnly = !editable;
+                ta.style.cssText = `width:100%;height:100%;background:transparent;border:none;outline:none;resize:none;padding:12px;font-family:"Courier New",monospace;font-size:0.85em;line-height:1.5;color:${editable ? '#ccc' : '#888'};`;
+                container.appendChild(ta);
+                ed = ta;
+            }
+            container.style.opacity = editable ? '1' : '0.75';
+            return ed;
+        };
+
+        const loadCompose = async () => {
+            composeEditorWrap.innerHTML = '<p style="color:#666;padding:1rem;">Cargando...</p>';
+            if (!window.CodeMirror) {
+                await new Promise((resolve) => {
+                    const link = document.createElement('link');
+                    link.rel = 'stylesheet';
+                    link.href = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css';
+                    document.head.appendChild(link);
+                    const linkTheme = document.createElement('link');
+                    linkTheme.rel = 'stylesheet';
+                    linkTheme.href = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css';
+                    document.head.appendChild(linkTheme);
+                    const linkLint = document.createElement('link');
+                    linkLint.rel = 'stylesheet';
+                    linkLint.href = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.css';
+                    document.head.appendChild(linkLint);
+                    const script = document.createElement('script');
+                    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js';
+                    script.onload = () => {
+                        const scriptYaml = document.createElement('script');
+                        scriptYaml.src = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js';
+                        scriptYaml.onload = () => {
+                            const scriptShell = document.createElement('script');
+                            scriptShell.src = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js';
+                            scriptShell.onload = () => {
+                                // Cargar js-yaml y addon lint en paralelo
+                                let loaded = 0;
+                                const done = () => { if (++loaded === 2) resolve(); };
+                                const scriptJsYaml = document.createElement('script');
+                                scriptJsYaml.src = 'https://cdnjs.cloudflare.com/ajax/libs/js-yaml/4.1.0/js-yaml.min.js';
+                                scriptJsYaml.onload = done;
+                                document.head.appendChild(scriptJsYaml);
+                                const scriptLint = document.createElement('script');
+                                scriptLint.src = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/lint/lint.min.js';
+                                scriptLint.onload = () => {
+                                    // Registrar linter YAML
+                                    if (window.CodeMirror && window.jsyaml) {
+                                        window.CodeMirror.registerHelper('lint', 'yaml', (text) => {
+                                            const found = [];
+                                            try { window.jsyaml.load(text); }
+                                            catch (e) {
+                                                const mark = e.mark;
+                                                found.push({
+                                                    from: window.CodeMirror.Pos(mark ? mark.line : 0, mark ? mark.column : 0),
+                                                    to:   window.CodeMirror.Pos(mark ? mark.line : 0, mark ? mark.column + 1 : 1),
+                                                    message: e.reason || e.message,
+                                                    severity: 'error'
+                                                });
+                                            }
+                                            return found;
+                                        });
+                                    }
+                                    done();
+                                };
+                                document.head.appendChild(scriptLint);
+                            };
+                            document.head.appendChild(scriptShell);
+                        };
+                        document.head.appendChild(scriptYaml);
+                    };
+                    document.head.appendChild(script);
+                });
+            }
+            // Registrar linter si js-yaml ya está cargado pero el linter no
+            if (window.CodeMirror && window.jsyaml && !window.CodeMirror.helpers?.lint?.yaml) {
+                window.CodeMirror.registerHelper('lint', 'yaml', (text) => {
+                    const found = [];
+                    try { window.jsyaml.load(text); }
+                    catch (e) {
+                        const mark = e.mark;
+                        found.push({
+                            from: window.CodeMirror.Pos(mark ? mark.line : 0, mark ? mark.column : 0),
+                            to:   window.CodeMirror.Pos(mark ? mark.line : 0, mark ? mark.column + 1 : 1),
+                            message: e.reason || e.message,
+                            severity: 'error'
+                        });
+                    }
+                    return found;
+                });
+            }
+            try {
+                const r = await fetch(`/api/compose/${encodeURIComponent(stackName)}${epParam2}`);
+                const d = await r.json();
+                if (!d.success) throw new Error(d.message);
+                composeContent = d.content;
+                envContent     = d.env || '';
+                cmCompose = makeEditor(composeEditorWrap, composeContent, false, 'yaml');
+                cmEnv     = makeEditor(envEditorWrap, envContent, false, 'shell');
+                setTimeout(applySplit, 50);
+            } catch (e) {
+                composeEditorWrap.innerHTML = `<p style="color:#e57373;padding:1rem;">Error: ${e.message}</p>`;
+            }
+        };
+
+        const getCmValue = (ed) => {
+            const val = ed?.getValue ? ed.getValue() : (ed?.value || '');
+            return val.replace(/\t/g, '  ');
+        };
+
+        const setEditMode = (editing) => {
+            composeEditing = editing;
+            cmpBtnEdit.style.display  = editing ? 'none' : '';
+            btnDeploy.style.display   = editing ? '' : 'none';
+            btnSave.style.display     = editing ? '' : 'none';
+            btnCancel.style.display   = editing ? '' : 'none';
+            btnPause.style.display    = editing ? 'none' : '';
+            btnDelete.style.display   = editing ? 'none' : '';
+            [[cmCompose, composeEditorWrap], [cmEnv, envEditorWrap]].forEach(([ed, el]) => {
+                if (window.CodeMirror && ed?.setOption) {
+                    ed.setOption('readOnly', editing ? false : 'nocursor');
+                } else if (ed) {
+                    ed.readOnly = !editing;
+                    ed.style.color = editing ? '#ccc' : '#888';
+                }
+                if (el) el.style.opacity = editing ? '1' : '0.75';
+            });
+            if (editing) {
+                // Recrear editor de compose con lint activado
+                if (window.CodeMirror && cmCompose?.setOption) {
+                    cmCompose.setOption('readOnly', false);
+                    if (window.jsyaml) {
+                        cmCompose.setOption('lint', true);
+                        cmCompose.setOption('gutters', ['CodeMirror-lint-markers']);
+                    }
+                }
+                if (cmCompose?.focus) cmCompose.focus();
+            } else {
+                composeEditorWrap.style.borderColor = '#2a3441';
+                if (btnDeploy) btnDeploy.disabled = false;
+                if (btnSave) btnSave.disabled = false;
+                const warningEl = composeFooter.querySelector('.compose-running-warning');
+                if (warningEl) warningEl.style.display = 'none';
+                setTimeout(applySplit, 50);
+            }
+        };
+
+        // Expandir env a 8 líneas al hacer click en él en modo edición
+        envEditorWrap.addEventListener('click', () => {
+            if (!composeEditing) return;
+            const envH = 8 * LINE_H + 24;
+            const totalInner = composeArea.clientHeight;
+            const compH = Math.max(60, totalInner - 10 - envH);
+            composeEditorWrap.style.height = compH + 'px';
+            envEditorWrap.style.height     = envH + 'px';
+            if (cmCompose?.setSize) cmCompose.setSize('100%', compH);
+            if (cmEnv?.setSize)     cmEnv.setSize('100%', envH);
+        });
+
+        btnSave.addEventListener('click', async () => {
+            const newCompose = getCmValue(cmCompose);
+            const newEnv     = getCmValue(cmEnv);
+            try {
+                const r = await fetch(`/api/compose/${encodeURIComponent(stackName)}${epParam2}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: newCompose, env: newEnv })
+                });
+                const d = await r.json();
+                if (!d.success) throw new Error(d.message);
+                composeContent = newCompose;
+                envContent     = newEnv;
+                setEditMode(false);
+            } catch (e) {
+                alert(`Error guardando: ${e.message}`);
+            }
+        });
+
+        // ── Terminal ──
+        const terminalWrap      = panel.querySelector('#terminal-xterm-wrap');
+        const termContainerWrap = panel.querySelector('#terminal-container-wrap');
+        const termContainerSel  = panel.querySelector('#terminal-container-select');
+        const termShellBtn      = panel.querySelector('#terminal-shell-btn');
+
+        let currentTermId = null;
+        let currentShell  = 'bash';
+
+        termShellBtn.addEventListener('click', () => {
+            currentShell = 'sh';
+            startXterm();
+        });
+
+        const getTermId = () => {
+            const containerName = termContainerSel.value || Object.keys(window._dockme_containers || {})[0] || stackName;
+            return `container-exec--${containerName}`;
+        };
+
+        const initTerminal = async () => {
+            currentShell = 'bash';
+            // Cargar xterm.js si no está
+            if (!window.Terminal) {
+                await new Promise((resolve, reject) => {
+                    const link = document.createElement('link');
+                    link.rel = 'stylesheet';
+                    link.href = '/api/xterm.css';
+                    document.head.appendChild(link);
+                    const script = document.createElement('script');
+                    script.src = '/api/xterm.js';
+                    script.onload = resolve;
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
+            }
+
+            // Refrescar contenedores del stack actual antes de poblar el selector
+            const epParam = (endpoint && endpoint.toLowerCase() !== 'actual')
+                ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+            try {
+                const r = await fetch(`/api/stack-containers/${encodeURIComponent(stackName)}${epParam}`);
+                const d = await r.json();
+                if (d.containers?.length > 0) {
+                    window._dockme_ports = {};
+                    window._dockme_containers = {};
+                    d.containers.forEach(c => {
+                        const key = c.service || c.name;
+                        window._dockme_ports[key] = c.ports || [];
+                        window._dockme_containers[key] = c.name;
+                    });
+                }
+            } catch (_) {}
+
+            // Poblar selector de contenedores
+            const containers = Object.keys(window._dockme_containers || {});
+            if (containers.length > 1) {
+                termContainerWrap.style.display = 'flex';
+                termContainerSel.innerHTML = containers.map(s =>
+                    `<option value="${s}">${s}</option>`
+                ).join('');
+            } else {
+                termContainerWrap.style.display = 'none';
+            }
+
+            startXterm();
+        };
+
+        const startXterm = () => {
+            // Limpiar instancia anterior
+            if (xtermInstance) { xtermInstance.dispose(); xtermInstance = null; }
+            if (window._dockme_termResizeObs) { window._dockme_termResizeObs.disconnect(); window._dockme_termResizeObs = null; }
+            terminalWrap.innerHTML = '';
+
+            const shell = currentShell;
+            const serviceName = termContainerSel.value || Object.keys(window._dockme_containers || {})[0] || stackName;
+            const containerName = (window._dockme_containers || {})[serviceName] || serviceName;
+            currentTermId = ep
+                ? `container-exec-${ep}-${stackName}-${serviceName}-0`
+                : `container-exec--${stackName}-${serviceName}-0`;
+
+            const sock = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            if (!sock) return;
+
+            const term = new Terminal({
+                theme: { background: '#0d1117', foreground: '#ccc', cursor: '#4f84c8' },
+                fontFamily: '"Courier New", monospace',
+                fontSize: 13,
+                cursorBlink: true,
+                convertEol: true,
+            });
+            xtermInstance = term;
+            term.open(terminalWrap);
+
+            // Calcular dimensiones reales basadas en el tamaño de celda de xterm
+            // Medir tamaño de celda una vez tras renderizar
+            let cellW = 0;
+            let cellH = 0;
+            const measureCell = () => {
+                const rows = terminalWrap.querySelectorAll('.xterm-rows > div');
+                for (const row of rows) {
+                    const spans = row.querySelectorAll('span');
+                    for (const span of spans) {
+                        const len = span.textContent.length;
+                        if (len > 0) {
+                            const w = span.getBoundingClientRect().width / len;
+                            if (w > 3) { cellW = w; break; }
+                        }
+                    }
+                    if (cellW) break;
+                }
+                const screenEl = terminalWrap.querySelector('.xterm-screen');
+                if (screenEl && term.rows > 0) {
+                    const h = screenEl.getBoundingClientRect().height / term.rows;
+                    if (h > 0) cellH = h;
+                }
+            };
+
+            const fitTerminal = () => {
+                if (terminalWrap.clientWidth < 50) return; // oculto o sin dimensiones válidas
+                if (!cellW || !cellH) measureCell();
+                if (!cellW || !cellH) return;
+                const padding = 40;
+                const cols = Math.max(2, Math.floor((terminalWrap.clientWidth - padding) / cellW));
+                const rows = Math.max(1, Math.floor(terminalWrap.clientHeight / cellH));
+                if (term.cols !== cols || term.rows !== rows) {
+                    term.resize(cols, rows);
+                }
+            };
+            setTimeout(() => {
+                const tryFit = (attempts) => {
+                    if (terminalWrap.clientWidth < 50) {
+                        if (attempts > 0) setTimeout(() => tryFit(attempts - 1), 80);
+                        return;
+                    }
+                    measureCell();
+                    if (cellW && cellH) {
+                        fitTerminal();
+                    } else if (attempts > 0) {
+                        setTimeout(() => tryFit(attempts - 1), 80);
+                    }
+                };
+                tryFit(10);
+            }, 50);
+
+            // 1. Salir del terminal anterior
+            sock.emit('agent', ep, 'leaveCombinedTerminal', stackName, () => {});
+
+            // 2. Crear el terminal interactivo
+            sock.emit('agent', ep, 'interactiveTerminal', stackName, serviceName, shell, () => {});
+
+            // 3. Unirse y obtener buffer previo via callback
+            sock.emit('agent', ep, 'terminalJoin', currentTermId, (res) => {
+                if (res?.buffer) term.write(res.buffer);
+            });
+
+            // Recibir output
+            if (startXterm._agentListener) sock.off('agent', startXterm._agentListener);
+            const onAgent = function() {
+                const args = Array.from(arguments);
+                if (args[0] === 'terminalWrite' && args[1] === currentTermId && args[2]) {
+                    term.write(args[2]);
+                }
+            };
+            startXterm._agentListener = onAgent;
+            sock.on('agent', onAgent);
+
+            // Enviar input
+            term.onData(data => sock.emit('agent', ep, 'terminalInput', currentTermId, data));
+
+            // Resize al cambiar tamaño
+            const resizeObs = new ResizeObserver(() => {
+                fitTerminal();
+                const rows = term.rows;
+                const cols = term.cols;
+                if (cols > 0 && rows > 0) {
+                    sock.emit('agent', ep, 'terminalResize', currentTermId, rows, cols);
+                }
+            });
+            resizeObs.observe(terminalWrap);
+            window._dockme_termResizeObs = resizeObs;
+        };
+
+        termContainerSel.addEventListener('change', () => { if (xtermInstance) startXterm(); });
+
+        cmpBtnEdit.addEventListener('click', () => setEditMode(true));
+
+        btnCancel.addEventListener('click', () => {
+            cmCompose = makeEditor(composeEditorWrap, composeContent, false, 'yaml');
+            cmEnv     = makeEditor(envEditorWrap, envContent, false, 'shell');
+            setTimeout(applySplit, 50);
+            setEditMode(false);
+        });
+
+        btnDeploy.addEventListener('click', async () => {
+            const newCompose = getCmValue(cmCompose);
+            const newEnv     = getCmValue(cmEnv);
+            const prevCompose = composeContent;
+            const prevEnv     = envContent;
+
+            // Si el compose usa imagen de dockme, usar el mecanismo especial de actualización
+            const isDockme = /image:\s*[^\s]*\/dockme:|image:\s*dockme:/i.test(composeContent || newCompose);
+            if (isDockme) {
+                // Guardar primero
+                try {
+                    const r = await fetch(`/api/compose/${encodeURIComponent(stackName)}${epParam2}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ content: newCompose, env: newEnv })
+                    });
+                    const d = await r.json();
+                    if (!d.success) throw new Error(d.message);
+                    composeContent = newCompose;
+                    envContent = newEnv;
+                    setEditMode(false);
+                } catch (e) {
+                    alert(`Error guardando: ${e.message}`);
+                    return;
+                }
+                EventHandlers.updateDockme(endpoint || 'Actual');
+                return;
+            }
+
+            // Guardar primero
+            try {
+                const r = await fetch(`/api/compose/${encodeURIComponent(stackName)}${epParam2}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: newCompose, env: newEnv })
+                });
+                const d = await r.json();
+                if (!d.success) throw new Error(d.message);
+                // No salimos del modo edición aún — esperamos confirmación del deploy
+            } catch (e) {
+                alert(`Error guardando: ${e.message}`);
+                return;
+            }
+
+            // Mostrar badge "Desplegando" mientras dura el deploy
+            actionInProgress = true;
+            setButtonsDisabled(true);
+            renderBadges(lastKnownServices, 'deploying');
+
+            // Cambiar al tab de logs
+            logsActiveTab = 'logs';
+            panel.querySelectorAll('.logs-tab').forEach(t => t.classList.remove('active'));
+            panel.querySelector('.logs-tab[data-tab="logs"]')?.classList.add('active');
+            logsArea.style.display     = '';
+            composeArea.style.display  = 'none';
+            logsFooter.style.display   = '';
+            composeFooter.style.display = 'none';
+
+            if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+            logsArea.innerHTML = '';
+
+            const deployUrl = `/api/deploy/${encodeURIComponent(stackName)}${epParam2 ? `?endpoint=${encodeURIComponent(endpoint)}` : ''}`;
+            const deploySource = new EventSource(deployUrl);
+            deploySource.onmessage = (e) => {
+                const raw = e.data;
+                const line = document.createElement('div');
+                line.className = 'logs-line';
+                line.dataset.raw = raw;
+                const lower = raw.toLowerCase();
+                let color = '#888';
+                if (lower.includes('started') || lower.includes('running') || lower.includes('✅')) color = '#4caf50';
+                else if (lower.includes('starting') || lower.includes('recreat') || lower.includes('pulling') || lower.includes('pulled')) color = '#4f84c8';
+                else if (lower.includes('stopping') || lower.includes('stopped') || lower.includes('warning')) color = '#ffa726';
+                else if (lower.includes('error') || lower.includes('❌')) color = '#ef5350';
+                line.innerHTML = `<span class="logs-msg" style="color:${color};">${raw.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+                logsArea.appendChild(line);
+                if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+
+                if (raw.includes('✅') || raw.includes('❌')) {
+                    deploySource.close();
+                    actionInProgress = false;
+                    setButtonsDisabled(false);
+                    if (raw.includes('❌')) {
+                        // Deploy fallido — restaurar compose anterior en disco
+                        fetch(`/api/compose/${encodeURIComponent(stackName)}${epParam2}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ content: prevCompose, env: prevEnv })
+                        }).catch(() => {});
+                        // Restaurar editores
+                        composeContent = prevCompose;
+                        envContent = prevEnv;
+                        // No reconectar logs — el stack sigue con su estado anterior
+                        renderBadges(lastKnownServices);
+                        if (!logsStatusInterval) startStatusPolling();
+                    } else {
+                        // Deploy exitoso — actualizar contenido guardado y salir del modo edición
+                        composeContent = newCompose;
+                        envContent = newEnv;
+                        setEditMode(false);
+                        waitForStateChange(true);
+                    }
+                }
+            };
+            deploySource.onerror = () => {
+                deploySource.close();
+                actionInProgress = false;
+                setButtonsDisabled(false);
+                renderBadges(lastKnownServices);
+                if (!logsStatusInterval) startStatusPolling();
+            };
+        });
+
+        btnPause.addEventListener('click', () => {
+            if (stackIsRunning) {
+                const msg = composeFooter.querySelector('.compose-running-warning');
+                if (msg) { msg.textContent = '⚠️ El servicio debe estar parado antes de realizar esta acción'; msg.style.display = ''; setTimeout(() => msg.style.display = 'none', 3000); }
+                return;
+            }
+            const socket = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            const ep = (endpoint && endpoint.toLowerCase() !== 'actual') ? endpoint : '';
+            if (socket) {
+                socket.emit('agent', ep, 'downStack', stackName, () => {});
+                // Limpiar updates de este stack
+                const hostEntry = State.updatesDataGlobal?.find(h => h.endpoint?.toLowerCase() === (endpoint || 'Actual').toLowerCase());
+                if (hostEntry?.hostname) {
+                    API.removeUpdate(stackName, hostEntry.hostname)
+                        .then(() => API.loadUpdates())
+                        .then(data => { State.setUpdatesData(data); DataLoader.loadAndDisplay(); });
+                }
+            }
+        });
+
+        btnDelete.addEventListener('click', () => {
+            if (stackIsRunning) {
+                const msg = composeFooter.querySelector('.compose-running-warning');
+                if (msg) { msg.textContent = '⚠️ El servicio debe estar parado antes de realizar esta acción'; msg.style.display = ''; setTimeout(() => msg.style.display = 'none', 3000); }
+                return;
+            }
+            if (!confirm(`¿Eliminar el stack "${stackName}"? Esta acción no se puede deshacer.`)) return;
+            const socket = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            if (socket) {
+                socket.emit('agent', ep, 'deleteStack', stackName, null);
+                // Limpiar updates de este stack
+                const hostEntry = State.updatesDataGlobal?.find(h => h.endpoint?.toLowerCase() === (endpoint || 'Actual').toLowerCase());
+                if (hostEntry?.hostname) {
+                    API.removeUpdate(stackName, hostEntry.hostname)
+                        .then(() => API.loadUpdates())
+                        .then(data => { State.setUpdatesData(data); });
+                }
+                // Eliminar de stacks.json e icono si nadie más lo usa
+                fetch('/api/set-stack', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: stackName, endpoint: endpoint || 'Actual', _delete: true })
+                }).then(() => loadStacksConfig()).catch(() => {});
+                // Volver al dashboard
+                deactivateLogsMode();
+            }
+        });
+
+        const terminalArea  = panel.querySelector('#terminal-area');
+
+        panel.querySelectorAll('.logs-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                panel.querySelectorAll('.logs-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                logsActiveTab = tab.dataset.tab;
+                const isLogs     = tab.dataset.tab === 'logs';
+                const isCompose  = tab.dataset.tab === 'compose';
+                const isTerminal = tab.dataset.tab === 'terminal';
+                logsArea.style.display      = isLogs ? '' : 'none';
+                composeArea.style.display   = isCompose ? 'flex' : 'none';
+                terminalArea.style.display  = isTerminal ? 'flex' : 'none';
+                logsFooter.style.display    = isLogs ? '' : 'none';
+                composeFooter.style.display = isCompose ? '' : 'none';
+                if (isLogs && logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+                if (isCompose && !composeContent) loadCompose();
+                else if (isCompose) setTimeout(applySplit, 50);
+                if (isTerminal) {
+                    initTerminal();
+                    setTimeout(() => xtermInstance?.focus(), 200);
+                }
+            });
+        });
+
+        // Restaurar tab activo
+        if (logsActiveTab === 'compose') {
+            panel.querySelectorAll('.logs-tab').forEach(t => t.classList.remove('active'));
+            panel.querySelector('.logs-tab[data-tab="compose"]')?.classList.add('active');
+            logsArea.style.display      = 'none';
+            composeArea.style.display   = 'flex';
+            terminalArea.style.display  = 'none';
+            logsFooter.style.display    = 'none';
+            composeFooter.style.display = '';
+            loadCompose();
+        } else if (logsActiveTab === 'terminal') {
+            panel.querySelectorAll('.logs-tab').forEach(t => t.classList.remove('active'));
+            panel.querySelector('.logs-tab[data-tab="terminal"]')?.classList.add('active');
+            logsArea.style.display      = 'none';
+            composeArea.style.display   = 'none';
+            terminalArea.style.display  = 'flex';
+            logsFooter.style.display    = 'none';
+            composeFooter.style.display = 'none';
+            initTerminal();
+            setTimeout(() => xtermInstance?.focus(), 200);
+        }
+
+        // Polling de estado de contenedores via socket de Dockge
+        const badgesEl = panel.querySelector('#logs-badges');
+
+        const svgPlay = `<svg class="svg-inline--fa" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" style="width:0.75em;height:1em;margin-right:5px;"><path fill="currentColor" d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg> Iniciar`;
+        const svgStop = `<svg class="svg-inline--fa" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" style="width:0.75em;height:1em;margin-right:5px;"><path fill="currentColor" d="M0 128C0 92.7 28.7 64 64 64H320c35.3 0 64 28.7 64 64V384c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V128z"/></svg> Detener`;
+        const svgSpin = `<svg class="svg-inline--fa fa-rotate-right fa-spin" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M463.5 224H472c13.3 0 24-10.7 24-24V72c0-9.7-5.8-18.5-14.8-22.2s-19.3-1.7-26.2 5.2L413.4 96.6c-87.6-86.5-228.7-86.2-315.8 1c-87.5 87.5-87.5 229.3 0 316.8s229.3 87.5 316.8 0c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0c-62.5 62.5-163.8 62.5-226.3 0s-62.5-163.8 0-226.3c62.2-62.2 162.7-62.5 225.3-1L327 183c-6.9 6.9-8.9 17.2-5.2 26.2s12.5 14.8 22.2 14.8H463.5z"/></svg> Espera...`;
+
+        // Último estado conocido de los contenedores (para no perderlos al parar)
+        let lastKnownServices = [];
+
+        const setButtonsDisabled = (disabled) => {
+            [btnStartStop, btnRestart].forEach(btn => {
+                if (btn) btn.disabled = disabled;
+            });
+        };
+
+        const renderBadges = (services, forceState) => {
+            const svgPlayBtn = svgPlay;
+            const svgStopBtn = svgStop;
+
+            if (services.length > 0) lastKnownServices = services;
+
+            // Si no hay servicios, usar los últimos conocidos como exited
+            const displayServices = services.length > 0 ? services :
+                lastKnownServices.map(([name]) => [name, { state: 'exited' }]);
+
+            const anyRunning = services.some(([, s]) =>
+                s.state === 'running' || s.state === 'healthy' || s.state === 'starting'
+            );
+            stackIsRunning = anyRunning;
+            if (!anyRunning) { actionInProgress = false; setButtonsDisabled(false); }
+            if (btnStartStop && !btnStartStop.disabled) {
+                btnStartStop.innerHTML = anyRunning ? svgStopBtn : svgPlayBtn;
+            }
+
+            badgesEl.innerHTML = displayServices.map(([name, status]) => {
+                const state = forceState || (status.state || 'unknown').toLowerCase();
+                let cls = 'bg-secondary';
+                if (state === 'running' || state === 'healthy') cls = 'bg-success';
+                else if (state === 'starting' || state === 'stopping' || state === 'restarting' || state === 'deploying') cls = 'bg-warning';
+                else if (state === 'unhealthy' || state === 'exited') cls = 'bg-danger';
+                return `<span class="badge ${cls} logs-service-badge" data-service="${name}" style="font-size:0.82em;font-weight:400;padding:4px 8px;cursor:pointer;">${name} <b style="font-weight:700;">${state}</b></span>`;
+            }).join('');
+
+            // Click en badge → popover
+            badgesEl.querySelectorAll('.logs-service-badge').forEach(badge => {
+                const showPopover = (badge) => {
+                    const existing = document.querySelector('.logs-badge-popover');
+                    if (existing && existing.dataset.service === badge.dataset.service) return;
+                    existing?.remove();
+
+                    const serviceName = badge.dataset.service;
+                    const ports = (window._dockme_ports || {})[serviceName] || [];
+                    const containerName = (window._dockme_containers || {})[serviceName] || serviceName;
+                    const isRemote = endpoint && endpoint.toLowerCase() !== 'actual';
+                    const remoteHost = isRemote ? endpoint.split(':')[0] : null;
+                    const primaryHost = primaryHostLocal || window.location.hostname;
+
+                    const portBadges = ports.length
+                        ? ports.map(p => {
+                            const bindHost = (p.host && p.host !== '0.0.0.0') ? p.host
+                                : isRemote ? remoteHost : primaryHost;
+                            const url = `http://${bindHost}:${p.published}`;
+                            return `<a href="${url}" target="_blank"><span class="badge me-1 bg-secondary">${p.published}</span></a>`;
+                        }).join('')
+                        : `<span style="color:#666;font-size:0.8em;">Sin puertos expuestos</span>`;
+
+                    const pop = document.createElement('div');
+                    pop.className = 'logs-badge-popover';
+                    pop.dataset.service = serviceName;
+                    const serviceState = lastKnownServices.find(([n]) => n === serviceName)?.[1]?.state || 'unknown';
+                    const isRunning = serviceState === 'running' || serviceState === 'healthy' || serviceState === 'unhealthy';
+
+                    const svgPlaySm  = `<svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" style="width:0.65em;height:0.85em;margin-right:4px;"><path fill="currentColor" d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg>`;
+                    const svgStopSm  = `<svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" style="width:0.65em;height:0.85em;margin-right:4px;"><path fill="currentColor" d="M0 128C0 92.7 28.7 64 64 64H320c35.3 0 64 28.7 64 64V384c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V128z"/></svg>`;
+                    const svgRestSm  = `<svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.75em;height:0.85em;margin-right:4px;"><path fill="currentColor" d="M463.5 224H472c13.3 0 24-10.7 24-24V72c0-9.7-5.8-18.5-14.8-22.2s-19.3-1.7-26.2 5.2L413.4 96.6c-87.6-86.5-228.7-86.2-315.8 1c-87.5 87.5-87.5 229.3 0 316.8s229.3 87.5 316.8 0c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0c-62.5 62.5-163.8 62.5-226.3 0s-62.5-163.8 0-226.3c62.2-62.2 162.7-62.5 225.3-1L327 183c-6.9 6.9-8.9 17.2-5.2 26.2s12.5 14.8 22.2 14.8H463.5z"/></svg>`;
+
+                    const btnStyle = 'class="btn btn-normal" style="padding:2px 8px;font-size:0.78em;display:inline-flex;align-items:center;"';
+
+                    const actionBtns = multiContainer ? `
+                        <div style="margin-top:10px;padding-top:8px;border-top:1px solid #666;">
+                            <div style="font-size:0.75em;color:#96a4b1;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em;">Control Docker individual</div>
+                            <div style="display:flex;gap:25px;justify-content:center;">
+                                <button ${btnStyle} data-action="${isRunning ? 'stop' : 'start'}" data-container="${containerName}">
+                                    ${isRunning ? svgStopSm + 'Detener' : svgPlaySm + 'Iniciar'}
+                                </button>
+                                <button ${btnStyle} data-action="restart" data-container="${containerName}">
+                                    ${svgRestSm}Reiniciar
+                                </button>
+                            </div>
+                        </div>` : '';
+
+                    pop.innerHTML = `
+                        <div style="font-size:0.75em;color:#96a4b1;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.05em;">Puertos expuestos</div>
+                        <div style="display:flex;gap:4px;flex-wrap:wrap;">${portBadges}</div>
+                        ${actionBtns}
+                    `;
+                    pop.style.cssText = 'position:absolute;background:#1c2431;border:1px solid #b1bfcc;border-radius:8px;padding:10px 14px;z-index:1000;min-width:160px;box-shadow:0 4px 20px rgba(0,0,0,0.5);';
+
+                    const rect = badge.getBoundingClientRect();
+                    const panelRect = panel.getBoundingClientRect();
+                    pop.style.top  = (rect.bottom - panelRect.top + 6) + 'px';
+                    pop.style.left = (rect.left - panelRect.left) + 'px';
+                    panel.style.position = 'relative';
+                    panel.appendChild(pop);
+
+                    // Cerrar al salir del badge Y del popover
+                    let hideTimer;
+                    const startHide = () => { hideTimer = setTimeout(() => pop.remove(), 200); };
+                    const cancelHide = () => clearTimeout(hideTimer);
+                    badge.addEventListener('mouseleave', startHide);
+                    pop.addEventListener('mouseenter', cancelHide);
+                    pop.addEventListener('mouseleave', startHide);
+
+                    // Cerrar al click fuera (móvil/tablet sin hover)
+                    setTimeout(() => {
+                        document.addEventListener('click', function closePopover(e) {
+                            if (!pop.contains(e.target) && e.target !== badge) {
+                                pop.remove();
+                                document.removeEventListener('click', closePopover);
+                            }
+                        });
+                    }, 10);
+
+                    // Acciones de los botones
+                    pop.querySelectorAll('button[data-action]').forEach(btn => {
+                        btn.addEventListener('click', (ev) => {
+                            ev.stopPropagation();
+                            const action = btn.dataset.action;
+                            const containerName = btn.dataset.container;
+                            pop.remove();
+
+                            const newState = action === 'stop' ? 'exited' : 'running';
+                            const idx = lastKnownServices.findIndex(([n]) => n === serviceName);
+                            if (idx >= 0) lastKnownServices[idx][1] = { state: newState };
+                            renderBadges(lastKnownServices);
+                            actionInProgress = true;
+                            setButtonsDisabled(true);
+
+                            const epStr = isRemote ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+                            fetch(`/api/container-action${epStr}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ container: containerName, action })
+                            }).finally(() => {
+                                setTimeout(() => {
+                                    actionInProgress = false;
+                                    setButtonsDisabled(false);
+                                    if (action !== 'stop') {
+                                        fetch(`/api/stack-containers/${encodeURIComponent(stackName)}${epParam}`)
+                                            .then(r => r.json())
+                                            .then(d => {
+                                                if (d.containers?.length > 0) {
+                                                    window._dockme_ports = {};
+                                                    window._dockme_containers = {};
+                                                    d.containers.forEach(c => {
+                                                        const key = c.service || c.name;
+                                                        window._dockme_ports[key] = c.ports || [];
+                                                        window._dockme_containers[key] = c.name;
+                                                    });
+                                                }
+                                            }).catch(() => {});
+                                    }
+                                }, 2000);
+                            });
+                        });
+                    });
+                };
+
+                badge.addEventListener('mouseenter', () => showPopover(badge));
+                badge.addEventListener('click', (e) => { e.stopPropagation(); showPopover(badge); });
+            });
+        };
+
+        let actionInProgress = false;
+
+        let logsStatusInterval = null;
+        const startStatusPolling = () => {
+            const socket = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            if (!socket) return;
+            const ep = (endpoint && endpoint.toLowerCase() !== 'actual') ? endpoint : '';
+
+            // Si venimos del BulkPanel con deploy en curso, mostrar deploying inmediatamente
+            if (window._dockme_force_badge) {
+                renderBadges(lastKnownServices, window._dockme_force_badge);
+                window._dockme_force_badge = null;
+            }
+            const poll = () => {
+                if (actionInProgress) return;
+
+                // Leer color del cp-circle de la lista — fuente de verdad para inactivo
+                const color = getDockgeStackColor();
+                if (color === 'gray') {
+                    badgesEl.innerHTML = `<span class="badge bg-secondary" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Inactivo</span>`;
+                    stackIsRunning = false;
+                    actionInProgress = false;
+                    setButtonsDisabled(false);
+                    if (btnStartStop) btnStartStop.innerHTML = svgPlay;
+                    
+                    if (logsStatusInterval) { clearInterval(logsStatusInterval); logsStatusInterval = null; }
+                    return;
+                }
+
+                socket.emit('agent', ep, 'serviceStatusList', stackName, (res) => {
+                    if (!res?.ok) return;
+                    const services = res.serviceStatusList ? Object.entries(res.serviceStatusList) : [];
+                    if (services.length === 0) {
+                        // Consultar el estado real desde el root Vue — más fiable que el cp-circle
+                        const root = document.querySelector('#app')?._vnode?.component?.proxy?.$root;
+                        const stackKey = ep ? `${stackName}/${ep}` : stackName;
+                        const stackData = root?.completeStackList?.[stackKey] || root?.stackList?.[stackName];
+                        const col = getDockgeStackColor();
+
+                        if (stackData?.status === 3 || stackData?.active) {
+                            // Stack running según Vue — puede que serviceStatusList tarde en responder
+                            badgesEl.innerHTML = `<span class="badge bg-success" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Running</span>`;
+                            stackIsRunning = true;
+                            actionInProgress = false;
+                            setButtonsDisabled(false);
+                            if (btnStartStop) btnStartStop.innerHTML = svgStop;
+                        } else if (col === 'red' || stackData?.status === 4) {
+                            badgesEl.innerHTML = `<span class="badge bg-danger" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Stack detenido</span>`;
+                            stackIsRunning = false;
+                            actionInProgress = false;
+                            setButtonsDisabled(false);
+                            if (btnStartStop) btnStartStop.innerHTML = svgPlay;
+                        }
+                        return;
+                    }
+                    // Merge: actualizar estados conocidos, preservar los que no vienen (exited)
+                    services.forEach(([name, status]) => {
+                        const idx = lastKnownServices.findIndex(([n]) => n === name);
+                        if (idx >= 0) lastKnownServices[idx][1] = status;
+                        else lastKnownServices.push([name, status]);
+                    });
+                    setButtonsDisabled(false);
+                    renderBadges(lastKnownServices);
+                });
+            };
+            poll();
+            logsStatusInterval = setInterval(poll, 3000);
+        };
+
+        // Limpiar intervalo anterior si existía
+        if (window._logsStatusInterval) { clearInterval(window._logsStatusInterval); }
+        startStatusPolling();
+        window._logsStatusInterval = logsStatusInterval;
+
+        // SSE
+        const sseEpParam = (endpoint && endpoint.toLowerCase() !== 'actual')
+            ? `&endpoint=${encodeURIComponent(endpoint)}` : '';
+        const url = `/api/logs/${encodeURIComponent(stackName)}?tail=200${sseEpParam}`;
+
+        logsEventSource = new EventSource(url);
+
+        logsEventSource.onmessage = (e) => {
+            const line = buildLine(e.data, filterInput.value);
+            logsArea.appendChild(line);
+            if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+        };
+
+        logsEventSource.onerror = () => {
+            const errLine = document.createElement('div');
+            errLine.className = 'logs-error-line';
+            errLine.dataset.raw = '';
+            errLine.textContent = '\u26A0\uFE0F Conexi\u00F3n perdida con el servidor de logs';
+            logsArea.appendChild(errLine);
+            if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+        };
+
+        // Mostrar el panel solo cuando todo está construido
+        requestAnimationFrame(() => {
+            document.querySelector('#dockme-logs-panel').style.display = '';
+        });
+    }
+
+    function activateLogsMode() {
+        document.body.classList.add('dockme-logs-mode');
+        // Cerrar modo edición si está activo
+        if (typeof dockmeEditMode !== 'undefined' && dockmeEditMode) {
+            dockmeEditMode = false;
+            if (typeof updateEditModeToggleUI === 'function') updateEditModeToggleUI();
+        }
+        // Cerrar modo organizar si está activo
+        const row = document.querySelector('#dockme-blocks-row');
+        if (row?.classList.contains('organizing')) {
+            row.classList.remove('organizing');
+            document.body.classList.remove('dockme-organizing');
+            row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => { el.draggable = false; });
+            document.querySelector('#dockme-profile-bar')?.remove();
+        }
+        const blocksRow = document.querySelector('#dockme-blocks-row');
+        const dashboard = document.querySelector('#dockme-dashboard');
+        if (blocksRow) blocksRow.style.display = 'none';
+        MetricsManager.stop();
+        if (!document.querySelector('#dockme-logs-panel')) {
+            const panel = document.createElement('div');
+            panel.id = 'dockme-logs-panel';
+            dashboard?.appendChild(panel);
+        }
+        document.querySelector('#dockme-logs-panel').style.display = 'none';
+        // Si no hay stack previo, el panel queda vacío hasta que se seleccione uno
+    }
+
+    function deactivateLogsMode() {
+        document.dispatchEvent(new Event('dockme-logs-deactivated'));
+        document.body.classList.remove('dockme-logs-mode');
+        document.body.classList.remove('logs-expanded');
+        logsActiveTab = 'logs';
+        if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+        if (window._logsStatusInterval) { clearInterval(window._logsStatusInterval); window._logsStatusInterval = null; }
+        if (xtermInstance) { try { xtermInstance.dispose(); } catch(_) {} xtermInstance = null; }
+        if (window._dockme_termResizeObs) { window._dockme_termResizeObs.disconnect(); window._dockme_termResizeObs = null; }
+        const panel = document.querySelector('#dockme-logs-panel');
+        if (panel) panel.style.display = 'none';
+        const blocksRow = document.querySelector('#dockme-blocks-row');
+        if (blocksRow) blocksRow.style.display = '';
+        MetricsManager.start();
+        Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
+        // Focus en el buscador al volver al dashboard
+        setTimeout(() => {
+            const input = document.querySelector('.search-input');
+            if (input) input.focus();
+        }, 300);
+    }
+
     function insertEditStacksIcon() {
         const headerTop = document.querySelector('.header-top');
         if (!headerTop) return;
@@ -3309,6 +4685,13 @@ let layoutDirty = false;
         editIcon.title = 'Configuración Dockme';
         editIcon.innerHTML = '<img src="/system-icons/dockme-edit.svg" style="width:24px;height:24px;vertical-align:middle;">';
         editIcon.addEventListener('click', () => {
+            const wasInLogsMode = document.body.classList.contains('dockme-logs-mode');
+            const savedStack = logsCurrentStack;
+            const savedEndpoint = logsCurrentEndpoint;
+            // Cerrar modo logs si está activo
+            if (wasInLogsMode) {
+                deactivateLogsMode();
+            }
             // Cerrar modo organizar si está activo
             const row = document.querySelector('#dockme-blocks-row');
             if (row?.classList.contains('organizing')) {
@@ -3325,10 +4708,14 @@ let layoutDirty = false;
                 setTimeout(() => {
                     dockmeEditMode = true;
                     updateEditModeToggleUI();
+                    if (wasInLogsMode && savedStack) showStackEditorForStack(savedStack, savedEndpoint || 'Actual');
                 }, 400);
             } else {
                 dockmeEditMode = !dockmeEditMode;
                 updateEditModeToggleUI();
+                if (dockmeEditMode && wasInLogsMode && savedStack) {
+                    setTimeout(() => showStackEditorForStack(savedStack, savedEndpoint || 'Actual'), 100);
+                }
             }
         });
 
@@ -3338,6 +4725,10 @@ let layoutDirty = false;
         organizeIcon.title = 'Organizar dashboard';
         organizeIcon.innerHTML = '<img src="/system-icons/reordenar.svg" style="width:24px;height:24px;vertical-align:middle;">';
         organizeIcon.addEventListener('click', () => {
+            // Cerrar modo logs si está activo
+            if (document.body.classList.contains('dockme-logs-mode')) {
+                deactivateLogsMode();
+            }
             // Cerrar modo edición si está activo y activar organizar
             if (dockmeEditMode) {
                 dockmeEditMode = false;
@@ -3477,7 +4868,6 @@ let layoutDirty = false;
             dockmeEditModeFilterBackup = null;
             hideStackEditor();
             MobileMenu.close();
-            RecentManager.add();
             API.loadUpdates().then(data => State.setUpdatesData(data));
             Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
                 showDashboardContainer();
@@ -3492,23 +4882,20 @@ let layoutDirty = false;
         if (dashboard) dashboard.style.display = 'none';
         MetricsManager.stop();
     }
-    function OcultarAddUrlComposEditor() {
-        // Ocultar sección "Addicional" en modo edición de compose
-        if (RouteManager.isComposePath()) {
-            const addicionalH4 = Array.from(document.querySelectorAll('h4.mb-3'))
-                .find(h4 => h4.textContent.trim() === 'Addicional');
-            if (addicionalH4) {
-                const container = addicionalH4.parentElement;
-                if (container && container.style.display !== 'none') {
-                    container.style.display = 'none';
-                }
-            }
-        }
-    }
     function showDashboardContainer() {
         const dashboard = document.querySelector('#dockme-dashboard');
-        if (dashboard) dashboard.style.display = '';
-        MetricsManager.start();
+        if (document.body.classList.contains('dockme-logs-mode')) {
+            // En modo logs: mostrar el dashboard pero ocultar blocks-row y mantener el panel de logs
+            if (dashboard) dashboard.style.display = '';
+            const blocksRow = document.querySelector('#dockme-blocks-row');
+            if (blocksRow) blocksRow.style.display = 'none';
+            const logsPanel = document.querySelector('#dockme-logs-panel');
+            if (logsPanel) logsPanel.style.display = '';
+            // No arrancar métricas en modo logs
+        } else {
+            if (dashboard) dashboard.style.display = '';
+            MetricsManager.start();
+        }
     }
     function addFavFilterBtn(editor, active = false) {
         if (!stacksConfig.some(s => s.favorite)) return;
@@ -3564,7 +4951,7 @@ let layoutDirty = false;
                 <button class="config-tab" data-tab="general">⚙️ General</button>
             </div>
             <div class="config-content active" id="config-tab-stacks">
-                <p>Selecciona un stack de la lista izquierda para editar sus datos.</p>
+                <p><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><span>Selecciona un stack de la lista izquierda para editar sus datos.</span></p>
             </div>
             <div class="config-content" id="config-tab-servidores"></div>
             <div class="config-content" id="config-tab-links">
@@ -3897,6 +5284,7 @@ let layoutDirty = false;
         serviceInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); handleServiceUrlSave(); }
         });
+        serviceInput.addEventListener('blur', () => handleServiceUrlSave());
         serviceInput.addEventListener('paste', () => {
             setTimeout(handleServiceUrlSave, 50);
         });
@@ -3933,6 +5321,7 @@ let layoutDirty = false;
         repoInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); handleRepoUrlSave(); }
         });
+        repoInput.addEventListener('blur', () => handleRepoUrlSave());
         repoInput.addEventListener('paste', () => {
             setTimeout(handleRepoUrlSave, 50);
         });
@@ -3981,6 +5370,7 @@ let layoutDirty = false;
         urlInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); handleUrlApply(); }
         });
+        urlInput.addEventListener('blur', () => handleUrlApply());
         urlInput.addEventListener('paste', () => {
             setTimeout(handleUrlApply, 50);
         });
@@ -4137,21 +5527,18 @@ let layoutDirty = false;
         if (document.body.dataset.dockmeBrandingApplied === 'true') return;
         const logoObject = document.querySelector('object[data="/icon.svg"]');
         if (logoObject) {
-            logoObject.setAttribute('data', '/dockme-icon.svg');
+            // Reemplazar el object por un img ya que /system-icons/dockme.svg es un fichero directo
+            const img = document.createElement('img');
+            img.src = '/system-icons/dockme.svg';
+            img.style.cssText = logoObject.style.cssText || 'width:64px;height:64px;';
+            logoObject.replaceWith(img);
         }
         const titleDivs = Array.from(document.querySelectorAll('div'))
-            .filter(div => div.textContent?.trim() === 'Dockge');
+            .filter(div => div.childNodes.length === 1 && div.textContent?.trim() === 'Dockge');
         titleDivs.forEach(div => {
             div.textContent = 'Dockme';
         });
         document.body.dataset.dockmeBrandingApplied = 'true';
-    }
-
-    function goToSettingsSecurity() {
-        if (window.location.pathname === '/settings/security') return;
-        const securityLink = document.querySelector('a[href="/settings/security"]');
-        if (!securityLink) return;
-        securityLink.click();
     }
 
     function isLoginVisible() {
@@ -4211,12 +5598,19 @@ let layoutDirty = false;
                 contenedor.appendChild(frag);
             }
         }
-        // 3. Renombrar boton "Componer" de Dockge
-        const btnComponer = document.querySelector('a.btn.btn-primary[href="/compose"]');
-        if (btnComponer && !btnComponer.dataset.renamed) {
-            btnComponer.lastChild.textContent = ' Crear nuevo servicio';
-            btnComponer.style.visibility = 'visible';
-            btnComponer.dataset.renamed = 'true';
+        // 3. Insertar botón "Nuevo Stack" antes del placeholder en header-top
+        const headerTop = document.querySelector('.header-top[data-v-06020958]');
+        if (headerTop && !headerTop.querySelector('.dockme-new-stack-btn, [data-dockme-newstack]')) {
+            const placeholder = headerTop.querySelector('.placeholder');
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-primary';
+            btn.dataset.dockmeNewstack = '1';
+            btn.style.cssText = 'margin-left:6px;padding-left:8px !important;padding-right:8px !important;';
+            btn.title = 'Nuevo Stack';
+            btn.innerHTML = `<svg class="svg-inline--fa fa-plus" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M256 80c0-17.7-14.3-32-32-32s-32 14.3-32 32V224H48c-17.7 0-32 14.3-32 32s14.3 32 32 32H192V432c0 17.7 14.3 32 32 32s32-14.3 32-32V288H400c17.7 0 32-14.3 32-32s-14.3-32-32-32H256V80z"/></svg>`;
+            btn.addEventListener('click', () => openNewStackPanel());
+            if (placeholder) headerTop.insertBefore(btn, placeholder);
+            else headerTop.prepend(btn);
         }
     }
 
@@ -4817,7 +6211,6 @@ let layoutDirty = false;
 const AgentsState = {
     agents: [],
     lastUpdate: null,
-    isManaging: false,
 
     setAgents(agents) {
         this.agents = agents;
@@ -5034,15 +6427,6 @@ function applyAgentMode(centralUrl) {
     applyUI();
     const obs = new MutationObserver(applyUI);
     obs.observe(document.body, { childList: true, subtree: true });
-
-    // Si navega fuera de raíz (salvo /setup y /settings), volver a raíz
-    window.addEventListener('popstate', () => {
-        const path = window.location.pathname;
-        if (!RouteManager.isSetupPath() && !path.startsWith('/settings') && path !== '/') {
-            window.history.pushState({}, '', '/');
-            window.dispatchEvent(new Event('popstate'));
-        }
-    });
 }
 
 // ==================== AVISAR VARIABLES OBSOLETAS EN COMPOSE ====================
@@ -5050,6 +6434,18 @@ function applyAgentMode(centralUrl) {
 function checkDeprecatedVars() {
     if (document.querySelector('.deprecated-vars-modal')) return;
     if (State.settingsData?.migration_2_1_shown) return;
+    if (RouteManager.isSetupPath()) return;
+
+    // Solo mostrar si el settings tiene variables obsoletas realmente
+    const settings = State.settingsData || {};
+    const hasDeprecated = settings.telegramToken || settings.telegramChatId || 
+                          settings.checkTimes || settings.webhookUrl || settings.endpoint;
+    if (!hasDeprecated) {
+        // Marcar como visto para no volver a comprobar
+        fetch('/api/mark-agents-migration-shown', { method: 'POST' }).catch(() => {});
+        if (State.settingsData) State.settingsData.migration_2_1_shown = true;
+        return;
+    }
 
     const code = v => `<code style="background:#0d1520;padding:2px 6px;border-radius:3px;display:block;margin:3px 0;">${v}</code>`;
 
@@ -5191,6 +6587,7 @@ function renderServidoresTab(container) {
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') { e.preventDefault(); handleSave(); }
         });
+        input.addEventListener('blur', () => handleSave());
         input.addEventListener('paste', () => setTimeout(handleSave, 50));
     });
 
@@ -5525,6 +6922,33 @@ function renderGeneralTab(container) {
                         </div>
                     </div>
 
+                    <!-- SEGURIDAD -->
+                    <div class="general-section">
+                        <div class="general-section-title">🔒 Seguridad</div>
+                        <div class="general-field">
+                            <label class="general-label">Contraseña actual</label>
+                            <div class="general-input-row">
+                                <input type="password" id="gen-pass-current" class="dockme-service-url-input" autocomplete="current-password" placeholder="••••••••">
+                            </div>
+                        </div>
+                        <div class="general-field">
+                            <label class="general-label">Nueva contraseña</label>
+                            <div class="general-input-row">
+                                <input type="password" id="gen-pass-new" class="dockme-service-url-input" autocomplete="new-password" placeholder="••••••••">
+                            </div>
+                        </div>
+                        <div class="general-field">
+                            <label class="general-label">Repetir nueva contraseña</label>
+                            <div class="general-input-row">
+                                <input type="password" id="gen-pass-repeat" class="dockme-service-url-input" autocomplete="new-password" placeholder="••••••••">
+                            </div>
+                        </div>
+                        <div class="general-field">
+                            <button class="btn btn-primary" id="gen-pass-save">🔑 Cambiar contraseña</button>
+                            <div id="gen-pass-msg" style="margin-top:10px;text-align:center;font-size:0.9em;line-height:1.5;"></div>
+                        </div>
+                    </div>
+
                 </div>
             `;
 
@@ -5713,6 +7137,50 @@ function renderGeneralTab(container) {
                         }));
                     });
                 }, 300);
+            });
+
+            // Cambiar contraseña via socket de Dockge
+            container.querySelector('#gen-pass-save')?.addEventListener('click', () => {
+                const current  = container.querySelector('#gen-pass-current')?.value;
+                const newPass  = container.querySelector('#gen-pass-new')?.value;
+                const repeat   = container.querySelector('#gen-pass-repeat')?.value;
+                const msgEl    = container.querySelector('#gen-pass-msg');
+
+                const showMsg = (text, ok) => {
+                    if (!msgEl) return;
+                    msgEl.style.color = ok ? '#4caf50' : '#ff6b6b';
+                    msgEl.textContent = text;
+                    if (ok) setTimeout(() => { msgEl.textContent = ''; }, 5000);
+                };
+
+                if (!current || !newPass || !repeat) {
+                    showMsg('Por favor rellena todos los campos.', false);
+                    return;
+                }
+                if (newPass !== repeat) {
+                    showMsg('Las contraseñas nuevas no coinciden.', false);
+                    return;
+                }
+
+                const sock = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+                if (!sock) { showMsg('Error de conexión con el servidor.', false); return; }
+
+                sock.emit('changePassword', { currentPassword: current, newPassword: newPass, repeatNewPassword: repeat }, (res) => {
+                    if (res.ok) {
+                        showMsg('✅ Contraseña actualizada correctamente.', true);
+                        container.querySelector('#gen-pass-current').value = '';
+                        container.querySelector('#gen-pass-new').value = '';
+                        container.querySelector('#gen-pass-repeat').value = '';
+                    } else {
+                        const msgMap = {
+                            'Incorrect current password': 'Contraseña actual incorrecta.',
+                            'Password is too weak': 'Contraseña demasiado débil. Debe tener al menos 6 caracteres con letras y números.'
+                        };
+                        const translated = Object.entries(msgMap).find(([k]) => (res.msg || '').includes(k))?.[1]
+                            || res.msg || 'Error al cambiar la contraseña.';
+                        showMsg(`❌ ${translated}`, false);
+                    }
+                });
             });
         })
         .catch(() => {
@@ -6015,6 +7483,12 @@ async function addAgentToDockge(url, username, password, endpoint, errorDiv) {
             }
         }
         if (found) {
+            // Marcar como logueado en updates.json (persiste entre reinicios)
+            fetch('/api/set-agent-logged', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ endpoint, loggedIn: true })
+            }).catch(() => {});
             return true;
         } else {
             const formStillExists = agentBox.querySelector('form');
@@ -6082,7 +7556,16 @@ function init() {
             DynamicStyles.updateForRoute(currentPath);
         }
     }, 100);
-    document.addEventListener('click', (e) => EventHandlers.handleButtonClick(e), true);
+    // Interceptar clicks en a.item cuando editMode está activo
+    document.addEventListener('click', (e) => {
+        if (!dockmeEditMode) return;
+        const stackItem = e.target.closest('a.item');
+        if (!stackItem) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const href = stackItem.getAttribute('href');
+        if (href) handleEditStackSelection(href);
+    }, true);
 
     let initialLoginCheckAttempts = 0;
     const initialLoginCheck = setInterval(() => {
@@ -6107,17 +7590,36 @@ function init() {
             if (RouteManager.isRootPath()) {
                 hideDockgeHomeBlock();
                 ensureDockmeRoot();
-                Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
-                MetricsManager.stop();
-                MetricsManager.start();
+                // Esperar a que Dockge conecte los agentes antes de cargar
+                setTimeout(() => {
+                    Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
+                    MetricsManager.stop();
+                    MetricsManager.start();
+                }, 2000);
             }
         }
         ItemManager.processAll();
         ensureTitleIsCorrect();
         insertEditStacksIcon();
         setTimeout(() => ItemManager.refreshIcons(), CONFIG.ICON_REFRESH_DELAY);
-        OcultarAddUrlComposEditor();
-        if (RouteManager.isComposePath()) UIComponents.fixPortLinks();
+        reasignarIconos();
+
+        // Añadir footer de GitHub bajo la lista de stacks
+        if (!document.querySelector('#dockme-github-footer')) {
+            const stackList = document.querySelector('.stack-list.scrollbar');
+            if (stackList) {
+                const footer = document.createElement('a');
+                footer.id = 'dockme-github-footer';
+                footer.href = 'https://github.com/fernandeusto/dockme';
+                footer.target = '_blank';
+                footer.rel = 'noopener';
+                footer.style.cssText = 'display:flex;align-items:center;gap:7px;opacity:0.4;text-decoration:none;color:rgb(204,204,204);transition:opacity 0.2s;justify-content:center;min-height:2.5em;line-height:1.25em;margin-left:-20px;';
+                footer.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="width:24px;height:24px;flex-shrink:0;"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02 0 2.04.13 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>DockMe — ¡Déjanos una estrella!`;
+                footer.addEventListener('mouseenter', () => footer.style.opacity = '0.8');
+                footer.addEventListener('mouseleave', () => footer.style.opacity = '0.4');
+                stackList.insertAdjacentElement('afterend', footer);
+            }
+        }
     };
 
     DOMObserver.init(processTodoCompleto);
@@ -6125,8 +7627,10 @@ function init() {
     DOMObserver.start();
 
     setInterval(() => ItemManager.refreshIcons(), CONFIG.REORDER_INTERVAL);
-    setInterval(() => RouteObserver.observe(), CONFIG.ROUTE_CHECK_INTERVAL);
-    setInterval(reasignarIconos, 500);
+    // Detectar navegación directa por URL (sin Vue Router)
+    window.addEventListener('popstate', () => RouteObserver.observe());
+    RouteObserver.observe(); // comprobar ruta inicial
+    // setInterval(reasignarIconos, 500); // desactivado — DOMObserver ya cubre este caso
 
     // CARGAR AGENTES Y MÉTRICAS
     if (!dockmeWaitingForLogin && RouteManager.isRootPath()) {
@@ -6148,44 +7652,6 @@ function init() {
             }
 
             Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
-            // Interceptar navegación Vue para iconos con URL
-            let lastMousePos = { x: 0, y: 0 };
-            document.addEventListener('mousemove', (e) => {
-                lastMousePos = { x: e.clientX, y: e.clientY };
-            }, true);
-            const vueRouter = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$router;
-            if (vueRouter) {
-                vueRouter.beforeEach((to, from, next) => {
-                    if (to.path?.startsWith('/compose/')) {
-                        const allIcons = document.querySelectorAll('img.cp-icon');
-                        let img = null;
-                        for (const icon of allIcons) {
-                            const rect = icon.getBoundingClientRect();
-                            if (lastMousePos.x >= rect.left && lastMousePos.x <= rect.right &&
-                                lastMousePos.y >= rect.top  && lastMousePos.y <= rect.bottom) {
-                                img = icon;
-                                break;
-                            }
-                        }
-                        if (img) {
-                            const parentItem = img.closest('a.item');
-                            const href = parentItem?.getAttribute('href') || '';
-                            const nameFromHref = href.match(/^\/compose\/([^/]+)/)?.[1];
-                            const endpointFromHref = href.match(/\/compose\/[^/]+\/(.+)$/)?.[1] || 'Actual';
-                            const stackData = stacksConfig.find(s =>
-                                s.name?.toLowerCase() === (nameFromHref || img.dataset.stackName)?.toLowerCase() &&
-                                s.endpoint?.toLowerCase() === (endpointFromHref || img.dataset.stackEndpoint || 'Actual').toLowerCase()
-                            );
-                            if (stackData?.url) {
-                                window.open(stackData.url, '_blank');
-                            }
-                            next(false);
-                            return;
-                        }
-                    }
-                    next();
-                });
-            }
             MetricsManager.start();
             // Pausar métricas cuando la pestaña no está activa
             document.addEventListener('visibilitychange', () => {
@@ -6195,9 +7661,83 @@ function init() {
                     MetricsManager.start();
                 }
             });
+
+            // Limpiar stacks de agentes que se desconectan
+            const sock = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            if (sock) {
+                sock.on('agentStatus', (agents) => {
+                    const list = Array.isArray(agents) ? agents : [agents];
+                    const root = document.querySelector('#app')?._vnode?.component?.proxy?.$root;
+                    if (!root) return;
+                    list.forEach(a => {
+                        if (a.status === 'offline' && a.endpoint) {
+                            delete root.allAgentStackList[a.endpoint];
+                        }
+                    });
+                });
+            }
         };
         setTimeout(checkAndLoadAgents, 300);
     }
+
+    // Registrar beforeEach siempre — independientemente de la ruta de entrada
+    const registerBeforeEach = () => {
+        const vueRouter = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$router;
+        if (!vueRouter) { setTimeout(registerBeforeEach, 200); return; }
+        if (vueRouter._dockme_guard) return; // ya registrado
+        vueRouter._dockme_guard = true;
+        let lastMousePos = { x: 0, y: 0 };
+        document.addEventListener('mousemove', (e) => { lastMousePos = { x: e.clientX, y: e.clientY }; }, true);
+        vueRouter.beforeEach((to, from, next) => {
+            // Solo notificar al RouteObserver si no vamos a interceptar la ruta
+            if (!to.path?.startsWith('/compose/')) {
+                RouteObserver.lastRoute = to.path;
+                RouteObserver.handleRouteChange(to.path);
+            }
+            // Si venimos de /setup y vamos a /, resetear GlobalData para que recargue todo
+            if (from.path === '/setup' && to.path === '/') {
+                GlobalData.loaded = false;
+                GlobalData.load();
+            }
+            if (to.path?.startsWith('/compose/')) {
+                const allIcons = document.querySelectorAll('img.cp-icon');
+                let img = null;
+                for (const icon of allIcons) {
+                    const rect = icon.getBoundingClientRect();
+                    if (lastMousePos.x >= rect.left && lastMousePos.x <= rect.right &&
+                        lastMousePos.y >= rect.top  && lastMousePos.y <= rect.bottom) {
+                        img = icon; break;
+                    }
+                }
+                if (img) {
+                    const parentItem = img.closest('a.item');
+                    const href = parentItem?.getAttribute('href') || '';
+                    const nameFromHref = href.match(/^\/compose\/([^/]+)/)?.[1];
+                    const endpointFromHref = href.match(/\/compose\/[^/]+\/(.+)$/)?.[1] || 'Actual';
+                    const stackData = stacksConfig.find(s =>
+                        s.name?.toLowerCase() === (nameFromHref || img.dataset.stackName)?.toLowerCase() &&
+                        s.endpoint?.toLowerCase() === (endpointFromHref || img.dataset.stackEndpoint || 'Actual').toLowerCase()
+                    );
+                    if (stackData?.url) window.open(stackData.url, '_blank');
+                    next(false);
+                    return;
+                }
+                const parts = to.path.split('/').filter(Boolean);
+                const stackName = parts[1] || '';
+                const endpoint  = parts[2] || 'Actual';
+                next(false);
+                if (!document.body.classList.contains('dockme-logs-mode')) {
+                    activateLogsMode();
+                    setTimeout(() => openLogsForStack(stackName, endpoint), 100);
+                } else {
+                    openLogsForStack(stackName, endpoint);
+                }
+                return;
+            }
+            next();
+        });
+    };
+    setTimeout(registerBeforeEach, 300);
 }
 
     // ==================== START ====================

@@ -20,22 +20,24 @@ export default {
     props: {
         name: {
             type: String,
-            require: true,
+            required: true,
         },
 
         endpoint: {
             type: String,
-            require: true,
+            required: true,
         },
 
         // Require if mode is interactive
         stackName: {
             type: String,
+            default: "",
         },
 
         // Require if mode is interactive
         serviceName: {
             type: String,
+            default: "",
         },
 
         // Require if mode is interactive
@@ -99,22 +101,10 @@ export default {
 
         // Bind to a div
         this.terminal.open(this.$refs.terminal);
-        // Fallback HTTP: listener paste en textarea interno de xterm
-        const xtermTextarea = this.$refs.terminal?.querySelector("textarea.xterm-helper-textarea");
-        if (xtermTextarea) {
-            xtermTextarea.addEventListener("paste", (event) => {
-                if (window.isSecureContext) return; // Solo en HTTP
-                event.preventDefault();
-                const text = (event.clipboardData || window.clipboardData)?.getData("text");
-                if (text) {
-                    this.pasteText(text);
-                }
-            });
-        }
         this.terminal.focus();
 
         // Add right-click context menu handler for paste
-        this.$refs.terminal.addEventListener('contextmenu', this.handleContextMenu);
+        this.$refs.terminal.addEventListener("contextmenu", this.handleContextMenu);
 
         // Add selection handler for copy to clipboard
         this.terminal.onSelectionChange(() => {
@@ -155,7 +145,7 @@ export default {
         window.removeEventListener("resize", this.onResizeEvent); // Remove the resize event listener from the window object.
         this.$root.unbindTerminal(this.name);
         this.terminal.dispose();
-        this.$refs.terminal?.removeEventListener('contextmenu', this.handleContextMenu);
+        this.$refs.terminal?.removeEventListener("contextmenu", this.handleContextMenu);
     },
 
     methods: {
@@ -218,7 +208,7 @@ export default {
                         const afterCursor = this.terminalInputBuffer.slice(this.cursorPosition);
                         this.terminalInputBuffer = beforeCursor + afterCursor;
                         this.cursorPosition--;
-                        
+
                         // Redraw the line
                         this.terminal.write("\b" + afterCursor + " \b".repeat(afterCursor.length + 1));
                     }
@@ -228,7 +218,7 @@ export default {
                         const beforeCursor = this.terminalInputBuffer.slice(0, this.cursorPosition);
                         const afterCursor = this.terminalInputBuffer.slice(this.cursorPosition + 1);
                         this.terminalInputBuffer = beforeCursor + afterCursor;
-                        
+
                         // Redraw the line from cursor position
                         this.terminal.write(afterCursor + " \b".repeat(afterCursor.length + 1));
                     }
@@ -306,25 +296,13 @@ export default {
          * Handle clipboard paste operation
          */
         async handlePaste() {
-            // Método 1: navigator.clipboard (solo HTTPS/localhost)
-            if (navigator.clipboard && window.isSecureContext) {
-                try {
-                    const text = await navigator.clipboard.readText();
-                    if (text) {
-                        this.pasteText(text);
-                    }
-                    return;
-                } catch (error) {
-                    console.debug("clipboard API no disponible:", error);
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    this.pasteText(text);
                 }
-            }
-
-            // Método 2: Fallback HTTP
-            // Leer directamente del textarea interno de xterm
-            const xtermTextarea = this.$refs.terminal?.querySelector("textarea.xterm-helper-textarea");
-            if (xtermTextarea) {
-                xtermTextarea.focus();
-                document.execCommand("paste");
+            } catch (error) {
+                console.error("Failed to read from clipboard:", error);
             }
         },
 
@@ -336,19 +314,19 @@ export default {
                 // For main terminal, insert text at current cursor position
                 const beforeCursor = this.terminalInputBuffer.slice(0, this.cursorPosition);
                 const afterCursor = this.terminalInputBuffer.slice(this.cursorPosition);
-                
+
                 // Update the buffer with inserted text
                 this.terminalInputBuffer = beforeCursor + text + afterCursor;
-                
+
                 // Clear the current line and rewrite it
                 this.clearCurrentLine();
                 this.terminal.write(this.terminalInputBuffer);
-                
+
                 // Move cursor to the correct position (after the pasted text)
                 this.cursorPosition += text.length;
                 const backspaces = "\b".repeat(afterCursor.length);
                 this.terminal.write(backspaces);
-                
+
             } else if (this.mode === "interactive") {
                 // For interactive terminal, send directly to server
                 this.$root.emitAgent(this.endpoint, "terminalInput", this.name, text, (res) => {
@@ -365,7 +343,7 @@ export default {
         handleContextMenu(event) {
             // Prevent default context menu
             event.preventDefault();
-            
+
             // Only handle paste for modes that support input
             if (this.mode === "mainTerminal" || this.mode === "interactive") {
                 this.handlePaste();
@@ -386,28 +364,9 @@ export default {
          * Copy text to clipboard
          */
         async copyToClipboard(text) {
-            // Método 1: navigator.clipboard (solo HTTPS/localhost)
-            if (navigator.clipboard && window.isSecureContext) {
-                try {
-                    await navigator.clipboard.writeText(text);
-                    console.debug("Text copied to clipboard:", text);
-                    return;
-                } catch (error) {
-                    console.debug("clipboard API no disponible:", error);
-                }
-            }
-
-            // Método 2: Fallback HTTP con execCommand
             try {
-                const textarea = document.createElement("textarea");
-                textarea.value = text;
-                textarea.style.position = "fixed";
-                textarea.style.opacity = "0";
-                document.body.appendChild(textarea);
-                textarea.select();
-                document.execCommand("copy");
-                document.body.removeChild(textarea);
-                console.debug("Text copied via fallback:", text);
+                await navigator.clipboard.writeText(text);
+                console.debug("Text copied to clipboard:", text);
             } catch (error) {
                 console.error("Failed to copy to clipboard:", error);
             }

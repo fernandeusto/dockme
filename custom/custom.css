@@ -200,9 +200,11 @@ div.mb-3.col-xl-9.col-md-8.col-12 {
         padding-left: 10px !important;
     }
 
-    /* Ocultar categorías de links en móvil */
+    /* Categorías de links visibles en móvil — se muestran al final */
     #dockme-blocks-row [data-block-key^="category:"] {
-        display: none !important;
+        width: 100% !important;
+        min-width: unset !important;
+        max-width: unset !important;
     }
 
     /* Ocultar iconos de editar y organizar en móvil */
@@ -296,23 +298,16 @@ header .nav-item.me-2 > a[href="/console"] {
 header .nav-item.me-2 > a[href="/"] {
     display: none !important;
 }
+/* Ocultar item Configuración del menú de usuario del header */
+.dropdown-item[href="/settings/general"] {
+    display: none !important;
+}
 /* Ocultar titulo del header por defecto "Dockge" junto al logo */
 header .fs-4.title {
     visibility: hidden;
 }
 body.dockme-title-ready header .fs-4.title { /* y mostrarlo cuando lo hemos personalizado */
     visibility: visible;
-}
-
-/* Ocultar contenido de Settings */
-.settings-menu {
-    display: none !important; /* menu lateral siempre oculto */
-}
-.settings-content {
-    display: none !important; /* contenido oculto en cualquier otra settings */
-}
-body.settings-security .settings-content {
-    display: block !important; /* contenido visible solo en settings security */
 }
 
 /* ocultar SIEMPRE el Home nativo de Dockge */
@@ -329,10 +324,6 @@ span.badge.bg-primary {
     color: #fff !important;
 }
 
-/* Ocultar el endpoint en el titulo del header del compose */
-.compose-header .agent-name {
-    display: none !important;
-}
 
 /* Ajustar margen del dashboard para compensar el header mas pequeño */
 #dockme-dashboard {
@@ -963,6 +954,7 @@ span.badge.bg-primary {
     margin-right: 6px;
 }
 
+
 .dockme-edit-stacks-icon,
 .dockme-organize-icon {
     display: flex;
@@ -1129,29 +1121,6 @@ span.badge.bg-primary {
     font-size: 13px;
     color: #ef4444;
 }
-/* mantener fijo en scroll el header en vista compose con icono y nombre*/
-@media (min-width: 701px) {
-    body:has(.compose-header) main {
-        overflow: hidden;
-    }
-    .compose-sticky-wrapper {
-        position: sticky;
-        top: 0;
-        z-index: 200;
-        background: #090c0f;
-        padding-bottom: 10px;
-    }
-    .compose-header,
-    .compose-sticky-wrapper > .mb-3 {
-        position: relative;
-    }
-    body:has(.compose-header)
-    .col-12.col-md-8.col-xl-9.mb-3 {
-        max-height: calc(100vh - 160px);
-        overflow-y: auto;
-        overflow-x: hidden;
-    }
-}
 /* En modo edición de stacks, ocultar la lista lateral en pantallas medianas para dar mas espacio al editor */
 @media (max-width: 1100px) {
     body.dockme-edit-mode div.col-xl-3.col-md-4.col-12 {
@@ -1190,8 +1159,9 @@ span.badge.bg-primary {
     max-width: 800px;
     width: 100%;
     border-collapse: collapse;
-    background: #1c2431;
+    background: #1b2228;
     border-radius: 8px;
+    border: 1px solid #4e5865;
     overflow: hidden;
 }
 
@@ -1532,9 +1502,9 @@ button.btn.btn-danger:hover {
     background-color: #2385d2 !important;
 }
 
-/* ocultar el boton "componer" hasta que cambia el texto */
+/* Ocultar siempre el botón nativo de Dockge — tenemos el nuestro */
 a.btn.btn-primary[href="/compose"] {
-    visibility: hidden;
+    display: none !important;
 }
 
 /* ========================================
@@ -1632,6 +1602,20 @@ a.btn.btn-primary[href="/compose"] {
     display: block;
 }
 
+#config-tab-stacks.active:has(> p:only-child) {
+    height: 570px;
+}
+
+#config-tab-stacks.active:has(> p:only-child) > p {
+    display: table-footer-group;
+    color: #7c94b3;
+    font-size: 1.2em;
+    font-weight: 500;
+    opacity: 0.8;
+    user-select: none;
+    text-align: center;
+}
+
 .config-panel-header {
     display: flex;
     justify-content: space-between;
@@ -1657,11 +1641,11 @@ a.btn.btn-primary[href="/compose"] {
    EDITOR DE LINKS
    ======================================== */
 .links-category-editor {
-    background: #1a2535;
-    border: 1px solid #2a3441;
+    background: #1b2228;
+    border: 1px solid #4e5865;
     border-radius: 8px;
     padding: 12px;
-    margin-bottom: 12px;
+    margin-bottom: 25px;
 }
 
 .links-cat-header {
@@ -2014,8 +1998,9 @@ body.dockme-organizing #dockme-sidebar-handle {
 }
 
 .general-section {
-    background: #1a2537;
+    background: #1b2228;
     border-radius: 8px;
+    border: 1px solid #4e5865;
     padding: 16px 18px;
     display: flex;
     flex-direction: column;
@@ -2133,4 +2118,372 @@ body.dockme-organizing #dockme-sidebar-handle {
     align-items: flex-end;
     gap: 8px;
     flex-shrink: 0;
+}
+/* ── Panel de Logs ─────────────────────────────────────────── */
+#dockme-logs-panel {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: calc(100vh - 120px);
+    min-height: 400px;
+    margin-top: 15px;
+}
+
+
+#logs-header-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: #1c2431;
+    border: 1px solid #2a3441;
+    border-radius: 8px;
+    flex-shrink: 0;
+}
+
+.logs-header-row1 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.logs-header-row2 {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.logs-controls-row1 {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+}
+
+.logs-action-btns {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.logs-action-btn {
+    padding: 2px 10px !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+}
+
+#logs-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.logs-stack-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.btn-back-dashboard {
+    padding: 3px 3px !important;
+}
+
+.logs-stack-name {
+    color: #4f84c8;
+    font-weight: 600;
+    font-size: 1.5em;
+    white-space: nowrap;
+    text-transform: capitalize;
+}
+
+.logs-stack-sep {
+    color: #555;
+    font-size: 1.0em;
+}
+
+.logs-stack-host {
+    color: #bbb840;
+    font-weight: 600;
+    font-size: 1.5em;
+    white-space: nowrap;
+    opacity: 0.7;
+}
+
+.logs-controls {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+}
+
+.logs-controls-sep {
+    width: 1px;
+    height: 24px;
+    background: #2a3441;
+    flex-shrink: 0;
+}
+
+.logs-filter-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.logs-filter-wrap .profile-bar-input {
+    padding-right: 24px;
+}
+
+.logs-filter-clear-btn {
+    position: absolute;
+    right: 6px;
+    background: none;
+    border: none;
+    color: #888;
+    font-size: 1.1em;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+}
+
+.logs-filter-clear-btn:hover {
+    color: #ccc;
+}
+
+.logs-autoscroll-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.logs-autoscroll-label {
+    font-size: 0.85em;
+    color: #aaa;
+    white-space: nowrap;
+    user-select: none;
+}
+
+#logs-area {
+    flex: 1;
+    overflow-y: auto;
+    background: #1c2431;
+    border: 1px solid #2a3441;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.82em;
+    line-height: 1.7;
+}
+
+/* Grid: ts fijo en ch (monospace), cn fijo, msg ocupa el resto y sangra al wrap */
+.logs-line {
+    display: grid;
+    grid-template-columns: calc(8ch + 10px) auto 1fr;
+    gap: 0;
+    word-break: break-word;
+}
+
+/* Sin timestamp activo */
+body.logs-hide-ts .logs-line {
+    grid-template-columns: auto 1fr;
+}
+
+body.logs-hide-ts .logs-ts { display: none; }
+body.logs-hide-ts .logs-cn { grid-column: 1; display: inline; }
+body.logs-hide-ts .logs-msg { grid-column: 2; }
+
+.logs-ts {
+    color: #4caf50;
+    white-space: nowrap;
+    flex-shrink: 0;
+    grid-column: 1;
+    user-select: text;
+}
+
+.logs-cn {
+    color: #4caf50;
+    white-space: nowrap;
+    flex-shrink: 0;
+    grid-column: 2;
+    user-select: text;
+}
+
+/* Ocultar nombre contenedor si hay un solo contenedor Y timestamp visible */
+body:not(.logs-hide-ts) .logs-cn.logs-cn-single { display: none; }
+body:not(.logs-hide-ts) .logs-line.logs-single-cn {
+    grid-template-columns: calc(8ch + 10px) 1fr;
+}
+body:not(.logs-hide-ts) .logs-line.logs-single-cn .logs-msg { grid-column: 2; }
+
+.logs-msg {
+    color: #ccc;
+    grid-column: 3;
+    word-break: break-word;
+    user-select: text;
+}
+
+.logs-line:not(:has(.logs-cn)) .logs-msg {
+    grid-column: 2;
+}
+
+.logs-error-line {
+    color: #e57373;
+    padding: 2px 0;
+    font-style: italic;
+}
+
+.logs-highlight {
+    background: #7c5c00;
+    color: #ffe082;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+/* ── Footer bar de logs ── */
+#logs-footer-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    margin-top: 6px;
+    background: #1c2431;
+    border: 1px solid #2a3441;
+    border-radius: 8px;
+    flex-shrink: 0;
+}
+
+.logs-footer-controls {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex: 1;
+    justify-content: flex-end;
+}
+
+/* ── Botón expandir/contraer ── */
+#logs-expand-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: #1c2431;
+    border: 2px solid #4f84c8;
+    color: #4f84c8;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.2s, color 0.2s;
+    user-select: none;
+}
+
+#logs-expand-btn:hover {
+    background: #2a3441;
+    color: #fff;
+    border-color: #6fa8ff;
+}
+
+#logs-expand-btn svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+
+/* Ocultar sidebar de stacks en modo expandido */
+body.logs-expanded .col-12.col-md-4.col-xl-3[data-v-97ab40f4] {
+    display: none !important;
+}
+
+
+body.dockme-logs-mode #dockme-blocks-row {
+    display: none !important;
+}
+
+/* Expandir lista de stacks siempre — el botón nativo ya no ocupa espacio */
+.stack-list[data-v-06020958] {
+    height: calc(100% - 10px) !important;
+}
+
+/* ── Tabs de logs/compose ── */
+#logs-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 6px 0 0 0;
+    flex-shrink: 0;
+    position: relative;    
+}
+
+.logs-tab {
+    background: #0d1117;
+    border: 1px solid #2a3441;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    color: #888;
+    padding: 5px 16px;
+    font-size: 0.88em;
+    cursor: pointer;
+    transition: color 0.2s, background 0.2s;
+}
+
+.logs-tab:hover {
+    color: #ccc;
+    background: #243040;
+}
+
+.logs-tab.active {
+    color: #4f84c8;
+    background: #1c2431;
+    border-color: #2a3441;
+    font-weight: 500;
+}
+
+/* Compose footer */
+#compose-footer-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 12px;
+    margin-top: 6px;
+    background: #1c2431;
+    border: 1px solid #2a3441;
+    border-radius: 8px;
+    flex-shrink: 0;
+}
+
+/* ── Split panel compose/env ── */
+#compose-area {
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+}
+
+#compose-resize-handle:hover > div {
+    background: #344459;
+}
+
+/* CodeMirror en el tab compose — ancho completo sin área blanca */
+#compose-editor-wrap .CodeMirror,
+#env-editor-wrap .CodeMirror {
+    width: 100% !important;
+    height: 100% !important;
+    box-sizing: border-box;
+}
+
+#compose-editor-wrap .CodeMirror-scroll,
+#env-editor-wrap .CodeMirror-scroll {
+    overflow-x: hidden !important;
+}
+
+#compose-editor-wrap,
+#env-editor-wrap {
+    box-sizing: border-box;
 }

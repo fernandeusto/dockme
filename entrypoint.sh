@@ -210,6 +210,29 @@ fi
 source /opt/venv/bin/activate
 
 # ========================================
+# Descargar xterm.js si no existe
+# ========================================
+XTERM_JS="/custom/xterm.js"
+XTERM_CSS="/custom/xterm.css"
+XTERM_VERSION="5.5.0"
+XTERM_URL="https://unpkg.com/@xterm/xterm@${XTERM_VERSION}"
+XTERM_FIT="/custom/xterm-fit-addon.js"
+XTERM_FIT_URL="https://unpkg.com/@xterm/addon-fit@0.10.0/lib/addon-fit.js"
+
+if [ ! -f "$XTERM_JS" ] || [ $(wc -c < "$XTERM_JS") -lt 10000 ]; then
+    echo "📥 Descargando xterm.js..."
+    curl -sL -o "$XTERM_JS" "${XTERM_URL}/lib/xterm.js" && echo "  ✅ xterm.js descargado" || echo "  ⚠️ No se pudo descargar xterm.js"
+fi
+if [ ! -f "$XTERM_CSS" ] || [ $(wc -c < "$XTERM_CSS") -lt 1000 ]; then
+    echo "📥 Descargando xterm.css..."
+    curl -sL -o "$XTERM_CSS" "${XTERM_URL}/css/xterm.css" && echo "  ✅ xterm.css descargado" || echo "  ⚠️ No se pudo descargar xterm.css"
+fi
+if [ ! -f "$XTERM_FIT" ] || [ $(wc -c < "$XTERM_FIT") -lt 1000 ]; then
+    echo "📥 Descargando xterm fit-addon..."
+    curl -sL -o "$XTERM_FIT" "${XTERM_FIT_URL}" && echo "  ✅ xterm fit-addon descargado" || echo "  ⚠️ No se pudo descargar xterm fit-addon"
+fi
+
+# ========================================
 # 1. Arrancar Dockge (backend)
 # ========================================
 echo "📦 Iniciando backend..."
@@ -219,7 +242,7 @@ tsx /app/backend/index.ts >> /tmp/dockge.log 2>&1 &
 # 2. Arrancar API Node (updates + remove)
 # ========================================
 echo "🔧 Iniciando entorno..."
-node /custom/api.js >> /tmp/api-node.log 2>&1 &
+node /custom/api.js 2>&1 | tee -a /tmp/api-node.log > /proc/1/fd/1 &
 
 # ========================================
 # 3. Scheduler de chequeo
