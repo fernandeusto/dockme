@@ -5508,9 +5508,12 @@ let layoutDirty = false;
         });
     }
 
-    function forceSetupLanguageES() {
+    function forceSetupLanguageES(attempts = 10) {
         const select = document.querySelector('#language');
-        if (!select) return;
+        if (!select) {
+            if (attempts > 0) setTimeout(() => forceSetupLanguageES(attempts - 1), 200);
+            return;
+        }
         if (select.dataset.dockmeForced === 'true') return;
         select.value = 'es';
         select.dispatchEvent(new Event('change', { bubbles: true }));
