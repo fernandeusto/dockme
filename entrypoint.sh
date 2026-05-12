@@ -117,7 +117,7 @@ fi
 # Crear settings.json si no existe (recupera valores del compose y de updates.json si los hay)
 if [ ! -f "/app/data/config/settings.json" ]; then
     python3 << 'PYEOF'
-import json, os
+import json, os, re
 
 # Hora del check: coger la primera si hay varias separadas por coma
 check_times_raw = os.environ.get('CHECK_TIMES', '09:00')
@@ -156,7 +156,8 @@ is_agent    = bool(webhook_url and endpoint and endpoint.lower() != 'actual')
 # Añadir http:// si falta en la URL del central
 if is_agent and webhook_url and not webhook_url.startswith('http'):
     webhook_url = 'http://' + webhook_url
-central_url = webhook_url.rstrip('/') if is_agent else ''
+# Extraer solo base URL (scheme + host + port), sin paths
+central_url = re.sub(r'(/.*)?$', '', webhook_url) if is_agent else ''
 
 # Construir URL de shoutrrr desde variables de Telegram si existen
 # Solo en central/standalone — los agentes no gestionan notificaciones
@@ -187,6 +188,28 @@ with open('/app/data/config/settings.json', 'w') as f:
     json.dump(settings, f, indent=2)
 
 print("✅ settings.json creado con valores del entorno")
+PYEOF
+fi
+
+# Siempre actualizar centralUrl en agentes — refleja cambios en el compose
+if [ -n "$WEBHOOK_URL" ] && [ -n "$ENDPOINT" ] && [ "$ENDPOINT" != "Actual" ]; then
+    python3 << PYEOF
+import json, os, re
+webhook_url = os.environ.get('WEBHOOK_URL', '')
+if webhook_url and not webhook_url.startswith('http'):
+    webhook_url = 'http://' + webhook_url
+# Solo base URL sin paths
+central_url = re.sub(r'(/.*)?$', '', webhook_url)
+try:
+    with open('/app/data/config/settings.json', 'r') as f:
+        s = json.load(f)
+    if s.get('centralUrl') != central_url:
+        s['centralUrl'] = central_url
+        with open('/app/data/config/settings.json', 'w') as f:
+            json.dump(s, f, indent=2)
+        print(f"✅ centralUrl actualizado a {central_url}")
+except Exception as e:
+    print(f"⚠️ No se pudo actualizar centralUrl: {e}")
 PYEOF
 fi
 
