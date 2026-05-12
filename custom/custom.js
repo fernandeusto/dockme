@@ -5250,7 +5250,6 @@ let layoutDirty = false;
     function ensureDockmeRoot() {
         let root = document.querySelector('#dockme-dashboard');
         if (root) return root;
-        return null;
         // Si es agente, mostrar mensaje en lugar del dashboard
         if (!!State.settingsData?.centralUrl) {
             const centralUrl = State.settingsData.centralUrl || '';

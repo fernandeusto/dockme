@@ -161,26 +161,28 @@
     });
 
     socket.on('connect', () => {
-        const token = localStorage.getItem('token') || sessionStorage.getItem('token');
-        if (!token) {
-            // Esperar brevemente por si el servidor envía evento 'setup'
-            setTimeout(() => {
-                if (authMode !== 'setup') showLogin();
-            }, 300);
-            return;
-        }
-        socket.emit('loginByToken', token, res => {
-            if (res?.ok) {
-                console.log('[v2] Autenticado con token');
-                onLoginOk(token);
-            } else {
-                localStorage.removeItem('token');
-                sessionStorage.removeItem('token');
-                setTimeout(() => {
-                    if (authMode !== 'setup') showLogin();
-                }, 300);
-            }
-        });
+        // Detectar modo agente antes de mostrar login (para ocultar "Recuérdame")
+        fetch('/config/settings.json')
+            .then(r => r.json())
+            .then(s => { if (s?.centralUrl) window._dmIsRemoteAgent = true; })
+            .catch(() => {})
+            .finally(() => {
+                const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+                if (!token) {
+                    setTimeout(() => { if (authMode !== 'setup') showLogin(); }, 300);
+                    return;
+                }
+                socket.emit('loginByToken', token, res => {
+                    if (res?.ok) {
+                        console.log('[v2] Autenticado con token');
+                        onLoginOk(token);
+                    } else {
+                        localStorage.removeItem('token');
+                        sessionStorage.removeItem('token');
+                        setTimeout(() => { if (authMode !== 'setup') showLogin(); }, 300);
+                    }
+                });
+            });
     });
 
     ['dm-auth-pass', 'dm-auth-rep'].forEach(id => {
