@@ -6122,6 +6122,25 @@ function applyAgentMode(centralUrl) {
         if (dockmeIconsLi) dockmeIconsLi.style.setProperty('display', 'none', 'important');
         const novedadesBtn = document.querySelector('.btn-novedades-dockme');
         if (novedadesBtn) novedadesBtn.style.setProperty('display', 'none', 'important');
+
+        // Mostrar mensaje de servidor gestionado si no está ya
+        const dashboard = document.querySelector('#dockme-dashboard');
+        if (dashboard && !dashboard.querySelector('.agent-managed-msg')) {
+            dashboard.innerHTML = `
+                <div class="agent-managed-msg" style="text-align:center;padding:40px 20px;max-width:560px;margin:0 auto;">
+                    <img src="/system-icons/dockme.svg" style="width:48px;height:48px;margin-bottom:14px;opacity:0.75;">
+                    <div style="font-size:1.1em;font-weight:600;color:#fff;margin-bottom:12px;">Servidor gestionado de forma centralizada</div>
+                    <p style="color:#c0cfe0;font-size:0.9em;line-height:1.7;margin:0 0 10px 0;">
+                        Este servidor está siendo gestionado desde ${centralLink}.
+                    </p>
+                    <p style="color:#a0b8d0;font-size:0.85em;line-height:1.7;margin:0 0 12px 0;">
+                        Este servidor debería aparecer detectado en el servidor central. Si no aparece tras refrescar la página del central, verifica que las variables del compose tengan la URL del central correcta. Para volver al modo sin conexión a central, elimina las variables de agente en este compose.
+                    </p>
+                    <p style="color:#7a9cc4;font-size:0.82em;margin:0;">
+                        Más info en <a href="https://github.com/fernandeusto/dockme" target="_blank" style="color:#7eb8f7;">github.com/fernandeusto/dockme</a>
+                    </p>
+                </div>`;
+        }
     };
 
     applyUI();

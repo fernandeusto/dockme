@@ -60,7 +60,9 @@
             if (subtitle) subtitle.textContent = '';
             if (repWrap)  repWrap.style.display = 'none';
             const isRemote = window._dmIsRemoteAgent || false;
-            if (remWrap)  remWrap.style.display = isRemote ? 'none' : '';
+            if (remWrap)  remWrap.style.setProperty('display', isRemote ? 'none' : '', 'important');
+            const remCheck = document.getElementById('dm-remember');
+            if (isRemote && remCheck) remCheck.checked = false;
             if (btn)      btn.textContent = 'Iniciar Sesión';
         }
         document.getElementById('dm-auth-user').value = '';
