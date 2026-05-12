@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/svg+xml" href="/icon.svg">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" id="theme-color" content="#161B22">
+    <title>DockMe</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/custom.css">
+</head>
+<body class="dark" style="background:#090c0f !important;color:#ccc;">
+
+<!-- AUTH OVERLAY -->
+<div id="dm-auth-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#090c0f;align-items:center;justify-content:center;overflow:auto;">
+  <div class="form-container">
+    <div class="form">
+      <div style="text-align:center;margin-bottom:16px;">
+        <img src="/system-icons/dockme.svg" style="width:64px;height:64px;">
+        <div style="font-size:28px;font-weight:bold;margin-top:5px;color:#f0f6fc;">DockMe</div>
+        <div id="dm-auth-subtitle" style="font-size:14px;color:#8b949e;margin-top:4px;"></div>
+      </div>
+      <div class="dm-auth-field mt-3">
+        <input id="dm-auth-user" type="text" class="dm-auth-input" placeholder="Nombre de Usuario" autocomplete="username" required>
+      </div>
+      <div class="dm-auth-field mt-3">
+        <input id="dm-auth-pass" type="password" class="dm-auth-input" placeholder="Contraseña" autocomplete="current-password" required>
+      </div>
+      <div id="dm-auth-rep-wrap" class="dm-auth-field mt-3" style="display:none;">
+        <input id="dm-auth-rep" type="password" class="dm-auth-input" placeholder="Repetir Contraseña" autocomplete="new-password">
+      </div>
+      <div id="dm-auth-remember-wrap" class="form-check mb-3 mt-3 d-flex justify-content-center pe-4">
+        <div class="form-check">
+          <input id="dm-remember" type="checkbox" class="form-check-input" value="remember-me" checked>
+          <label class="form-check-label" for="dm-remember">Recuérdame</label>
+        </div>
+      </div>
+      <div id="dm-auth-err" style="display:none;color:#ef5350;font-size:.85rem;margin:8px 0;text-align:center;min-height:1.2em;"></div>
+      <button id="dm-auth-btn" class="w-100 btn btn-primary mt-2" type="button">Iniciar Sesión</button>
+    </div>
+  </div>
+</div>
+
+<div id="app" style="display:none;">
+  <div class="dark">
+
+    <!-- HEADER -->
+    <header id="dm-header" class="d-flex flex-wrap justify-content-center py-3 mb-3 border-bottom">
+      <div class="d-flex align-items-center mb-3 mb-md-0 me-md-auto text-dark text-decoration-none">
+        <object class="bi me-2 ms-4" width="40" height="40" data="/icon.svg"></object>
+        <span class="fs-4 title" id="dm-header-title" style="cursor:pointer;"></span>
+      </div>
+      <ul class="nav nav-pills">
+        <li class="nav-item me-2" id="dm-icons-li"></li>
+        <li class="nav-item">
+          <div class="dropdown dropdown-profile-pic">
+            <div class="nav-link" data-bs-toggle="dropdown">
+              <div class="profile-pic" id="dm-profile-pic"></div>
+              <svg class="svg-inline--fa fa-angle-down" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M201.4 342.6c12.5 12.5 32.8 12.5 45.3 0l160-160c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L224 274.7 86.6 137.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l160 160z"/></svg>
+            </div>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><span class="dropdown-item-text">Sesión iniciada como <strong id="dm-username"></strong></span></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><button class="dropdown-item" id="dm-btn-scan"><svg class="svg-inline--fa fa-arrows-rotate" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="currentColor" d="M105.1 202.6c7.7-21.8 20.2-42.3 37.8-59.8c62.5-62.5 163.8-62.5 226.3 0L386.3 160H336c-17.7 0-32 14.3-32 32s14.3 32 32 32H463.5c0 0 0 0 0 0h.4c17.7 0 32-14.3 32-32V64c0-17.7-14.3-32-32-32s-32 14.3-32 32v51.2L414.4 97.6c-87.5-87.5-229.3-87.5-316.8 0C73.2 122 55.6 150.7 44.8 181.4c-5.9 16.7 2.9 34.9 19.5 40.8s34.9-2.9 40.8-19.5zM39 289.3c-5 1.5-9.8 4.2-13.7 8.2c-4 4-6.7 8.8-8.1 14c-.3 1.2-.6 2.5-.8 3.8c-.3 1.7-.4 3.4-.4 5.1V448c0 17.7 14.3 32 32 32s32-14.3 32-32V396.9l17.6 17.5 0 0c87.5 87.4 229.3 87.4 316.7 0c24.4-24.4 42.1-53.1 52.9-83.7c5.9-16.7-2.9-34.9-19.5-40.8s-34.9 2.9-40.8 19.5c-7.7 21.8-20.2 42.3-37.8 59.8c-62.5 62.5-163.8 62.5-226.3 0l-.1-.1L125.6 352H176c17.7 0 32-14.3 32-32s-14.3-32-32-32H48.4c-1.6 0-3.2 .1-4.8 .3s-3.1 .5-4.6 1z"/></svg> Escanear Carpeta de Pilas</button></li>
+
+              <li><button class="dropdown-item" id="dm-btn-logout"><svg class="svg-inline--fa fa-right-from-bracket" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="currentColor" d="M377.9 105.9L500.7 228.7c7.2 7.2 11.3 17.1 11.3 27.3s-4.1 20.1-11.3 27.3L377.9 406.1c-6.4 6.4-15 9.9-24 9.9c-18.7 0-33.9-15.2-33.9-33.9l0-62.1-128 0c-17.7 0-32-14.3-32-32l0-64c0-17.7 14.3-32 32-32l128 0 0-62.1c0-18.7 15.2-33.9 33.9-33.9c9 0 17.6 3.6 24 9.9zM160 96L96 96c-17.7 0-32 14.3-32 32l0 256c0 17.7 14.3 32 32 32l64 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-64 0c-53 0-96-43-96-96L0 128C0 75 43 32 96 32l64 0c17.7 0 32 14.3 32 32s-14.3 32-32 32z"/></svg> Cerrar Sesión</button></li>
+            </ul>
+          </div>
+        </li>
+      </ul>
+    </header>
+
+    <main>
+      <div class="container-fluid">
+        <div class="row">
+
+          <!-- Columna de stacks -->
+          <div id="dm-col2" class="col-12 col-md-4 col-xl-3">
+
+            <div class="dm-list-box">
+              <div class="list-header">
+                <div class="header-top">
+                  <button class="btn btn-primary" id="dm-btn-newstack" title="Nuevo Stack" style="margin-left:6px;padding-left:8px !important;padding-right:8px !important;font-size:0.85em;flex-shrink:0;"><svg class="svg-inline--fa fa-plus" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" style="width:12px;height:12px;"><path fill="currentColor" d="M256 80c0-17.7-14.3-32-32-32s-32 14.3-32 32V224H48c-17.7 0-32 14.3-32 32s14.3 32 32 32H192V432c0 17.7 14.3 32 32 32s32-14.3 32-32V288H400c17.7 0 32-14.3 32-32s-14.3-32-32-32H256V80z"/></svg></button>
+                  <div class="placeholder"></div>
+                  <div class="search-wrapper">
+                    <a class="search-icon"><svg class="svg-inline--fa fa-magnifying-glass" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="currentColor" d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352a144 144 0 1 0 0-288 144 144 0 1 0 0 288z"/></svg></a>
+                    <form><input id="dm-flt-input" class="form-control search-input" autocomplete="off"></form>
+                  </div>
+                </div>
+              </div>
+              <div id="dm-stack-list" class="dm-stack-list scrollbar"></div>
+              <a id="dm-github-footer" href="https://github.com/fernandeusto/dockme" target="_blank" rel="noopener" style="display:flex;align-items:center;gap:7px;opacity:0.4;text-decoration:none;color:rgb(204,204,204);transition:opacity 0.2s;justify-content:center;min-height:2.5em;line-height:1.25em;margin-left:-20px;flex-shrink:0;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="width:24px;height:24px;flex-shrink:0;"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02 0 2.04.13 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>DockMe — ¡Déjanos una estrella!</a>
+            </div>
+          </div>
+
+          <!-- Col de contenido -->
+          <div class="col-12 col-md-8 col-xl-9 mb-3">
+            <div id="dockme-dashboard" class="row" style></div>
+          </div>
+
+        </div>
+      </div>
+    </main>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<script src="/init.js"></script>
+<script src="/custom.js"></script>
+
+</body>
+</html>

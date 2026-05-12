@@ -14,5 +14,6 @@ services:
     
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock # para gestionar los docker del host
+      - /sys:/host/sys:ro                         # Métricas de uso de Red
       - ./dockme-data:/app/data                   # para persistir configuraciones, iconos, etc.
       - ./stacks:/opt/stacks:rw                   # ubicacion de archivos compose.yml de cada stack

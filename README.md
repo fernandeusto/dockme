@@ -42,6 +42,7 @@ services:
     
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # Acceso al Docker daemon
+      - /sys:/host/sys:ro                          # Métricas de uso de Red
       - ./dockme:/app/data                         # Datos persistentes
       - ./stacks:/opt/stacks                       # Docker Compose stacks
 ```

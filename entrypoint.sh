@@ -205,6 +205,20 @@ fi
 
 
 # ========================================
+# Detectar check interrumpido al reiniciar
+# ========================================
+CHECK_PROGRESS="/app/data/config/check-progress.json"
+if [ -f "$CHECK_PROGRESS" ]; then
+    STATUS=$(python3 -c "import json; d=json.load(open('$CHECK_PROGRESS')); print(d.get('status',''))" 2>/dev/null)
+    if [ "$STATUS" = "checking" ]; then
+        echo "⚠️  Check interrumpido detectado — reseteando y relanzando al arrancar"
+        printf '{"status":"idle","percent":0,"lastCheck":null}' > "$CHECK_PROGRESS"
+        # Marcar para lanzar check tras arrancar los servicios
+        NEEDS_CHECK=1
+    fi
+fi
+
+# ========================================
 # Activar virtualenv para Python
 # ========================================
 source /opt/venv/bin/activate
@@ -253,8 +267,8 @@ if [ -n "$WEBHOOK_URL" ] && [ -n "$ENDPOINT" ] && [ "$ENDPOINT" != "Actual" ]; t
     echo "📡 Modo agente remoto — scheduler desactivado (el central gestiona los checks)"
 fi
 
-# Arrancar API Flask para métricas (bajo demanda, sin loop)
-su -s /bin/bash apps -c "cd /tools && python3 api_metrics.py" >> /tmp/metrics.log 2>&1 &
+# Arrancar MetricsService (Node.js nativo — reemplaza api_metrics.py + metrics.sh)
+node /tools/MetricsService.js >> /tmp/metrics.log 2>&1 &
 
 # ========================================
 # 4. Registro inicial en servidor central
@@ -329,6 +343,12 @@ fi
 echo "===================="
 echo "✅ Dockme está listo"
 echo "===================="
+
+# Relanzar check si fue interrumpido al reiniciar
+if [ "${NEEDS_CHECK:-0}" = "1" ]; then
+    (sleep 15 && curl -s -X POST http://127.0.0.1:5002/api/run-check -H 'Content-Type: application/json' -d '{"mode":"all"}' > /dev/null 2>&1) &
+    echo "🔄 Check programado para relanzarse en 15s"
+fi
 
 # Nginx debe correr en foreground como usuario apps
 exec su -s /bin/bash apps -c "nginx -g 'daemon off;'"

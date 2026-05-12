@@ -556,14 +556,21 @@ app.post('/api/mark-agents-migration-shown', (req, res) => {
 // ============================
 app.post('/api/test-notification', async (req, res) => {
   try {
-    const settings = readSettingsFile();
-    const notif = settings.notifications || {};
-    const urls = Array.isArray(notif.urls) ? notif.urls.filter(Boolean) : [];
-    if (urls.length === 0) {
-      return res.status(400).json({ success: false, message: 'No hay URLs de notificación configuradas' });
+    // Si viene testUrl en el body, usarla sin guardar
+    const testUrl = req.body?.testUrl?.trim();
+    let url;
+    if (testUrl) {
+      url = testUrl;
+    } else {
+      const settings = readSettingsFile();
+      const notif = settings.notifications || {};
+      const urls = Array.isArray(notif.urls) ? notif.urls.filter(Boolean) : [];
+      if (urls.length === 0) {
+        return res.status(400).json({ success: false, message: 'No hay URLs de notificación configuradas' });
+      }
+      url = urls[0];
     }
     const msg = '🔔 DockMe — Notificación de prueba.';
-    const url = urls[0];
     const tmpFile = `/tmp/shoutrrr-test-${Date.now()}.txt`;
     fs.writeFileSync(tmpFile, msg);
     exec(`shoutrrr send --url ${JSON.stringify(url)} --message - < ${tmpFile}`,
@@ -2051,7 +2058,7 @@ app.post('/api/create-stack', async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`✅ API Node lista en puerto ${port}`);
+  console.log(`✅ API Node lista`);
   console.log(`🔗 [Connected] Endpoints activos: [ninguno — pendiente sincronización del frontend]`);
   setupScheduler();
 });

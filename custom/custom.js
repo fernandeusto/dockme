@@ -1,7 +1,5 @@
 (function () {
     'use strict';
-    let dockmeWaitingForLogin = false;
-    let dockmeLoginWasVisible = false;
     let dockmeEditMode = false;
     let dockmeEditModeFilterBackup = null;
     let logsEventSource = null;
@@ -12,6 +10,7 @@
     let logsActiveTab = 'logs'; // recordar el tab activo entre stacks
     let dockmeUpdateInProgress = false;
     let dockmeIconVersion = localStorage.getItem('dockmeIconVersion') || Date.now();
+    window.dockmeIconVersion = dockmeIconVersion;
     // Polling de icon-version al arrancar — detecta cuando el CDN termina de descargar iconos
     // y refresca stacksConfig + iconos en la UI sin necesidad de F5
     (() => {
@@ -25,7 +24,7 @@
                     if (data.version && data.version > dockmeIconVersion) {
                         dockmeIconVersion = data.version;
                         localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
-                        loadStacksConfig().then(() => reasignarIconos());
+                        loadStacksConfig();
                     }
                     attempts++;
                     if (attempts < MAX_ATTEMPTS) setTimeout(check, INTERVAL_MS);
@@ -58,12 +57,13 @@
                                                 .forEach(s => { s.icon = d.iconFile; });
                                     dockmeIconVersion = Date.now();
                                     localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
-                                    reasignarIconos();
                                 }
                             })
                             .catch(() => {});
                     });
                 }
+                // Re-renderizar lista de stacks con iconos actualizados
+                if (window._dmRenderStacks) window._dmRenderStacks();
             })
             .catch(() => { stacksConfig = []; });
     };
@@ -114,7 +114,10 @@
 
         getSidebarWidth() {
             const localWidths = JSON.parse(localStorage.getItem(`dockme-widths-${currentDeviceId}`) || '{}');
-            return localWidths['sidebar'] ?? (this.layouts[currentLayoutProfile]?.sidebarWidth ?? 350);
+            const local = localWidths['sidebar'];
+            // 0 no es un ancho válido — usar el del perfil como fallback
+            if (local && local > 100) return local;
+            return this.layouts[currentLayoutProfile]?.sidebarWidth ?? 350;
         },
 
         getActiveBlocks() {
@@ -168,13 +171,14 @@
                 return block;
             }).filter(Boolean);
             // Capturar ancho del sidebar
-            const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
+            const sidebar = document.getElementById('dm-col2');
             if (sidebar) {
                 const sw = sidebar.offsetWidth;
-                localWidths['sidebar'] = sw;
-                // Guardar también en el perfil del servidor
-                if (this.layouts[currentLayoutProfile]) {
-                    this.layouts[currentLayoutProfile].sidebarWidth = sw;
+                if (sw > 100) {  // ignorar anchos inválidos (col oculta = 0)
+                    localWidths['sidebar'] = sw;
+                    if (this.layouts[currentLayoutProfile]) {
+                        this.layouts[currentLayoutProfile].sidebarWidth = sw;
+                    }
                 }
             }
             // Guardar anchos localmente
@@ -232,7 +236,7 @@
             // Mantener modo organizar activo
             const row = document.querySelector('#dockme-blocks-row');
             if (row) row.classList.add('organizing');
-            document.querySelector('.dockme-organize-icon')?.classList.add('active');
+            document.querySelector('.organize-icon')?.classList.add('active');
             document.body.classList.add('dockme-organizing');
         },
 
@@ -247,8 +251,10 @@ async switchTo(profileName) {
             // Actualizar ancho del sidebar inmediatamente (CSS rule + inline style)
             const newSidebarW = this.getSidebarWidth();
             DynamicStyles.updateForRoute(State.lastPath);
-            const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
-            if (sidebar) sidebar.style.setProperty('width', newSidebarW + 'px', 'important');
+            if (window.innerWidth > 700) {
+                const sidebar = document.getElementById('dm-col2');
+                if (sidebar) sidebar.style.setProperty('width', newSidebarW + 'px', 'important');
+            }
 
             await Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
                 this.applyToLinksConfig(profile.blocks);
@@ -262,7 +268,7 @@ async switchTo(profileName) {
                             el.draggable = true;
                         });
                     }
-                    document.querySelector('.dockme-organize-icon')?.classList.add('active');
+                    document.querySelector('.organize-icon')?.classList.add('active');
                     renderProfileBar();
                 }, 100);
             });
@@ -271,13 +277,10 @@ async switchTo(profileName) {
 
     // ==================== CONSTANTES ====================
     const CONFIG = {
-        DEBOUNCE_MS: 150,
         BASE_URL: window.location.origin,
         ICON_DEFAULT: `${window.location.origin}/system-icons/no-icon.svg`,
-        REORDER_INTERVAL: 1000,
         RECENT_COMPOSES_LIMIT: 9,
         FOCUS_DELAY: 1200,
-        ICON_REFRESH_DELAY: 1000
     };
 
     // ==================== GESTIÓN DE ESTADO GLOBAL ====================
@@ -291,6 +294,14 @@ async switchTo(profileName) {
         setUpdatesData(data) {
             this.updatesDataGlobal = data;
             window.updatesDataGlobal = data;
+            // Sincronizar hostnames en dm-col2
+            if (window._dmEndpointToHost && Array.isArray(data)) {
+                data.forEach(h => {
+                    const ep = h.endpoint || 'Actual';
+                    window._dmEndpointToHost[ep] = h.hostname || ep;
+                });
+                if (window._dmRenderStacks) window._dmRenderStacks();
+            }
             // primaryHost viene de settings.json (fuente de verdad)
             // updatesDataGlobal ya no lo lleva
             if (Array.isArray(data)) {
@@ -298,7 +309,7 @@ async switchTo(profileName) {
                 const ph = this.settingsData?.primaryHost || local?.primaryHost || null;
                 if (ph) {
                     primaryHostLocal = ph;
-                } else if (local && RouteManager.isRootPath() && !State.settingsData?.centralUrl && !RouteManager.isSetupPath()) {
+                } else if (local && RouteManager.isRootPath() && !State.settingsData?.centralUrl) {
                     // Primera vez — mostrar modal para configurar IP base
                     setTimeout(() => {
                         showPrimaryHostModal('Actual', null, (newVal, onSuccess) => {
@@ -338,63 +349,33 @@ async switchTo(profileName) {
 
     // ==================== UTILIDADES ====================
     const Utils = {
-        debounce(func, wait) {
-            let timeout;
-            return function executedFunction(...args) {
-                const later = () => {
-                    clearTimeout(timeout);
-                    func(...args);
-                };
-                clearTimeout(timeout);
-                timeout = setTimeout(later, wait);
-            };
-        },
-
         capitalizeFirst(str) {
             return str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
-        },
-
-        isEditing() {
-            const el = document.activeElement;
-            if (!el) return false;
-            if (el.classList?.contains('search-input') && el.value.trim() === '') {
-                return false;
-            }
-            return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
-        },
-
-        loadImage(url, fallback) {
-            return new Promise((resolve) => {
-                const img = new Image();
-                img.onload = () => resolve(url);
-                img.onerror = () => resolve(fallback);
-                img.src = url;
-            });
         },
 
     };
     // ==================== UI / NAVEGACIÓN ====================
     function ensureTitleIsCorrect() {
         const titleElement = document.querySelector('.fs-4.title');
-        if (!titleElement) return;
-        // Actualizar título siempre con el hostname local
+        if (!titleElement || titleElement.dataset.dockmeTitle) return;
         const hostname = State.hostnameLocal || 'Dockme';
         titleElement.textContent = hostname;
         document.title = `Dockme - ${hostname}`;
         titleElement.style.visibility = '';
         document.body.classList.add('dockme-title-ready');
-        // Click en el título → volver al dashboard
-        if (!titleElement.dataset.dockmeClick) {
-            titleElement.dataset.dockmeClick = '1';
-            titleElement.style.cursor = 'pointer';
-            titleElement.addEventListener('click', () => {
-                if (document.body.classList.contains('dockme-logs-mode')) {
-                    deactivateLogsMode();
-                }
-                window.history.pushState({}, '', '/');
-                window.dispatchEvent(new Event('popstate'));
-            });
-        }
+        titleElement.dataset.dockmeTitle = '1';
+        titleElement.addEventListener('click', () => {
+            if (document.body.classList.contains('dockme-logs-mode')) deactivateLogsMode();
+            if (document.body.classList.contains('dockme-edit-mode')) {
+                const editIcon = document.querySelector('.edit-icon');
+                if (editIcon) editIcon.click();
+            }
+            if (document.body.classList.contains('dockme-organize-mode') || 
+                document.querySelector('#dockme-blocks-row.organizing')) {
+                const orgIcon = document.querySelector('.organize-icon');
+                if (orgIcon) orgIcon.click();
+            }
+        });
     }
     // ==================== GESTIÓN DE STORAGE ====================
     const Storage = {
@@ -432,7 +413,7 @@ async switchTo(profileName) {
         },
 
         isSetupPath() {
-            return window.location.pathname === '/setup';
+            return false;
         }
     };
 
@@ -519,219 +500,8 @@ async switchTo(profileName) {
     };
 
     // ==================== GESTIÓN DE ICONOS Y BADGES ====================
-    const BadgeManager = {
-        getStateColor(estado) {
-            const e = (estado || '').toLowerCase();
-            if (e.includes('inactivo') || e.includes('inactive')) return 'gray';
-            if (e.includes('activo') || e.includes('running') || e.includes('up') || e.includes('starting')) return 'green';
-            if (e.includes('finalizado') || e.includes('exited') || e.includes('down') || e.includes('stopped')) return 'red';
-            return 'gray';
-        },
-
-        inferStateFromClass(badge) {
-            const cs = badge.classList;
-            if (cs.contains('bg-success')) return 'running';
-            if (cs.contains('bg-warning')) return 'starting';
-            if (cs.contains('bg-danger')) return 'exited';
-            if (cs.contains('bg-secondary') || cs.contains('bg-info')) return 'inactive';
-            return '';
-        },
-
-        normalize(badge) {
-            if (badge.className !== 'cp-badge') {
-                badge.className = 'cp-badge';
-            }
-            
-            [...badge.childNodes].forEach(n => {
-                if (n.nodeType === Node.TEXT_NODE) {
-                    badge.removeChild(n);
-                } else if (n.nodeType === Node.ELEMENT_NODE) {
-                    const isIcon = n.classList?.contains('cp-icon');
-                    const isCircle = n.classList?.contains('cp-circle');
-                    if (!isIcon && !isCircle) {
-                        badge.removeChild(n);
-                    }
-                }
-            });
-        },
-        async ensureIcon(badge, item) {
-            let img = badge.querySelector('img.cp-icon');
-            const href = item.getAttribute('href') || '';
-            const match = href.match(/^\/compose\/([^/]+)/);
-            const nombreOriginal = match ? match[1] : null;
-            const endpointOriginal = href.match(/\/compose\/[^/]+\/(.+)$/)?.[1] || 'Actual';
-            if (!nombreOriginal) return;
-            const iconoUrl = getStackIconUrl(nombreOriginal, endpointOriginal);
-            if (!img) {
-                img = document.createElement('img');
-                img.className = 'cp-icon';
-                img.setAttribute('data-icono-app', '1');
-                img.style.height = '96px';
-                img.style.width = 'auto';
-                img.style.marginRight = '8px';
-                badge.insertBefore(img, badge.firstChild);
-            }
-            img.dataset.stackName = nombreOriginal;
-            img.dataset.stackEndpoint = endpointOriginal;
-            const finalUrl = await Utils.loadImage(
-                iconoUrl,
-                `${CONFIG.ICON_DEFAULT}?v=${dockmeIconVersion}`
-            );
-            img.src = finalUrl;
-            if (finalUrl.includes(CONFIG.ICON_DEFAULT)) {
-                img.dataset.iconoFallback = 'true';
-            } else {
-                delete img.dataset.iconoFallback;
-            }
-        },
-        ensureCircle(badge) {
-            let circulo = badge.querySelector('span.cp-circle');
-            if (!circulo) {
-                circulo = document.createElement('span');
-                circulo.className = 'cp-circle';
-                circulo.setAttribute('data-circulo-estado', '1');
-                badge.appendChild(circulo);
-            }
-            return circulo;
-        },
-
-        applyState(badge) {
-            let estado = (badge.dataset.cpEstado || '').trim();
-            if (!estado) {
-                const texto = (badge.textContent || '').trim();
-                if (texto) estado = texto;
-            }
-            if (!estado) {
-                estado = this.inferStateFromClass(badge);
-            }
-            
-            badge.dataset.cpEstado = estado || '';
-            const color = this.getStateColor(estado);
-            const circulo = this.ensureCircle(badge);
-            circulo.style.backgroundColor = color;
-            circulo.dataset.colorEstado = color;
-            circulo.title = estado || 'estado';
-        },
-
-        process(badge, item) {
-            const snap = (badge.textContent || '').trim();
-            if (snap) badge.dataset.cpEstado = snap;
-            
-            this.normalize(badge);
-            this.ensureIcon(badge, item);
-            this.applyState(badge);
-        }
-    };
 
     // ==================== GESTIÓN DE ITEMS ====================
-    const ItemManager = {
-        processTitle(item) {
-            const span = item.querySelector('.title span');
-            if (!span) return '';
-            
-            const original = span.textContent.trim();
-            let texto = Utils.capitalizeFirst(original);
-            
-            if (texto !== original) span.textContent = texto;
-            
-            const circulo = item.querySelector('.cp-badge .cp-circle');
-            const inactivo = circulo && circulo.dataset.colorEstado === 'gray';
-            
-            span.classList.add('cp-title');
-            span.classList.toggle('active', !inactivo);
-            span.classList.toggle('inactive', inactivo);
-            
-            item.dataset.cpSortKey = texto.toLowerCase();
-            item.dataset.cpGrupo = inactivo ? '1' : '0';
-            
-            return original;
-        },
-
-        processEndpoint(item) {
-            const href = item.getAttribute('href') || '';
-            const match = href.match(/^\/compose\/([^/]+)(?:\/([^/]+))?/);
-            if (!match) return;
-
-            const endpoint = match[2] || 'Actual';
-            const host = State.updatesDataGlobal?.find(h =>
-                h.endpoint.toLowerCase() === endpoint.toLowerCase()
-            );
-            const hostname = host?.hostname || endpoint;
-
-            const divEndpoint = item.querySelector('.endpoint');
-            if (divEndpoint) {
-                divEndpoint.textContent = hostname;
-                divEndpoint.style.color = '#4275b6';
-                divEndpoint.style.marginTop = '0px';
-            }
-        },
-
-        needsReorder(items) {
-            const byDom = Array.from(items);
-            const byKey = [...items].sort((a, b) => {
-                const ka = a.dataset.cpSortKey || '';
-                const kb = b.dataset.cpSortKey || '';
-                return ka.localeCompare(kb);
-            });
-            
-            return byDom.some((el, i) => el !== byKey[i]);
-        },
-
-        reorder() {
-            if (Utils.isEditing()) return;
-            
-            const items = Array.from(document.querySelectorAll('a.item'));
-            if (items.length === 0) return;
-
-            items.forEach(item => this.processTitle(item));
-            
-            if (!this.needsReorder(items)) return;
-
-            const contenedor = items[0].parentElement;
-            if (!contenedor) return;
-
-            const ordenados = [...items].sort((a, b) => {
-                const ga = a.dataset.cpGrupo || '0';
-                const gb = b.dataset.cpGrupo || '0';
-                if (ga !== gb) return ga.localeCompare(gb);
-
-                const ka = a.dataset.cpSortKey || '';
-                const kb = b.dataset.cpSortKey || '';
-                return ka.localeCompare(kb);
-            });
-
-            const frag = document.createDocumentFragment();
-            ordenados.forEach(el => frag.appendChild(el));
-            contenedor.appendChild(frag);
-            // Reaplicar filtro activo tras reordenar si no esta en modo edición
-            if (!dockmeEditMode && MetricsManager.filterActive && MetricsManager.currentFilter) {
-                MetricsManager.applyHostFilter(MetricsManager.currentFilter);
-            }
-        },
-
-        processAll() {
-            document.querySelectorAll('a.item').forEach(item => {
-                this.processTitle(item);
-                this.processEndpoint(item);
-                
-                const badge = item.querySelector('.badge');
-                if (badge) {
-                    BadgeManager.process(badge, item);
-                }
-            });
-            
-            this.reorder();
-        },
-
-        refreshIcons() {
-            document.querySelectorAll('a.item').forEach(item => {
-                const badge = item.querySelector('.badge');
-                if (badge) {
-                    BadgeManager.ensureIcon(badge, item);
-                }
-            });
-        }
-    };
 
     // ==================== GESTIÓN DE BLOQUES DE STACKS ====================
     const syncBulkButtons = () => {
@@ -973,8 +743,8 @@ async switchTo(profileName) {
             const controls = document.createElement('div');
             controls.className = 'bulk-update-controls';
             controls.innerHTML = `
-                <button class="btn btn-normal dockme-manage-btn btn-select-all">Seleccionar todas</button>
-                <button class="btn btn-normal dockme-manage-btn btn-update-selected" style="display:none">Actualizar seleccionadas</button>
+                <button class="btn btn-normal manage-btn btn-select-all">Seleccionar todas</button>
+                <button class="btn btn-normal manage-btn btn-update-selected" style="display:none">Actualizar seleccionadas</button>
             `;
 
             blockTitle.appendChild(controls);
@@ -1365,7 +1135,7 @@ async switchTo(profileName) {
 
             // Resetear modo organizar al recargar dashboard
             document.querySelector('#dockme-blocks-row')?.classList.remove('organizing');
-            document.querySelector('.dockme-organize-icon')?.classList.remove('active');
+            document.querySelector('.organize-icon')?.classList.remove('active');
         }
     };
 
@@ -1440,7 +1210,7 @@ let layoutDirty = false;
                         el.draggable = false;
                     });
                 }
-                document.querySelector('.dockme-organize-icon')?.classList.remove('active');
+                document.querySelector('.organize-icon')?.classList.remove('active');
                 document.body.classList.remove('dockme-organizing');
                 document.querySelector('#dockme-profile-bar')?.remove();
             });
@@ -1885,13 +1655,13 @@ let layoutDirty = false;
                                 if (e) e.icon = d.iconFile;
                                 dockmeIconVersion = Date.now();
                                 localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
+                                if (window._dmRenderStacks) window._dmRenderStacks();
                             }
-                            reasignarIconos();
                         })
                         .catch(() => {});
                 }
                 // Recargar stacksConfig para garantizar sincronización con el servidor
-                loadStacksConfig().then(() => reasignarIconos());
+                loadStacksConfig();
             }
         })
         .catch(() => {});
@@ -1958,7 +1728,7 @@ let layoutDirty = false;
             if (!RouteManager.isRootPath() || window.innerWidth > 700) return;
             if (document.querySelector('#mobile-sidebar-handle')) return;
 
-            const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
+            const sidebar = document.getElementById('dm-col2');
             if (!sidebar) return;
 
             // Handle fijo en body — no le afecta el overflow del sidebar
@@ -1972,13 +1742,17 @@ let layoutDirty = false;
 
             const setOpen = (open) => {
                 isOpen = open;
-                sidebar.style.transform = '';
+                // Buscar en tiempo de ejecución — sidebar puede haber cambiado
+                const el = document.getElementById('dm-col2');
+                if (!el) return;
+                el.style.transform = '';
                 if (open) {
-                    sidebar.classList.add('mobile-open');
-                    handle.style.left = (sidebar.offsetWidth || Math.round(window.innerWidth * 0.85)) + 'px';
+                    el.classList.add('mobile-open');
+                    const w = Math.min(Math.round(window.innerWidth * 0.85), 350);
+                    handle.style.left = w + 'px';
                     handle.innerHTML = '<span style="color:#5fb8ed;font-size:20px;line-height:1;pointer-events:none;">‹</span>';
                 } else {
-                    sidebar.classList.remove('mobile-open');
+                    el.classList.remove('mobile-open');
                     handle.style.left = '0';
                     handle.innerHTML = '<span style="color:#5fb8ed;font-size:20px;line-height:1;pointer-events:none;">›</span>';
                 }
@@ -2031,7 +1805,7 @@ let layoutDirty = false;
         },
 
         close() {
-            const lista = document.querySelector('div.col-xl-3.col-md-4.col-12');
+            const lista = document.getElementById('dm-col2');
             lista?.classList.remove('mobile-open');
             const handle = document.querySelector('#mobile-sidebar-handle');
             if (handle) {
@@ -2291,7 +2065,7 @@ let layoutDirty = false;
                     statusEl.textContent = `🔄 ${seconds}s`;
                 }, 1000);
                 
-                const socket = document.querySelector("#app")?._vnode?.component?.root?.proxy?.getSocket();
+                const socket = window.dockmeSocket;
                 const endpoint = (stack.endpoint === 'Actual' || !stack.endpoint) ? '' : stack.endpoint;
                 socket.emit("agent", endpoint, "updateStack", stack.name, (res) => {
                     clearInterval(this.timers[stack.name]);
@@ -2311,7 +2085,7 @@ let layoutDirty = false;
         },
 
         setupStackListListener() {
-            const socket = document.querySelector("#app")?._vnode?.component?.root?.proxy?.getSocket();
+            const socket = window.dockmeSocket;
             
             // Escuchar actualizaciones de stackList
                 socket.on("agent", (event, data) => {
@@ -2349,7 +2123,7 @@ let layoutDirty = false;
         },
 
         checkServices(stack, row) {
-            const socket = document.querySelector("#app")?._vnode?.component?.root?.proxy?.getSocket();
+            const socket = window.dockmeSocket;
             const endpoint = (stack.endpoint === 'Actual' || !stack.endpoint) ? '' : stack.endpoint;
             const statusEl = row.querySelector('.stack-update-status');
             
@@ -2528,7 +2302,6 @@ let layoutDirty = false;
 
     };
 
-
     // ==================== ROUTE OBSERVER ====================
     const RouteObserver = {
         lastRoute: null,
@@ -2546,20 +2319,9 @@ let layoutDirty = false;
             MobileMenu.close();
             MobileMenu.ensureToggle();
 
-            if (RouteManager.isSetupPath()) {
-                forceSetupLanguageES();
-                replaceSetupBranding();
-            }
+            // Setup gestionado por init.js
             if (RouteManager.isRootPath()) {
-                hideDockgeHomeBlock();
                 ensureDockmeRoot();
-                // Si modo logs activo, ocultar bloques nativos de Dockge inmediatamente
-                if (document.body.classList.contains('dockme-logs-mode')) {
-                    document.querySelectorAll('.main > *:not(#dockme-dashboard), .container-fluid > *:not(#dockme-dashboard)').forEach(el => {
-                        if (el.id !== 'dockme-dashboard') el.style.visibility = 'hidden';
-                    });
-                }
-                readAgentsFromDockgeDOM();
                 const tryLoadDashboard = (attemptsLeft) => {
                     Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
                         if (!State.settingsData?.centralUrl) {
@@ -2571,6 +2333,7 @@ let layoutDirty = false;
                                 DataLoader.loadAndDisplay();
                             }
                             if (!State.settingsData?.centralUrl && !document.body.classList.contains('dockme-logs-mode')) MetricsManager.start();
+                            if (!State.settingsData?.centralUrl) setTimeout(() => checkDeprecatedVars(), 2000);
                             // Si el modo logs estaba activo, restaurarlo
                             if (document.body.classList.contains('dockme-logs-mode')) {
                                 setTimeout(() => {
@@ -2620,18 +2383,19 @@ let layoutDirty = false;
             const esRaiz = path === '/';
             const esMobil = window.innerWidth <= 700;
 
-            // Handle móvil: visible solo en la raíz
+            // Handle móvil: visible solo en dashboard
             const mobileHandle = document.querySelector('#mobile-sidebar-handle');
-            if (mobileHandle) mobileHandle.style.display = esRaiz ? '' : 'none';
+            if (mobileHandle) mobileHandle.style.display = esRaiz && esMobil ? '' : 'none';
 
-            this.styleElement.textContent = esRaiz
-                ? (esMobil ? '' :
-                    `div.col-xl-3.col-md-4.col-12 {
-                        display: block !important;
-                        width: ${LayoutManager.getSidebarWidth()}px !important;
-                        flex: 0 0 auto !important;
-                    }`)
-                : `div.col-xl-3.col-md-4.col-12 { display: none !important; }`;
+            // Aplicar ancho del sidebar en escritorio
+            if (esRaiz && !esMobil) {
+                const col2 = document.getElementById('dm-col2');
+                if (col2) col2.style.setProperty('width', LayoutManager.getSidebarWidth() + 'px', 'important');
+                this.styleElement.textContent = '';
+            } else {
+                this.styleElement.textContent = '';
+            }
+
             if (esRaiz) {
                 setTimeout(() => {
                     const input = document.querySelector('.search-input');
@@ -2671,61 +2435,16 @@ let layoutDirty = false;
             RouteObserver.handleRouteChange(window.location.pathname);
 
             // TODO: eliminar en v3.1 — avisar variables obsoletas en el compose (solo una vez)
-            if (!settingsData?.centralUrl) setTimeout(() => checkDeprecatedVars(), 2000);
 
             // Bloqueo UI agente remoto
             if (!!settingsData?.centralUrl) {
+                window._dmIsRemoteAgent = true;
                 applyAgentMode(settingsData.centralUrl || '');
             }
         }
     };
 
     // ==================== MUTATION OBSERVER ====================
-    const DOMObserver = {
-        observer: null,
-        processTodo: null,
-
-        init(processFn) {
-            this.processTodo = Utils.debounce(processFn, CONFIG.DEBOUNCE_MS);
-            this.observer = new MutationObserver((mutations) => {
-                for (const m of mutations) {
-                    if (this.shouldProcess(m)) {
-                        this.processTodo();
-                        return;
-                    }
-                }
-            });
-        },
-
-        shouldProcess(mutation) {
-            if (mutation.type === 'childList') {
-                return [...mutation.addedNodes, ...mutation.removedNodes].some(n =>
-                    n.nodeType === 1 && (
-                        n.matches?.('a.item, a.item .badge, a.item .cp-badge, .title span, .fs-4.title') ||
-                        n.querySelector?.('a.item, a.item .badge, a.item .cp-badge, .title span, .fs-4.title')
-                    )
-                );
-            } else if (mutation.type === 'characterData') {
-                return true;
-            } else if (mutation.type === 'attributes') {
-                const t = mutation.target;
-                return t.matches?.('a.item, a.item .badge, a.item .cp-badge, .title span') || 
-                       t.closest?.('a.item');
-            }
-            return false;
-        },
-        
-        start() {
-            const contenedorItems = document.querySelector('a.item')?.parentElement || document.body;
-            this.observer.observe(contenedorItems, {
-                childList: true,
-                subtree: true,
-                characterData: true,
-                attributes: true,
-                attributeFilter: ['class', 'style', 'title', 'href']
-            });
-        }
-    };
 
     // ==================== HELPER: FUNCIONES GENERICAS ====================
     function getStackRepo(stackName, endpoint) {
@@ -2755,37 +2474,61 @@ let layoutDirty = false;
         const iconFile = entry?.icon || `${stackName}.svg`;
         return `${CONFIG.BASE_URL}/icons/${iconFile}?v=${dockmeIconVersion}`;
     }
+    function refreshStackIconUI(stackName, endpoint, editor) {
+        const normalizedEndpoint = endpoint || 'Actual';
+        dockmeIconVersion = Date.now();
+        window.dockmeIconVersion = dockmeIconVersion;
+        localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
+
+        const iconUrl = getStackIconUrl(stackName, normalizedEndpoint);
+        const preview = editor?.querySelector('.icon-preview');
+        if (preview) {
+            preview.innerHTML = `<img src="${iconUrl}" alt="Icono de ${stackName}">`;
+        }
+
+        const isCurrentLogsStack =
+            logsCurrentStack?.toLowerCase() === stackName.toLowerCase() &&
+            (logsCurrentEndpoint || 'Actual').toLowerCase() === normalizedEndpoint.toLowerCase();
+        if (isCurrentLogsStack) {
+            document
+                .querySelectorAll('#logs-header-bar img.logs-stack-icon')
+                .forEach(img => { img.src = iconUrl; });
+        }
+
+        if (window._dmRenderStacks) window._dmRenderStacks();
+    }
     function showIconEditorError(editor, message) {
         clearIconEditorMessages(editor);
         const msg = document.createElement('div');
-        msg.className = 'dockme-icon-error';
+        msg.className = 'icon-error';
         msg.textContent = message;
         editor.appendChild(msg);
     }
     function setIconStatus(editor, type, ok, message = '') {
-        const status = editor.querySelector(`.dockme-icon-status.${type}`);
+        const status = editor.querySelector(`.icon-status.${type}`);
         if (!status) return;
         status.textContent = ok ? '✅' : '❌';
-        status.className = `dockme-icon-status ${type} ${ok ? 'ok' : 'error'}`;
-        const oldMsg = status.parentElement.querySelector('.dockme-inline-error');
+        status.className = `icon-status ${type} ${ok ? 'ok' : 'error'}`;
+        const oldMsg = status.parentElement.querySelector('.inline-error');
         if (oldMsg) oldMsg.remove();
         if (!ok && message) {
             const msg = document.createElement('span');
-            msg.className = 'dockme-inline-error';
+            msg.className = 'inline-error';
             msg.textContent = message;
             status.parentElement.appendChild(msg);
         }
     }
     function clearIconEditorMessages(editor) {
-        const old = editor.querySelector('.dockme-icon-error, .dockme-icon-success');
+        const old = editor.querySelector('.icon-error, .icon-success');
         if (old) old.remove();
     }
     function setupSidebarResizeHandle() {
         if (document.querySelector('#dockme-sidebar-handle')) return;
-        const sidebar = document.querySelector('div.col-xl-3.col-md-4.col-12');
+        const sidebar = document.getElementById('dm-col2');
         if (!sidebar) return;
 
-        sidebar.style.position = 'relative';
+        // Solo en escritorio — en móvil el CSS del @media gestiona position
+        if (window.innerWidth > 700) sidebar.style.position = 'relative';
         const handle = document.createElement('div');
         handle.id = 'dockme-sidebar-handle';
         handle.className = 'dockme-sidebar-handle-el';
@@ -2885,8 +2628,8 @@ let layoutDirty = false;
                     <div></div>
                 </div>
             </div>
-            <div style="display:flex;flex-direction:column;flex:1;min-height:0;gap:10px;padding:12px 0;">
-                <div style="display:flex;gap:12px;align-items:flex-end;flex-shrink:0;">
+            <div style="display:flex;flex-direction:column;flex:1;min-height:0;padding:12px 0;">
+                <div style="display:flex;gap:12px;align-items:flex-end;flex-shrink:0;margin-bottom:10px;">
                     <div style="display:flex;flex-direction:column;gap:4px;">
                         <label style="font-size:0.82em;color:#888;">Nombre del stack</label>
                         <input id="new-stack-name" type="text" class="form-control" placeholder="mi-stack" style="width:220px;border-color:#ef5350;" autocomplete="off">
@@ -2952,11 +2695,11 @@ let layoutDirty = false;
             val = val.replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
             nameInput.value = val;
             nameInput.style.borderColor = val ? '' : '#ef5350';
+            const _errEl = panel.querySelector('#new-stack-error');
             if (!val) {
-                errorEl.textContent = '⚠️ El nombre es obligatorio';
-                errorEl.style.display = '';
+                if (_errEl) { _errEl.textContent = '⚠️ El nombre es obligatorio'; _errEl.style.display = ''; }
             } else {
-                errorEl.style.display = 'none';
+                if (_errEl) _errEl.style.display = 'none';
             }
             updateTitle();
         });
@@ -3066,6 +2809,25 @@ let layoutDirty = false;
 
         let cmNew = null;
         let cmEnvNew = null;
+
+        // Focus en env → expandir a 8 líneas; blur → ajustar a contenido
+        const envWrapEl = panel.querySelector('#new-stack-env-wrap');
+        const LINE_H_NEW = 19;
+        if (envWrapEl) {
+            envWrapEl.addEventListener('focus', () => {
+                const envH = 8 * LINE_H_NEW + 24;
+                envWrapEl.style.height = envH + 'px';
+                if (cmEnvNew?.setSize) cmEnvNew.setSize('100%', envH);
+            }, true);
+            envWrapEl.addEventListener('blur', () => {
+                const val = cmEnvNew?.getValue ? cmEnvNew.getValue() : '';
+                const lines = Math.max(1, val.split('\n').length);
+                const envH = Math.min(8, lines) * LINE_H_NEW + 24;
+                envWrapEl.style.height = envH + 'px';
+                if (cmEnvNew?.setSize) cmEnvNew.setSize('100%', envH);
+            }, true);
+        }
+
         if (window.CodeMirror) {
             ({ cmNew, cmEnvNew } = initEditor());
         } else {
@@ -3252,15 +3014,44 @@ let layoutDirty = false;
         const panel = document.querySelector('#dockme-logs-panel');
         if (!panel) return;
 
-        // Auto-expandir si el panel de logs quedaría menor de 700px con la lista visible
-        if (!document.body.classList.contains('logs-expanded')) {
-            const sidebar = document.querySelector('.sidebar, nav.side-nav, .stack-list')?.closest('.col-auto, .col, [class*="col-"]');
-            const sidebarWidth = sidebar ? sidebar.offsetWidth : 250;
-            const availableWidth = window.innerWidth - sidebarWidth;
-            if (availableWidth < 700) {
-                document.body.classList.add('logs-expanded');
+        // En móvil: cerrar sidebar antes de entrar a logsmode
+        if (window.innerWidth <= 700) {
+            const mobileHandle = document.querySelector('#mobile-sidebar-handle');
+            const col2 = document.getElementById('dm-col2');
+            if (col2?.classList.contains('mobile-open')) {
+                mobileHandle?.click();
             }
         }
+
+        // Auto-expandir si el panel de logs quedaría menor de 700px con la lista visible
+        if (!document.body.classList.contains('logs-expanded')) {
+            const sidebar = document.getElementById('dm-col2') ||
+                document.querySelector('.sidebar, nav.side-nav, .stack-list')?.closest('.col-auto, .col, [class*="col-"]');
+            const sidebarWidth = window.innerWidth <= 700 ? 0 : (sidebar ? sidebar.offsetWidth : 250);
+            const availableWidth = window.innerWidth - sidebarWidth;
+            if (availableWidth < 700) {
+                setTimeout(() => {
+                    const expandBtn = document.querySelector('#logs-expand-btn');
+                    if (expandBtn) {
+                        expandBtn.click();
+                        expandBtn.style.display = 'none';
+                    }
+                    const mh = document.querySelector('#mobile-sidebar-handle');
+                    if (mh) mh.style.display = 'none';
+                }, 100);
+            }
+        }
+
+        // Lógica B: logs si activo, compose si parado
+        const epKey = (endpoint && endpoint.toLowerCase() !== 'actual') ? endpoint : '';
+        const stackData = window._dmStacksByEndpoint?.[epKey]?.[stackName];
+        // C: desde dashboard → B (logs si running, compose si no)
+        //    desde otro stack → mantener tab actual
+        const isRunning = stackData?.status === 3;
+        if (_fromDashboard) {
+            logsActiveTab = isRunning ? 'logs' : 'compose';
+        }
+        _fromDashboard = false;
 
         const hostEntry = State.updatesDataGlobal?.find(h =>
             h.endpoint.toLowerCase() === (endpoint || 'Actual').toLowerCase()
@@ -3319,7 +3110,7 @@ let layoutDirty = false;
                 <button class="logs-tab active" data-tab="logs">\uD83D\uDCCB Logs</button>
                 <button class="logs-tab" data-tab="compose">\uD83D\uDCC4 Compose</button>
                 <button class="logs-tab" data-tab="terminal">\uD83D\uDCBB Terminal</button>
-                <button id="logs-expand-btn" title="Expandir" style="position:absolute;top:45px;left:-20px;z-index:10;width:25px;height:30px;border-radius:6px;background:#1c2431;border:2px solid #4f84c8;color:#4f84c8;cursor:pointer;display:flex;align-items:center;justify-content:center;"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;"><polyline points="10,3 5,8 10,13"></polyline><polyline points="14,3 9,8 14,13"></polyline></svg></button>
+                <button id="logs-expand-btn" title="Expandir"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;"><polyline points="10,3 5,8 10,13"></polyline><polyline points="14,3 9,8 14,13"></polyline></svg></button>
             </div>
             <div id="logs-area"></div>
             <div id="compose-area" style="display:none;flex:1;flex-direction:column;min-height:0;position:relative;">
@@ -3411,7 +3202,6 @@ let layoutDirty = false;
         });
         const btnRestart   = panel.querySelector('#logs-btn-restart');
         // Botones start/stop y restart via socket de Dockge
-        const getSocket = () => document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
         const ep = (endpoint && endpoint.toLowerCase() !== 'actual') ? endpoint : '';
 
         let stackIsRunning = false; // se actualiza con el polling
@@ -3419,7 +3209,7 @@ let layoutDirty = false;
         const svgRestartBtn = `<svg class="svg-inline--fa fa-rotate-right" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M463.5 224H472c13.3 0 24-10.7 24-24V72c0-9.7-5.8-18.5-14.8-22.2s-19.3-1.7-26.2 5.2L413.4 96.6c-87.6-86.5-228.7-86.2-315.8 1c-87.5 87.5-87.5 229.3 0 316.8s229.3 87.5 316.8 0c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0c-62.5 62.5-163.8 62.5-226.3 0s-62.5-163.8 0-226.3c62.2-62.2 162.7-62.5 225.3-1L327 183c-6.9 6.9-8.9 17.2-5.2 26.2s12.5 14.8 22.2 14.8H463.5z"/></svg> Reiniciar`;
 
         const waitForStateChange = (targetRunning) => {
-            const socket = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            const socket = window.dockmeSocket;
             if (!socket) return;
             const check = setInterval(() => {
                 socket.emit('agent', ep, 'serviceStatusList', stackName, (res) => {
@@ -3442,6 +3232,22 @@ let layoutDirty = false;
                         if (targetRunning && anyRunning) {
                             
                             if (!logsStatusInterval) startStatusPolling();
+                            // Forzar rerender lista stacks
+                            if (window._dmRenderStacks) {
+                                window.dockmeSocket?.emit('agent', ep || '', 'requestStackList', null);
+                            }
+                            // Actualizar icono del header si hay URL de servicio
+                            const updatedEntry = stacksConfig.find(s =>
+                                s.name?.toLowerCase() === stackName?.toLowerCase() &&
+                                s.endpoint?.toLowerCase() === (endpoint || 'Actual').toLowerCase()
+                            );
+                            if (updatedEntry?.url) {
+                                const iconContainer = panel.querySelector('#logs-header-bar .stack-logo-left, #logs-header-bar img.logs-stack-icon');
+                                if (iconContainer && !iconContainer.classList.contains('has-url')) {
+                                    const newIconUrl = getStackIconUrl(stackName, endpoint || 'Actual');
+                                    iconContainer.outerHTML = `<div class="stack-logo-left has-url" style="width:60px;height:60px;flex-shrink:0;cursor:pointer;" onclick="window.open('${updatedEntry.url}','_blank')"><div class="stack-logo-flip"><div class="logo-front"><img src="${newIconUrl}" class="logs-stack-icon" style="width:60px;height:60px;object-fit:contain;" onerror="this.src='/system-icons/no-icon.svg'"></div><div class="logo-back"></div></div></div>`;
+                                }
+                            }
                             // Refrescar puertos tras deploy exitoso
                             fetch(`/api/stack-containers/${encodeURIComponent(stackName)}${epParam}`)
                                 .then(r => r.json())
@@ -3490,7 +3296,7 @@ let layoutDirty = false;
         };
 
         btnStartStop.addEventListener('click', () => {
-            const socket = getSocket();
+            const socket = window.dockmeSocket;
             if (!socket) return;
             const action = stackIsRunning ? 'stopStack' : 'startStack';
             const forceState = stackIsRunning ? 'stopping' : 'starting';
@@ -3504,7 +3310,7 @@ let layoutDirty = false;
         });
 
         btnRestart.addEventListener('click', () => {
-            const socket = getSocket();
+            const socket = window.dockmeSocket;
             if (!socket) return;
             actionInProgress = true;
             setButtonsDisabled(true);
@@ -3519,11 +3325,16 @@ let layoutDirty = false;
 
         // Leer estado del stack desde el cp-circle de la lista de Dockge
         const getDockgeStackColor = () => {
-            const composePath = endpoint && endpoint.toLowerCase() !== 'actual'
-                ? `/compose/${stackName}/${endpoint}`
-                : `/compose/${stackName}`;
-            const item = document.querySelector(`a.item[href="${composePath}"]`);
-            return item?.querySelector('.cp-circle')?.dataset.colorEstado || null;
+            const dmItem = document.querySelector(
+                `#dm-stack-list .dm-item[data-dm-name="${stackName}"][data-dm-ep="${endpoint || 'Actual'}"]`
+            );
+            if (dmItem) {
+                const bg = dmItem.querySelector('.dm-circle')?.style.background || '';
+                if (bg === 'green') return 'green';
+                if (bg === 'red')   return 'red';
+                return 'gray';
+            }
+            return null;
         };
 
         const epParam = (endpoint && endpoint.toLowerCase() !== 'actual')
@@ -3635,6 +3446,8 @@ let layoutDirty = false;
         });
 
         const expandBtn = panel.querySelector('#logs-expand-btn');
+        // En móvil el botón expand/contraer no tiene sentido — el handle lateral lo gestiona
+        if (window.innerWidth <= 700) expandBtn.style.display = 'none';
         const svgExpand  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="10,3 5,8 10,13"/><polyline points="14,3 9,8 14,13"/></svg>`;
         const svgCollapse = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6,3 11,8 6,13"/><polyline points="2,3 7,8 2,13"/></svg>`;
         expandBtn.addEventListener('click', () => {
@@ -4024,7 +3837,7 @@ let layoutDirty = false;
                 ? `container-exec-${ep}-${stackName}-${serviceName}-0`
                 : `container-exec--${stackName}-${serviceName}-0`;
 
-            const sock = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            const sock = window.dockmeSocket;
             if (!sock) return;
 
             const term = new Terminal({
@@ -4135,6 +3948,7 @@ let layoutDirty = false;
             cmEnv     = makeEditor(envEditorWrap, envContent, false, 'shell');
             setTimeout(applySplit, 50);
             setEditMode(false);
+            setTimeout(() => panel.querySelector('.logs-tab[data-tab="logs"]')?.click(), 100);
         });
 
         btnDeploy.addEventListener('click', async () => {
@@ -4256,7 +4070,7 @@ let layoutDirty = false;
                 if (msg) { msg.textContent = '⚠️ El servicio debe estar parado antes de realizar esta acción'; msg.style.display = ''; setTimeout(() => msg.style.display = 'none', 3000); }
                 return;
             }
-            const socket = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            const socket = window.dockmeSocket;
             const ep = (endpoint && endpoint.toLowerCase() !== 'actual') ? endpoint : '';
             if (socket) {
                 socket.emit('agent', ep, 'downStack', stackName, () => {});
@@ -4277,7 +4091,7 @@ let layoutDirty = false;
                 return;
             }
             if (!confirm(`¿Eliminar el stack "${stackName}"? Esta acción no se puede deshacer.`)) return;
-            const socket = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            const socket = window.dockmeSocket;
             if (socket) {
                 socket.emit('agent', ep, 'deleteStack', stackName, null);
                 // Limpiar updates de este stack
@@ -4314,6 +4128,17 @@ let layoutDirty = false;
                 logsFooter.style.display    = isLogs ? '' : 'none';
                 composeFooter.style.display = isCompose ? '' : 'none';
                 if (isLogs && logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+                if (isLogs && (!logsEventSource || logsEventSource.readyState === 2)) {
+                    // EventSource cerrado — reconectar
+                    const sseEpParam = ep ? `&endpoint=${encodeURIComponent(endpoint)}` : '';
+                    logsEventSource = new EventSource(`/api/logs/${encodeURIComponent(stackName)}?tail=50${sseEpParam}`);
+                    logsEventSource.onmessage = (e) => {
+                        const line = buildLine(e.data, filterInput.value);
+                        logsArea.appendChild(line);
+                        if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+                    };
+                    logsEventSource.onerror = () => { logsEventSource?.close(); logsEventSource = null; };
+                }
                 if (isCompose && !composeContent) loadCompose();
                 else if (isCompose) setTimeout(applySplit, 50);
                 if (isTerminal) {
@@ -4332,7 +4157,12 @@ let layoutDirty = false;
             terminalArea.style.display  = 'none';
             logsFooter.style.display    = 'none';
             composeFooter.style.display = '';
-            loadCompose();
+            loadCompose().then(() => setTimeout(() => {
+                applySplit();
+                // Forzar refresh de CodeMirror para recalcular layout
+                if (cmCompose?.refresh) cmCompose.refresh();
+                if (cmEnv?.refresh) cmEnv.refresh();
+            }, 150));
         } else if (logsActiveTab === 'terminal') {
             panel.querySelectorAll('.logs-tab').forEach(t => t.classList.remove('active'));
             panel.querySelector('.logs-tab[data-tab="terminal"]')?.classList.add('active');
@@ -4523,7 +4353,7 @@ let layoutDirty = false;
 
         let logsStatusInterval = null;
         const startStatusPolling = () => {
-            const socket = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+            const socket = window.dockmeSocket;
             if (!socket) return;
             const ep = (endpoint && endpoint.toLowerCase() !== 'actual') ? endpoint : '';
 
@@ -4543,8 +4373,10 @@ let layoutDirty = false;
                     actionInProgress = false;
                     setButtonsDisabled(false);
                     if (btnStartStop) btnStartStop.innerHTML = svgPlay;
-                    
-                    if (logsStatusInterval) { clearInterval(logsStatusInterval); logsStatusInterval = null; }
+                    // En el original parar (sin dm-stack-list el color nunca cambia solo)
+                    if (!document.getElementById('dm-stack-list')) {
+                        if (logsStatusInterval) { clearInterval(logsStatusInterval); logsStatusInterval = null; }
+                    }
                     return;
                 }
 
@@ -4552,20 +4384,8 @@ let layoutDirty = false;
                     if (!res?.ok) return;
                     const services = res.serviceStatusList ? Object.entries(res.serviceStatusList) : [];
                     if (services.length === 0) {
-                        // Consultar el estado real desde el root Vue — más fiable que el cp-circle
-                        const root = document.querySelector('#app')?._vnode?.component?.proxy?.$root;
-                        const stackKey = ep ? `${stackName}/${ep}` : stackName;
-                        const stackData = root?.completeStackList?.[stackKey] || root?.stackList?.[stackName];
                         const col = getDockgeStackColor();
-
-                        if (stackData?.status === 3 || stackData?.active) {
-                            // Stack running según Vue — puede que serviceStatusList tarde en responder
-                            badgesEl.innerHTML = `<span class="badge bg-success" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Running</span>`;
-                            stackIsRunning = true;
-                            actionInProgress = false;
-                            setButtonsDisabled(false);
-                            if (btnStartStop) btnStartStop.innerHTML = svgStop;
-                        } else if (col === 'red' || stackData?.status === 4) {
+                        if (col === 'red') {
                             badgesEl.innerHTML = `<span class="badge bg-danger" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Stack detenido</span>`;
                             stackIsRunning = false;
                             actionInProgress = false;
@@ -4580,8 +4400,41 @@ let layoutDirty = false;
                         if (idx >= 0) lastKnownServices[idx][1] = status;
                         else lastKnownServices.push([name, status]);
                     });
+                    const wasRunning = stackIsRunning;
                     setButtonsDisabled(false);
                     renderBadges(lastKnownServices);
+                    // Si acaba de pasar a running — recargar puertos e icono
+                    if (!wasRunning && stackIsRunning) {
+                        const epParam = ep ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+                        fetch(`/api/stack-containers/${encodeURIComponent(stackName)}${epParam}`)
+                            .then(r => r.json())
+                            .then(d => {
+                                if (d.containers?.length > 0) {
+                                    window._dockme_ports = {};
+                                    window._dockme_containers = {};
+                                    d.containers.forEach(c => {
+                                        const key = c.service || c.name;
+                                        window._dockme_ports[key] = c.ports || [];
+                                        window._dockme_containers[key] = c.name;
+                                    });
+                                    renderBadges(lastKnownServices);
+                                }
+                            }).catch(() => {});
+                        // Actualizar icono si ahora tiene URL de servicio
+                        loadStacksConfig().then(() => {
+                            const updatedEntry = stacksConfig.find(s =>
+                                s.name?.toLowerCase() === stackName?.toLowerCase() &&
+                                s.endpoint?.toLowerCase() === (endpoint || 'Actual').toLowerCase()
+                            );
+                            if (updatedEntry?.url) {
+                                const iconContainer = panel.querySelector('#logs-header-bar .stack-logo-left, #logs-header-bar img.logs-stack-icon');
+                                if (iconContainer && !iconContainer.classList.contains('has-url')) {
+                                    const newIconUrl = getStackIconUrl(stackName, endpoint || 'Actual');
+                                    iconContainer.outerHTML = `<div class="stack-logo-left has-url" style="width:60px;height:60px;flex-shrink:0;cursor:pointer;" onclick="window.open('${updatedEntry.url}','_blank')"><div class="stack-logo-flip"><div class="logo-front"><img src="${newIconUrl}" class="logs-stack-icon" style="width:60px;height:60px;object-fit:contain;" onerror="this.src='/system-icons/no-icon.svg'"></div><div class="logo-back"></div></div></div>`;
+                                }
+                            }
+                        });
+                    }
                 });
             };
             poll();
@@ -4649,9 +4502,19 @@ let layoutDirty = false;
         // Si no hay stack previo, el panel queda vacío hasta que se seleccione uno
     }
 
+    let _fromDashboard = true; // true al arrancar — la primera apertura es siempre desde dashboard
+
     function deactivateLogsMode() {
+        _fromDashboard = true;
         document.dispatchEvent(new Event('dockme-logs-deactivated'));
         document.body.classList.remove('dockme-logs-mode');
+        // Restaurar handle móvil y botón expand si estaban ocultos
+        if (window.innerWidth <= 700) {
+            const h = document.querySelector('#mobile-sidebar-handle');
+            if (h) h.style.display = '';
+        }
+        const expandBtn = document.querySelector('#logs-expand-btn');
+        if (expandBtn) expandBtn.style.display = '';
         document.body.classList.remove('logs-expanded');
         logsActiveTab = 'logs';
         if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
@@ -4674,14 +4537,14 @@ let layoutDirty = false;
     function insertEditStacksIcon() {
         const headerTop = document.querySelector('.header-top');
         if (!headerTop) return;
-        if (document.querySelector('.dockme-header-icons')) return;
+        if (document.querySelector('.header-icons')) return;
 
         const wrapper = document.createElement('div');
-        wrapper.className = 'dockme-header-icons';
+        wrapper.className = 'header-icons';
 
         // Icono lápiz — edición de stacks
         const editIcon = document.createElement('div');
-        editIcon.className = 'dockme-edit-stacks-icon';
+        editIcon.className = 'edit-icon';
         editIcon.title = 'Configuración Dockme';
         editIcon.innerHTML = '<img src="/system-icons/dockme-edit.svg" style="width:24px;height:24px;vertical-align:middle;">';
         editIcon.addEventListener('click', () => {
@@ -4702,26 +4565,16 @@ let layoutDirty = false;
                 document.querySelector('#dockme-profile-bar')?.remove();
                 layoutDirty = false;
             }
-            if (!RouteManager.isRootPath()) {
-                window.history.pushState({}, '', '/');
-                window.dispatchEvent(new Event('popstate'));
-                setTimeout(() => {
-                    dockmeEditMode = true;
-                    updateEditModeToggleUI();
-                    if (wasInLogsMode && savedStack) showStackEditorForStack(savedStack, savedEndpoint || 'Actual');
-                }, 400);
-            } else {
-                dockmeEditMode = !dockmeEditMode;
-                updateEditModeToggleUI();
-                if (dockmeEditMode && wasInLogsMode && savedStack) {
-                    setTimeout(() => showStackEditorForStack(savedStack, savedEndpoint || 'Actual'), 100);
-                }
+            dockmeEditMode = !dockmeEditMode;
+            updateEditModeToggleUI();
+            if (dockmeEditMode && wasInLogsMode && savedStack) {
+                setTimeout(() => showStackEditorForStack(savedStack, savedEndpoint || 'Actual'), 100);
             }
         });
 
         // Icono reordenar — organizar dashboard
         const organizeIcon = document.createElement('div');
-        organizeIcon.className = 'dockme-organize-icon';
+        organizeIcon.className = 'organize-icon';
         organizeIcon.title = 'Organizar dashboard';
         organizeIcon.innerHTML = '<img src="/system-icons/reordenar.svg" style="width:24px;height:24px;vertical-align:middle;">';
         organizeIcon.addEventListener('click', () => {
@@ -4746,20 +4599,7 @@ let layoutDirty = false;
                 }, 300);
                 return;
             }
-            if (!RouteManager.isRootPath()) {
-                window.history.pushState({}, '', '/');
-                window.dispatchEvent(new Event('popstate'));
-                setTimeout(() => {
-                    const row = document.querySelector('#dockme-blocks-row');
-                    if (row) {
-                        row.classList.add('organizing');
-                        organizeIcon.classList.add('active');
-                        row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
-                            el.draggable = true;
-                        });
-                    }
-                }, 600);
-            } else {
+            {
                 const row = document.querySelector('#dockme-blocks-row');
                 if (!row) return;
                 const isOrganizing = row.classList.toggle('organizing');
@@ -4826,30 +4666,32 @@ let layoutDirty = false;
             };
             insertAfterToggle();
         } else {
-            const navPills = document.querySelector('header .nav.nav-pills');
-            const lastLi = navPills?.querySelector('li:last-child');
-            if (lastLi) {
-                const wrapperLi = document.createElement('li');
-                wrapperLi.className = 'nav-item me-2';
-                wrapperLi.appendChild(wrapper);
-                navPills.insertBefore(wrapperLi, lastLi);
+            const dmIconsLi = document.getElementById('dm-icons-li');
+            if (dmIconsLi) {
+                dmIconsLi.appendChild(wrapper);
             } else {
-                headerTop.prepend(wrapper);
+                const navPills = document.querySelector('header .nav.nav-pills');
+                const lastLi = navPills?.querySelector('li:last-child');
+                if (lastLi) {
+                    const wrapperLi = document.createElement('li');
+                    wrapperLi.className = 'nav-item me-2';
+                    wrapperLi.appendChild(wrapper);
+                    navPills.insertBefore(wrapperLi, lastLi);
+                } else {
+                    headerTop.prepend(wrapper);
+                }
             }
         }
         setTimeout(() => setupSidebarResizeHandle(), 500);
     } 
     function updateEditModeToggleUI() {
-        const icon = document.querySelector('.dockme-edit-stacks-icon');
+        const icon = document.querySelector('.edit-icon');
         if (!icon) return;
         if (dockmeEditMode) {
             icon.classList.add('active');
             icon.title = 'Salir de edición';
             document.body.classList.add('dockme-edit-mode');
             dockmeEditModeFilterBackup = MetricsManager.filterActive ? MetricsManager.currentFilter : null;
-            document.querySelectorAll('a.item').forEach(item => {
-                item.style.display = '';
-            });
             hideDashboardContainer();
             MobileMenu.close();
             showConfigPanel('stacks');
@@ -4861,9 +4703,6 @@ let layoutDirty = false;
             if (dockmeEditModeFilterBackup) {
                 MetricsManager.applyHostFilter(dockmeEditModeFilterBackup);
             } else {
-                document.querySelectorAll('a.item').forEach(item => {
-                    item.style.display = '';
-                });
             }
             dockmeEditModeFilterBackup = null;
             hideStackEditor();
@@ -4913,15 +4752,12 @@ let layoutDirty = false;
             btn.dataset.active = String(!isActive);
             btn.classList.toggle('btn-primary', !isActive);
             btn.classList.toggle('btn-normal', isActive);
-            document.querySelectorAll('a.item').forEach(item => {
-                const href = item.getAttribute('href') || '';
-                const match = href.match(/^\/compose\/([^/]+)(?:\/([^/]+))?/);
-                if (!match) { item.style.display = isActive ? '' : 'none'; return; }
-                const nombre = match[1];
-                const endpoint = match[2] || 'Actual';
+            document.querySelectorAll('#dm-stack-list .dm-item').forEach(item => {
+                const nombre = item.dataset.dmName || '';
+                const endpoint = item.dataset.dmEp || 'Actual';
                 const esFav = stacksConfig.some(s =>
                     s.name?.toLowerCase() === nombre.toLowerCase() &&
-                    s.endpoint?.toLowerCase() === endpoint.toLowerCase() &&
+                    (s.endpoint || 'Actual').toLowerCase() === endpoint.toLowerCase() &&
                     s.favorite
                 );
                 item.style.display = (!isActive && !esFav) ? 'none' : '';
@@ -4938,7 +4774,7 @@ let layoutDirty = false;
         }
         panel = document.createElement('div');
         panel.id = 'dockme-stack-editor';
-        panel.className = 'dockme-stack-editor-container shadow-box';
+        panel.className = 'stack-editor shadow-box';
         panel.innerHTML = `
             <div class="config-panel-header">
                 <h2 class="dashboard-section-title"><img src="/system-icons/dockme-edit.svg" style="width:24px;height:24px;vertical-align:sub;margin-right:6px;">Configuración Dockme</h2>
@@ -4950,13 +4786,9 @@ let layoutDirty = false;
                 <button class="config-tab" data-tab="links">🔗 Links</button>
                 <button class="config-tab" data-tab="general">⚙️ General</button>
             </div>
-            <div class="config-content active" id="config-tab-stacks">
-                <p><svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><span>Selecciona un stack de la lista izquierda para editar sus datos.</span></p>
-            </div>
+            <div class="config-content active" id="config-tab-stacks"></div>
             <div class="config-content" id="config-tab-servidores"></div>
-            <div class="config-content" id="config-tab-links">
-                <p>Próximamente...</p>
-            </div>
+            <div class="config-content" id="config-tab-links"></div>
             <div class="config-content" id="config-tab-general"></div>
         `;
 
@@ -4974,10 +4806,6 @@ let layoutDirty = false;
         if (dashboard) dashboard.before(panel);
 
         switchConfigTab(defaultTab);
-    }
-
-    function showStackEditorPlaceholder() {
-        showConfigPanel('stacks');
     }
 
     function switchConfigTab(tab) {
@@ -5034,10 +4862,10 @@ let layoutDirty = false;
         if (stackName.toLowerCase() === 'dockme') {
             editor.innerHTML = `
                 <h2>Editar datos del stack</h2>
-                <div class="dockme-editor-hint">
+                <div class="editor-hint">
                     🔒 <strong>Dockme</strong> es interno y no puede modificarse.
                 </div>
-                <div class="dockme-editor-hint">
+                <div class="editor-hint">
                     👉 Puedes seleccionar otro stack para editar su icono,
                     o salir del modo edición usando el botón ✏️.
                 </div>
@@ -5047,18 +4875,18 @@ let layoutDirty = false;
         }
         editor.innerHTML = `
             <h2>Editar datos del stack</h2>
-            <div class="dockme-editor-hint">
+            <div class="editor-hint">
                 👉 Puedes seleccionar otro stack para seguir editando sus datos,
                 o salir del modo edición usando el botón ✏️.
             </div>
-            <div class="dockme-editor-header">
-                <div class="dockme-icon-preview">
+            <div class="editor-header">
+                <div class="icon-preview">
                     <img src="${getStackIconUrl(stackName, endpoint)}" alt="Icono de ${stackName}">
                 </div>
                 <div>
-                    <div class="dockme-stack-name">
+                    <div class="editor-stack-name">
                         ${Utils.capitalizeFirst(stackName)}
-                        <span class="dockme-favorite-star" title="Marcar como favorito">★</span>
+                        <span class="favorite-star" title="Marcar como favorito">★</span>
                     </div>
                     ${(() => {
                         const serverHostname = State.updatesDataGlobal?.find(h =>
@@ -5068,46 +4896,47 @@ let layoutDirty = false;
                     })()}
                 </div>
             </div>
-            <div class="dockme-icon-editor">
-                <label class="dockme-icon-label">URL del servicio</label>
-                <div class="dockme-icon-input-row">
+            <div class="icon-editor">
+                <label class="icon-label">URL del servicio</label>
+                <div class="icon-input-row">
                     <input
                         type="text"
-                        class="dockme-service-url-input"
+                        class="editor-input"
                         placeholder="https://servicio.midominio.com"
                     />
-                    <span class="dockme-icon-status service-url"></span>
+                    <span class="icon-status service-url"></span>
                 </div>
             </div>            
-            <div class="dockme-icon-editor">
-                <label class="dockme-icon-label">Repositorio en GitHub</label>
-                <div class="dockme-icon-input-row">
+            <div class="icon-editor">
+                <label class="icon-label">Repositorio en GitHub</label>
+                <div class="icon-input-row">
                     <input
                         type="text"
-                        class="dockme-repo-url-input"
+                        class="editor-input"
                         placeholder="https://github.com/usuario/repo"
                     />
-                    <span class="dockme-icon-status repo-url"></span>
+                    <span class="icon-status repo-url"></span>
                 </div>
             </div>
-            <div class="dockme-icon-editor">
-                <label class="dockme-icon-label">URL del icono (SVG)</label>
-                <div class="dockme-icon-input-row">
-                    <img src="/system-icons/subir-icono.svg" class="dockme-icon-upload-btn" title="Subir icono local (SVG)" style="height:32px;width:32px;cursor:pointer;margin-right:8px;flex-shrink:0;">
+            <div class="icon-editor">
+                <label class="icon-label">URL del icono (SVG)</label>
+                <div class="icon-input-row">
+                    <img src="/system-icons/subir-icono.svg" class="icon-upload-btn" title="Subir icono local (SVG)" style="height:32px;width:32px;cursor:pointer;margin-right:8px;flex-shrink:0;">
                     <input
                         type="text"
-                        class="dockme-icon-url-input"
+                        id="icon-url-input"
+                        class="editor-input"
                         placeholder="https://example.com/icon.svg"
                     />
-                    <span class="dockme-icon-status url"></span>
+                    <span class="icon-status url"></span>
                 </div>
                 <input
                     type="file"
-                    class="dockme-icon-file-input"
+                    class="icon-file-input"
                     accept=".svg"
                     style="display:none"
                 />
-                <div class="dockme-editor-hint">
+                <div class="editor-hint">
                 👉 Solo se admiten iconos en formato <strong>SVG</strong>.
                 Si lo tienes en otro formato, puedes convertirlo online en
                 <a href="https://www.freeconvert.com/es/png-to-svg" target="_blank" rel="noopener noreferrer">
@@ -5120,7 +4949,6 @@ let layoutDirty = false;
                  que puedes usar directamente copiando la URL del SVG.
             </div>
             </div>
-
 
         `;
         addFavFilterBtn(editor, favBtnActive);
@@ -5143,21 +4971,24 @@ let layoutDirty = false;
                         if (entry) entry.icon = data.iconFile;
                         dockmeIconVersion = Date.now();
                         localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
-                        const preview = editor.querySelector('.dockme-icon-preview');
+                        const preview = editor.querySelector('.icon-preview');
                         if (preview) preview.innerHTML = `<img src="${getStackIconUrl(stackName, endpoint)}" alt="Icono de ${stackName}">`;
-                        reasignarIconos();
                     }
                 })
                 .catch(() => {});
         }
-        const serviceInput = editor.querySelector('.dockme-service-url-input');
+        const allEditorInputs = editor.querySelectorAll('.editor-input');
+        const serviceInput = allEditorInputs[0];
+        const repoInput    = allEditorInputs[1];
         if (serviceInput && stackEntry?.url) serviceInput.value = stackEntry.url;
-        const repoInput = editor.querySelector('.dockme-repo-url-input');
         if (repoInput) {
-            repoInput.value = stackEntry?.repo || State.sourcesDataGlobal?.[stackName] || '';
+            repoInput.value = stackEntry?.repo
+                || State.sourcesDataGlobal?.[stackName]
+                || State.updatesDataGlobal?.flatMap(h => h.stacks || []).find(u => u.name?.toLowerCase() === stackName?.toLowerCase())?.repo
+                || '';
         }
 //      Estrella favorito
-        const star = editor.querySelector('.dockme-favorite-star');
+        const star = editor.querySelector('.favorite-star');
         if (star) {
             star.classList.toggle('active', !!stackEntry?.favorite);
             star.addEventListener('click', () => {
@@ -5178,15 +5009,12 @@ let layoutDirty = false;
                             addFavFilterBtn(editor, wasActive);
                             // Reaplicar filtro de favoritos si estaba activo
                             if (wasActive) {
-                                document.querySelectorAll('a.item').forEach(item => {
-                                    const href = item.getAttribute('href') || '';
-                                    const match = href.match(/^\/compose\/([^/]+)(?:\/([^/]+))?/);
-                                    if (!match) { item.style.display = 'none'; return; }
-                                    const nombre = match[1];
-                                    const endpoint = match[2] || 'Actual';
+                                document.querySelectorAll('#dm-stack-list .dm-item').forEach(item => {
+                                    const nombre = item.dataset.dmName || '';
+                                    const endpoint = item.dataset.dmEp || 'Actual';
                                     const esFav = stacksConfig.some(s =>
                                         s.name?.toLowerCase() === nombre.toLowerCase() &&
-                                        s.endpoint?.toLowerCase() === endpoint.toLowerCase() &&
+                                        (s.endpoint||'Actual').toLowerCase() === endpoint.toLowerCase() &&
                                         s.favorite
                                     );
                                     item.style.display = esFav ? '' : 'none';
@@ -5224,8 +5052,8 @@ let layoutDirty = false;
                             );
                             if (entry) entry.url = url;
                             setTimeout(() => {
-                                const status = editor.querySelector('.dockme-icon-status.service-url');
-                                if (status) { status.textContent = ''; status.className = 'dockme-icon-status service-url'; }
+                                const status = editor.querySelector('.icon-status.service-url');
+                                if (status) { status.textContent = ''; status.className = 'icon-status service-url'; }
                             }, 2000);
                         }
                     })
@@ -5272,8 +5100,8 @@ let layoutDirty = false;
                     );
                     if (entry) entry.url = url;
                     setTimeout(() => {
-                        const status = editor.querySelector('.dockme-icon-status.service-url');
-                        if (status) { status.textContent = ''; status.className = 'dockme-icon-status service-url'; }
+                        const status = editor.querySelector('.icon-status.service-url');
+                        if (status) { status.textContent = ''; status.className = 'icon-status service-url'; }
                     }, 2000);
                 }
             })
@@ -5309,8 +5137,8 @@ let layoutDirty = false;
                         .filter(s => s.name.toLowerCase() === stackName.toLowerCase())
                         .forEach(s => { s.repo = repo; });
                     setTimeout(() => {
-                        const status = editor.querySelector('.dockme-icon-status.repo-url');
-                        if (status) { status.textContent = ''; status.className = 'dockme-icon-status repo-url'; }
+                        const status = editor.querySelector('.icon-status.repo-url');
+                        if (status) { status.textContent = ''; status.className = 'icon-status repo-url'; }
                     }, 2000);
                 }
             })
@@ -5326,7 +5154,7 @@ let layoutDirty = false;
             setTimeout(handleRepoUrlSave, 50);
         });
         // URL SVG
-        const urlInput = editor.querySelector('.dockme-icon-url-input');
+        const urlInput = editor.querySelector('#icon-url-input') || editor.querySelectorAll('.editor-input')[2];
         const handleUrlApply = () => {
             const url = urlInput.value.trim();
             if (!url || !url.toLowerCase().endsWith('.svg')) {
@@ -5350,18 +5178,17 @@ let layoutDirty = false;
                     s.name.toLowerCase() === stackName.toLowerCase() &&
                     s.endpoint.toLowerCase() === endpoint.toLowerCase()
                 );
-                if (entry) entry.icon = data.iconFile;
+                if (entry) {
+                    entry.icon = data.iconFile;
+                } else {
+                    stacksConfig.push({ name: stackName, endpoint, icon: data.iconFile, url: '', repo: '', favorite: false, order: null });
+                }
                 setIconStatus(editor, 'url', true);
                 setTimeout(() => {
-                    const status = editor.querySelector('.dockme-icon-status.url');
-                    if (status) { status.textContent = ''; status.className = 'dockme-icon-status url'; }
+                    const status = editor.querySelector('.icon-status.url');
+                    if (status) { status.textContent = ''; status.className = 'icon-status url'; }
                 }, 2000);
-                dockmeIconVersion = Date.now();
-                localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
-                const preview = editor.querySelector('.dockme-icon-preview');
-                if (preview) {
-                    preview.innerHTML = `<img src="${getStackIconUrl(stackName, endpoint)}" alt="Icono de ${stackName}">`;
-                }
+                refreshStackIconUI(stackName, endpoint, editor);
             })
             .catch(() => {
                 setIconStatus(editor, 'url', false, 'Error de conexión');
@@ -5375,8 +5202,8 @@ let layoutDirty = false;
             setTimeout(handleUrlApply, 50);
         });
 //      Subida SVG local
-        const uploadBtn = editor.querySelector('.dockme-icon-upload-btn');
-        const fileInput = editor.querySelector('.dockme-icon-file-input');
+        const uploadBtn = editor.querySelector('.icon-upload-btn');
+        const fileInput = editor.querySelector('.icon-file-input');
         if (uploadBtn && fileInput) {
             uploadBtn.addEventListener('click', () => fileInput.click());
             fileInput.addEventListener('change', () => {
@@ -5419,25 +5246,11 @@ let layoutDirty = false;
         MobileMenu.close();
         showStackEditorForStack(stackName, endpoint);
     }
-    function hideDockgeHomeBlock() {
-        const h1s = document.querySelectorAll('h1.mb-3');
-        for (const h1 of h1s) {
-            if (h1.textContent.trim().toLowerCase() === 'inicio') {
-                const rootBlock = h1.closest('div');
-                if (rootBlock) {
-                    rootBlock.style.display = 'none';
-                    rootBlock.dataset.dockmeHidden = 'true';
-                    return rootBlock;
-                }
-            }
-        }
-        return null;
-    }
+
     function ensureDockmeRoot() {
         let root = document.querySelector('#dockme-dashboard');
         if (root) return root;
-        const hiddenBlock = hideDockgeHomeBlock();
-        if (!hiddenBlock) return null;
+        return null;
         // Si es agente, mostrar mensaje en lugar del dashboard
         if (!!State.settingsData?.centralUrl) {
             const centralUrl = State.settingsData.centralUrl || '';
@@ -5494,137 +5307,29 @@ let layoutDirty = false;
                 s.name.toLowerCase() === stackName.toLowerCase() &&
                 s.endpoint.toLowerCase() === endpoint.toLowerCase()
             );
-            if (entry) entry.icon = data.iconFile;
-            setIconStatus(editor, 'upload', true);
-            dockmeIconVersion = Date.now();
-            localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
-            const preview = editor.querySelector('.dockme-icon-preview');
-            if (preview) {
-                preview.innerHTML = `<img src="${getStackIconUrl(stackName, endpoint)}" alt="Icono de ${stackName}">`;
+            if (entry) {
+                entry.icon = data.iconFile;
+            } else {
+                stacksConfig.push({ name: stackName, endpoint, icon: data.iconFile, url: '', repo: '', favorite: false, order: null });
             }
+            setIconStatus(editor, 'upload', true);
+            refreshStackIconUI(stackName, endpoint, editor);
         })
         .catch(() => {
             setIconStatus(editor, 'upload', false, 'Error de conexión');
         });
     }
 
-    function forceSetupLanguageES(attempts = 10) {
-        const select = document.querySelector('#language');
-        if (!select) {
-            if (attempts > 0) setTimeout(() => forceSetupLanguageES(attempts - 1), 200);
-            return;
-        }
-        if (select.dataset.dockmeForced === 'true') return;
-        select.value = 'es';
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-        select.disabled = true;
-        const selectedOption = select.querySelector('option[value="es"]');
-        if (selectedOption && !selectedOption.textContent.includes('(forzado)')) {
-            selectedOption.textContent = 'Español (forzado)';
-        }
-        select.dataset.dockmeForced = 'true';
-    }
-
-    function replaceSetupBranding() {
-        if (!RouteManager.isSetupPath()) return;
-        if (document.body.dataset.dockmeBrandingApplied === 'true') return;
-        const logoObject = document.querySelector('object[data="/icon.svg"]');
-        if (logoObject) {
-            // Reemplazar el object por un img ya que /system-icons/dockme.svg es un fichero directo
-            const img = document.createElement('img');
-            img.src = '/system-icons/dockme.svg';
-            img.style.cssText = logoObject.style.cssText || 'width:64px;height:64px;';
-            logoObject.replaceWith(img);
-        }
-        const titleDivs = Array.from(document.querySelectorAll('div'))
-            .filter(div => div.childNodes.length === 1 && div.textContent?.trim() === 'Dockge');
-        titleDivs.forEach(div => {
-            div.textContent = 'Dockme';
-        });
-        document.body.dataset.dockmeBrandingApplied = 'true';
-    }
-
-    function isLoginVisible() {
-        return !!document.querySelector('.form-container');
-    }
-
     // ==================== REASIGNACIÓN AUTOMÁTICA ====================
-    function reasignarIconos() {
-        const items = document.querySelectorAll('a.item');
-        // 1. Reasignar iconos
-        items.forEach(a => {
-            const href = a.getAttribute('href');
-            const img = a.querySelector('img.cp-icon');
-            if (!href || !img) return;
-            if (img.dataset.iconoFallback === 'true') return;
-            const match = href.match(/\/compose\/([^/]+)(?:\/([^/]+))?/);
-            if (!match) return;
-            const stackName = match[1];
-            const endpointIcon = match[2] || 'Actual';
-            const esperado = getStackIconUrl(stackName, endpointIcon);
-            if (!img.src.includes(esperado)) {
-                img.src = esperado;
-            }
-        });
-        // 2. Reordenar items visibles
-        const visibleItems = Array.from(items).filter(item => {
-            const style = window.getComputedStyle(item);
-            return style.display !== 'none';
-        });
-        if (visibleItems.length > 0) {
-            // Procesar títulos para actualizar cpSortKey y cpGrupo
-            visibleItems.forEach(item => {
-                const span = item.querySelector('.title span');
-                if (!span) return;
-                const texto = span.textContent.trim();
-                const circulo = item.querySelector('.cp-badge .cp-circle');
-                const inactivo = circulo && circulo.dataset.colorEstado === 'gray';
-                item.dataset.cpSortKey = texto.toLowerCase();
-                item.dataset.cpGrupo = inactivo ? '1' : '0';
-            });
-            // Verificar si necesita reordenar
-            const contenedor = visibleItems[0].parentElement;
-            if (!contenedor) return;
-            const ordenados = [...visibleItems].sort((a, b) => {
-                const ga = a.dataset.cpGrupo || '0';
-                const gb = b.dataset.cpGrupo || '0';
-                if (ga !== gb) return ga.localeCompare(gb);
-                const ka = a.dataset.cpSortKey || '';
-                const kb = b.dataset.cpSortKey || '';
-                return ka.localeCompare(kb);
-            });
-            // Solo reordenar si realmente cambia el orden
-            const needsReorder = visibleItems.some((el, i) => el !== ordenados[i]);
-            if (needsReorder) {
-                const frag = document.createDocumentFragment();
-                ordenados.forEach(el => frag.appendChild(el));
-                contenedor.appendChild(frag);
-            }
-        }
-        // 3. Insertar botón "Nuevo Stack" antes del placeholder en header-top
-        const headerTop = document.querySelector('.header-top[data-v-06020958]');
-        if (headerTop && !headerTop.querySelector('.dockme-new-stack-btn, [data-dockme-newstack]')) {
-            const placeholder = headerTop.querySelector('.placeholder');
-            const btn = document.createElement('button');
-            btn.className = 'btn btn-primary';
-            btn.dataset.dockmeNewstack = '1';
-            btn.style.cssText = 'margin-left:6px;padding-left:8px !important;padding-right:8px !important;';
-            btn.title = 'Nuevo Stack';
-            btn.innerHTML = `<svg class="svg-inline--fa fa-plus" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><path fill="currentColor" d="M256 80c0-17.7-14.3-32-32-32s-32 14.3-32 32V224H48c-17.7 0-32 14.3-32 32s14.3 32 32 32H192V432c0 17.7 14.3 32 32 32s32-14.3 32-32V288H400c17.7 0 32-14.3 32-32s-14.3-32-32-32H256V80z"/></svg>`;
-            btn.addEventListener('click', () => openNewStackPanel());
-            if (placeholder) headerTop.insertBefore(btn, placeholder);
-            else headerTop.prepend(btn);
-        }
-    }
 
-
-    // ==================== GESTIÓN DE MÉTRICAS ====================
+    // ==================== MÉTRICAS ====================
     const MetricsManager = {
         container: null,
         intervalId: null,
         filterActive: false,
         currentFilter: null,
         lastCheckStatus: {},
+
         formatUptime(seconds) {
             if (!seconds || seconds < 0) return 'Desconectado';
             const days = Math.floor(seconds / 86400);
@@ -5647,7 +5352,6 @@ let layoutDirty = false;
 
         hasDockmeUpdate(endpoint) {
             if (!Array.isArray(window.allUpdatesGlobal)) return false;
-            
             return window.allUpdatesGlobal.some(item => {
                 const stackName = (item.stack || '').toLowerCase();
                 const itemEndpoint = (item.endpoint || '').toLowerCase();
@@ -5686,19 +5390,20 @@ let layoutDirty = false;
                 `;
             } else {
                 const uptime = this.formatUptime(metrics.uptime_seconds);
-                const uptimeClass = status === 'ok' ? 'active' : 'disconnected';
+                //const uptimeClass = status === 'ok' ? 'active' : 'disconnected';
                 const version = metrics.version || 'unknown';
                 if (endpoint.toLowerCase() === 'actual' && version !== 'unknown') window.lastMetricsVersion = version;
                 const cpuClass = this.getColorClass(metrics.cpu, 'cpu');
                 const memClass = this.getColorClass(metrics.memory, 'memory');
                 const tempClass = this.getColorClass(metrics.temp_cpu, 'temp');
+                const tempDiskClass = this.getColorClass(metrics.temp_disk, 'temp');
 
                 // Comprobar si hay update de Dockme
                 const hasDockmeUpdate = this.hasDockmeUpdate(endpoint);
                 const isUpdating = window.dockmeUpdatesInProgress?.[endpoint];
                 const showUpdateBtn = hasDockmeUpdate && !isUpdating;
-                const versionDisplay = version !== 'unknown' && !showUpdateBtn
-                    ? `<span class="metric-version">v${version}</span>` 
+                const versionDisplay = version !== 'unknown'
+                    ? `<span class="metric-version">v${version}</span>`
                     : '';
                 // Updates info
                 const checkStatus = metrics.check_status || 'idle';
@@ -5737,46 +5442,89 @@ let layoutDirty = false;
                             class="metric-server-icon stack-icon-hover" alt="acción">
                     </span>
                 `;
+                // ── Métricas extra ──────────────────────────────────────────
+                const _nd = metrics.net_down, _nu = metrics.net_up;
+                const _netAvail = _nd !== null && _nd !== undefined && _nu !== null && _nu !== undefined;
+                const _fmtNet = v => parseFloat(v) < 1 ? parseFloat(v).toFixed(1) : Math.round(parseFloat(v));
+                const _netHtml = _netAvail
+                    ? `Red:&nbsp&nbsp&nbsp;<span class="metric-value normal">↓&nbsp;${_fmtNet(_nd)}&nbsp;&nbsp;&nbsp;↑&nbsp;${_fmtNet(_nu)}&nbsp;Mbps</span>`
+                    : `Red:&nbsp&nbsp&nbsp;<span style="opacity:0.35">—</span>`;
+
+                const _upsText  = metrics.ups || '';
+                const _upsState = metrics.ups_state || '';
+                const _upsClass = _upsState === 'online'      ? 'normal'
+                                : _upsState === 'charging'    ? 'charging'
+                                : _upsState === 'battery'     ? 'warning'
+                                : _upsState === 'battery_low' ? 'danger'
+                                : 'normal';
+
+                const _fmtDisk = v => (v !== null && v !== undefined)
+                    ? `<span class="metric-value ${this.getColorClass(parseFloat(v), 'cpu')}">${parseFloat(v) < 10 ? parseFloat(v).toFixed(1) : Math.round(parseFloat(v))}%</span>`
+                    : `<span style="opacity:0.35">—</span>`;
+
+                // Limpieza: siempre en GB, 1 decimal si <1GB, entero si >=1GB, oculto si <0.2GB
+                const _parseMB = s => {
+                    if (!s) return 0;
+                    const m = s.match(/([\d.,]+)\s*(KB|MB|GB)/i);
+                    if (!m) return 0;
+                    const v = parseFloat(m[1].replace(',', '.'));
+                    const u = m[2].toUpperCase();
+                    return u === 'GB' ? v * 1024 : u === 'KB' ? v / 1024 : v;
+                };
+                const _pruneGB = _parseMB(pruneSpace) / 1024;
+                const _showPrune = _pruneGB >= 0.2;
+                const _pruneDisplay = _showPrune ? `${_pruneGB.toFixed(1)}&nbsp;GB` : '';
+
+                // Updates + limpieza combinados — frase entera clickable como check-now
+                const _isChecking = checkStatus === 'checking';
+                const _isPruning  = checkStatus === 'pruning';
+                let _updatesCell = '';
+                const _clickStyle = 'cursor:pointer;';
+                if (_isChecking) {
+                    _updatesCell = `<span class="metric-value warning">Comprobando actualizaciones&nbsp;${checkPercent}%</span>`;
+                } else if (_isPruning) {
+                    _updatesCell = `<span class="metric-value warning">Limpiando...&nbsp;🧹</span>`;
+                } else if (checkUpdates > 0) {
+                    const _upd = checkUpdates === 1 ? '1&nbsp;actualización&nbsp;pendiente' : `${checkUpdates}&nbsp;actualizaciones&nbsp;pendientes`;
+                    _updatesCell = `<span class="btn-check-now metric-value danger" data-endpoint="${endpoint}" style="${_clickStyle}">${_upd}</span>`;
+                } else {
+                    const _prune = _showPrune ? `&nbsp;·&nbsp;<span class="metric-value normal">🧹${_pruneDisplay}</span>` : '';
+                    _updatesCell = `<span class="btn-check-now metric-value normal" data-endpoint="${endpoint}" style="${_clickStyle}">✓&nbsp;Actualizaciones&nbsp;al&nbsp;día${_prune}</span>`;
+                }
+
                 card.innerHTML = `
                     <div class="metric-header">
                         <span style="display:flex;align-items:center;gap:8px;">
                             ${serverIconHtml}
                             <span class="metric-hostname">${hostname}${versionDisplay}</span>
                         </span>
-                        <button class="btn-update-dockme" data-endpoint="${endpoint}" style="display: ${showUpdateBtn ? '' : 'none'}">Actualizar <img src="/system-icons/dockme.svg" style="width:20px;height:20px;vertical-align:text-top;"></button>
-                    </div>
-                    <div class="metric-row">
-                        <span class="metric-label">Activo:&nbsp;<span class="metric-uptime ${uptimeClass}">${uptime}</span></span>
-                        <span class="metric-label">CPU: <span class="metric-value ${cpuClass}">${metrics.cpu}%</span></span>
-                    </div>
-                    <div class="metric-row">
-                        <span class="metric-label">Temp:&nbsp;<span class="metric-value ${tempClass}">${metrics.temp_cpu != null ? metrics.temp_cpu + '°C' : '----'}</span></span>
-                        <span class="metric-label">RAM: <span class="metric-value ${memClass}" >${metrics.memory}%</span></span>
-                    </div>
-                    <div class="metric-row">
-                        <span class="metric-label">Contenedores:</span>
-                        <span style="display:flex;align-items:center;gap:6px;">
+                        <button class="btn-update-dockme" data-endpoint="${endpoint}" style="display:${showUpdateBtn ? '' : 'none'}">Actualizar <img src="/system-icons/dockme.svg" style="width:20px;height:20px;vertical-align:text-top;"></button>
+                        <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;">
                             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.5;flex-shrink:0"><polygon points="5,3 19,12 5,21"/></svg>
                             <span class="metric-docker">${metrics.docker_running}</span>
-                            ${metrics.docker_stopped > 0 ? `
-                            / 
+                            ${metrics.docker_stopped > 0 ? `/
                             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.5;flex-shrink:0"><rect x="4" y="4" width="16" height="16"/></svg>
                             <span class="metric-stopped">${metrics.docker_stopped}</span>` : ''}
                         </span>
                     </div>
-                    <div class="metric-row">
-                        <span class="metric-label">Actualizaciones:</span>
-                        <span style="display:flex;align-items:center;gap:6px;">
-                            ${updatesLabel}
-                            <img src="/system-icons/check-updates.svg" class="btn-check-now" data-endpoint="${endpoint}" title="Comprobar ahora" style="cursor:pointer;width:18px;height:18px;opacity:0.7;${checkStatus === 'checking' || checkStatus === 'pruning' ? 'display:none;' : ''}" />
-                        </span>
+                    <div class="metric-content">
+                        <span class="metric-label" style="white-space:nowrap;overflow:hidden;">CPU:&nbsp&nbsp&nbsp;&nbsp&nbsp;<span class="metric-value ${cpuClass}" style="min-width:3ch;display:inline-block;text-align:right;">${metrics.cpu}%</span></span>
+                        <span class="metric-label" style="white-space:nowrap;overflow:hidden;">RAM:&nbsp;<span class="metric-value ${memClass}">${metrics.memory}%</span></span>
+                        <span class="metric-label" style="white-space:nowrap;overflow:hidden;display:flex;justify-content:space-between;">Temp. CPU:&nbsp;<span class="metric-value ${tempClass}">${metrics.temp_cpu != null ? metrics.temp_cpu + '°C' : '----'}</span></span>
+
+                        <span class="metric-label" style="white-space:nowrap;overflow:hidden;">Disco:&nbsp;${_fmtDisk(metrics.disk_util)}</span>
+                        <span class="metric-label" style="white-space:nowrap;overflow:hidden;">24h.:&nbsp;${_fmtDisk(metrics.disk_util_24h)}</span>
+                        <span class="metric-label" style="white-space:nowrap;overflow:hidden;display:flex;justify-content:space-between;">Temp. Disco:&nbsp;<span class="metric-value ${tempDiskClass}">${metrics.temp_disk != null ? Math.round(metrics.temp_disk) + '°C' : '<span style="opacity:0.35">—</span>'}</span></span>
+
+                        <span class="metric-label" style="grid-column:span 2;white-space:nowrap;overflow:hidden;">${_netHtml}</span>
+                        <span class="metric-label" style="white-space:nowrap;overflow:hidden;display:flex;justify-content:space-between;">SAI:&nbsp;<span class="metric-value ${_upsClass}">${_upsText || '<span style="opacity:0.35">—</span>'}</span></span>
+
+                        <span class="metric-label" style="white-space:nowrap;overflow:hidden;">Activo:&nbsp;<span class="metric-value normal">${uptime}</span></span>
+                        <span style="grid-column:span 2;white-space:nowrap;overflow:hidden;text-align:right;" class="metric-label">${_updatesCell}</span>
+
                     </div>
-                    ${pruneSpace ? `
-                    <div class="metric-row">
-                        <span class="metric-label">Limpieza de docker:</span>
-                        <span class="metric-value normal">${pruneSpace}&nbsp;&nbsp;🧹</span>
-                    </div>` : ''}
                 `;
+
                 const iconWrap = card.querySelector('.metric-server-icon-wrap');
                 if (iconWrap && !uiUrl) {
                     iconWrap.addEventListener('click', (e) => {
@@ -5793,33 +5541,28 @@ let layoutDirty = false;
                 }
             }
 
-            // Click para filtrar
-            card.addEventListener('click', () => {
-                // Si solo hay una tarjeta → no filtrar
-                const totalCards = this.container.querySelectorAll('.metric-card').length;
-                if (totalCards <= 1) return;
-                // Click sobre el mismo host → desactivar filtro
-                if (this.filterActive && this.currentFilter === hostname) {
-                    this.clearHostFilter();
-                    return;
-                }
-                // Deseleccionar todas al cambiar filtro
-                document.querySelectorAll('.stack-checkbox:checked').forEach(cb => cb.checked = false);
-                syncBulkButtons();
-                // Click sobre otro host → activar / cambiar filtro
-                this.applyHostFilter(hostname);
-            });
-
-            // Tooltip al hacer hover en tarjeta métricas
-            card.addEventListener('mouseenter', () => {
-                const totalCards = this.container.querySelectorAll('.metric-card').length;
-                if (totalCards <= 1) {
-                    card.removeAttribute('title');
-                    return;
-                }
-                const isActive = this.filterActive && this.currentFilter === hostname;
-                card.title = isActive ? 'Click para quitar filtro' : 'Click para filtrar';
-            });
+            // Click en header para filtrar por servidor
+            const cardHeader = card.querySelector('.metric-header');
+            if (cardHeader) {
+                cardHeader.style.cursor = 'pointer';
+                cardHeader.addEventListener('click', () => {
+                    const totalCards = this.container.querySelectorAll('.metric-card').length;
+                    if (totalCards <= 1) return;
+                    if (this.filterActive && this.currentFilter === hostname) {
+                        this.clearHostFilter();
+                        return;
+                    }
+                    document.querySelectorAll('.stack-checkbox:checked').forEach(cb => cb.checked = false);
+                    syncBulkButtons();
+                    this.applyHostFilter(hostname);
+                });
+                cardHeader.addEventListener('mouseenter', () => {
+                    const totalCards = this.container.querySelectorAll('.metric-card').length;
+                    if (totalCards <= 1) return;
+                    const isActive = this.filterActive && this.currentFilter === hostname;
+                    cardHeader.title = isActive ? 'Click para quitar filtro' : 'Click para filtrar por servidor';
+                });
+            }
 
             // Listener del botón actualizar Dockme
             const btnUpdate = card.querySelector('.btn-update-dockme');
@@ -5836,11 +5579,30 @@ let layoutDirty = false;
                 });
             }
             // Listener del botón comprobar actualizaciones ahora
+            // Listener check-now — frase entera clickable con modal de confirmación
             const btnCheckNow = card.querySelector('.btn-check-now');
             if (btnCheckNow) {
                 btnCheckNow.addEventListener('click', async (e) => {
                     e.stopPropagation();
-                    btnCheckNow.style.display = 'none';
+                    // Modal de confirmación inline
+                    const confirmed = await new Promise(resolve => {
+                        const overlay = document.createElement('div');
+                        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;';
+                        overlay.innerHTML = `
+                            <div style="background:#1a2332;border:1px solid #2a3441;border-radius:12px;padding:28px 32px;max-width:380px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+                                <div style="font-size:1.1em;font-weight:600;color:#fff;margin-bottom:10px;">Comprobar actualizaciones</div>
+                                <div style="color:#8899aa;margin-bottom:24px;font-size:0.95em;">¿Ejecutar la comprobación de actualizaciones ahora en <strong style="color:#fff;">${hostname}</strong>?</div>
+                                <div style="display:flex;gap:12px;justify-content:center;">
+                                    <button id="confirm-no"  style="padding:8px 24px;border-radius:8px;border:1px solid #2a3441;background:transparent;color:#8899aa;cursor:pointer;font-size:0.95em;">Cancelar</button>
+                                    <button id="confirm-yes" style="padding:8px 24px;border-radius:8px;border:none;background:#3498db;color:#fff;cursor:pointer;font-size:0.95em;font-weight:600;">Comprobar</button>
+                                </div>
+                            </div>`;
+                        document.body.appendChild(overlay);
+                        overlay.querySelector('#confirm-yes').addEventListener('click', () => { document.body.removeChild(overlay); resolve(true); });
+                        overlay.querySelector('#confirm-no').addEventListener('click',  () => { document.body.removeChild(overlay); resolve(false); });
+                        overlay.addEventListener('click', (ev) => { if (ev.target === overlay) { document.body.removeChild(overlay); resolve(false); } });
+                    });
+                    if (!confirmed) return;
                     try {
                         await fetch('/api/run-check', {
                             method: 'POST',
@@ -5924,21 +5686,21 @@ let layoutDirty = false;
         updateManageButton() {
             if (!this.container) return;
             
-            const header = this.container.querySelector('.dockme-section-header');
+            const header = this.container.querySelector('.section-header');
             if (!header) return;
             
             const agents = AgentsState.getAgents();
             const detected = getDetectedServers();
             
             // Botón Gestionar eliminado — sustituido por tab Servidores en panel de edición
-            const manageBtn = header.querySelector('.dockme-manage-btn');
+            const manageBtn = header.querySelector('.manage-btn');
             if (manageBtn) manageBtn.remove();
             
             // ALERTA DE DETECTADOS
-            let alert = this.container.querySelector('.dockme-detected-alert-simple');
+            let alert = this.container.querySelector('.detected-alert-simple');
             if (detected.length > 0 && !alert) {
                 alert = document.createElement('div');
-                alert.className = 'dockme-detected-alert-simple';
+                alert.className = 'detected-alert-simple';
                 alert.innerHTML = `⚠️ Hay ${detected.length} servidor${detected.length > 1 ? 'es' : ''} detectado${detected.length > 1 ? 's' : ''} sin conectar`;
                 alert.style.cssText = 'cursor:pointer;font-size:0.82em;color:#f0a500;margin-top:4px;';
                 alert.addEventListener('click', () => {
@@ -6004,7 +5766,7 @@ let layoutDirty = false;
             this.container = document.createElement('div');
             this.container.id = 'metrics-section';
             const header = document.createElement('div');
-            header.className = 'dockme-section-header';
+            header.className = 'section-header';
             const title = document.createElement('div');
             title.className = 'links-cat-box-title';
             title.textContent = '🖥️ Servidores';
@@ -6020,23 +5782,7 @@ let layoutDirty = false;
             this.filterActive = true;
             this.currentFilter = hostname;
             this.updateSelectedCard(hostname);
-            const items = document.querySelectorAll('a.item');
-            items.forEach(item => {
-                const href = item.getAttribute('href') || '';
-                const match = href.match(/^\/compose\/([^/]+)(?:\/([^/]+))?/);
-                if (!match) {
-                    item.style.display = 'none';
-                    return;
-                }
-                const endpoint = match[2] || 'Actual';
-                const host = State.updatesDataGlobal?.find(h =>
-                    h.endpoint.toLowerCase() === endpoint.toLowerCase()
-                );
-                const itemHostname = host?.hostname || endpoint;
-                item.style.display = itemHostname === hostname ? '' : 'none';
-            });
-            
-            // Filtrar también tarjetas de updates
+            // Filtrar tarjetas de updates
             const updateCards = document.querySelectorAll('.stack-card-horizontal.update');
             updateCards.forEach(card => {
                 const checkbox = card.querySelector('.stack-checkbox');
@@ -6105,12 +5851,7 @@ let layoutDirty = false;
             this.filterActive = false;
             this.currentFilter = null;
             this.updateSelectedCard(null);
-            const items = document.querySelectorAll('a.item');
-            items.forEach(item => {
-                item.style.display = '';
-            });
-            ItemManager.reorder();
-            
+
             // Mostrar todas las tarjetas de updates
             const updateLinks = document.querySelectorAll('.stack-card-link');
             updateLinks.forEach(link => {
@@ -6184,10 +5925,10 @@ let layoutDirty = false;
         const metricsSection = document.querySelector('#metrics-section');
         if (!metricsSection) return;
         
-        let alert = metricsSection.querySelector('.dockme-updating-alert');
+        let alert = metricsSection.querySelector('.updating-alert');
         if (!alert) {
             alert = document.createElement('div');
-            alert.className = 'dockme-updating-alert';
+            alert.className = 'updating-alert';
             alert.style.cssText = 'font-size:0.82em;color:#f0a500;margin-bottom:8px;';
             const cardsContainer = metricsSection.querySelector('.metrics-container');
             cardsContainer.insertAdjacentElement('afterend', alert);
@@ -6198,16 +5939,6 @@ let layoutDirty = false;
         setTimeout(() => {
             alert.style.display = 'none';
         }, duration);
-    }
-
-    // Cargar CSS personalizado desde custom.css
-    function ensureCustomCSS() {
-        if (document.querySelector('link[data-dockme-css]')) return;
-        const link = document.createElement('link');
-        link.rel = 'stylesheet';
-        link.href = `${CONFIG.BASE_URL}/custom.css`;
-        link.dataset.dockmeCss = 'true';
-        document.head.appendChild(link);
     }
 
 // ==================== GESTIÓN DE AGENTES DOCKGE ====================
@@ -6226,39 +5957,6 @@ const AgentsState = {
 };
 
 // ==================== LECTURA DE AGENTES DESDE DOM OCULTO ====================
-function readAgentsFromDockgeDOM() {
-    const agents = [];
-    const agentElements = document.querySelectorAll('.first-row .agent');
-    if (agentElements.length === 0) {return;}
-    agentElements.forEach(el => {
-        const badge = el.querySelector('.badge');
-        const link = el.querySelector('a');
-        const span = el.querySelector('span:not(.badge)');
-        const endpoint = link 
-            ? link.textContent.trim() 
-            : (span ? span.textContent.trim() : 'Actual');
-        const isOnline = badge && badge.classList.contains('bg-primary');
-        const host = State.updatesDataGlobal?.find(h => 
-            h.endpoint.toLowerCase() === endpoint.toLowerCase()
-        );
-        agents.push({
-            endpoint,
-            hostname: host?.hostname || endpoint,
-            isOnline,
-            hasMetrics: false
-        });
-    });
-    AgentsState.setAgents(agents);
-
-    // Sincronizar al backend los endpoints conectados (online) para que el
-    // scheduler no lance checks a servidores detectados pero no conectados
-    const connectedEps = agents.filter(a => a.isOnline).map(a => a.endpoint);
-    fetch('/api/set-connected-endpoints', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoints: connectedEps })
-    }).catch(() => {});
-}
 
 // ==================== DETECTAR SERVIDORES PENDIENTES ====================
 function getDetectedServers() {
@@ -6304,7 +6002,7 @@ function createDetectedServersSection() {
                     <label>Contraseña:</label>
                     <input type="password" class="agent-password" placeholder="••••••••" />
                 </div>
-                <button class="btn btn-primary dockme-connect-agent-btn" data-endpoint="${server.endpoint}">
+                <button class="btn btn-primary connect-agent-btn" data-endpoint="${server.endpoint}">
                     Conectar agente
                 </button>
             </div>
@@ -6313,7 +6011,7 @@ function createDetectedServersSection() {
         </div>
     `).join('');
     return `
-        <div class="dockme-detected-servers" style="margin-top: 40px;">
+        <div class="detected-servers" style="margin-top: 40px;">
             <h3 style="font-size: 20px;">Servidores Dockme detectados</h3>
             <p style="color:#7a9cc4;font-size:0.82em;line-height:1.6;margin-bottom:14px;">
                 ⚠️ Antes de conectar a un agente por primera vez, accede a su interfaz web y crea el usuario si aún no lo has hecho. Luego introduce las credenciales aquí para conectar con el agente.
@@ -6330,7 +6028,7 @@ function createAgentsTable() {
     
     if (agents.length === 0) {
         return `
-            <div class="dockme-agents-wrapper">
+            <div class="agents-wrapper">
                 <div class="dockme-placeholder-box">
                     <p>No hay agentes configurados</p>
                     <p style="font-size: 0.9em; color: #888; margin-top: 10px;">
@@ -6369,7 +6067,7 @@ function createAgentsTable() {
                 </td>
                 <td>
                     <div style="display:flex;align-items:center;gap:6px;">
-                        <input type="text" class="agent-ui-url-input dockme-service-url-input"
+                        <input type="text" class="agent-ui-url-input editor-input"
                             placeholder="https://ip:puerto"
                             data-endpoint="${agent.endpoint}"
                             value="">
@@ -6387,9 +6085,9 @@ function createAgentsTable() {
     }).join('');
 
     return `
-        <div class="dockme-agents-wrapper">
+        <div class="agents-wrapper">
         <h3 style="font-size: 20px;">Agentes conectados</h3>
-            <table class="dockme-agents-table">
+            <table class="agents-table">
                 <thead>
                     <tr>
                         <th style="width: 48px;">Icono</th>
@@ -6402,7 +6100,7 @@ function createAgentsTable() {
                     ${rows}
                 </tbody>
             </table>
-            <div class="dockme-editor-hint">
+            <div class="editor-hint">
                 👉 Click en el icono del servidor para subir un nuevo icono, o edita la url a la que te llevara dicho icono desde la tarjeta de metricas para abrir la web del servidor.
             </div>
         </div>
@@ -6420,8 +6118,8 @@ function applyAgentMode(centralUrl) {
         const stackCol = document.querySelector('.col-12.col-md-4.col-xl-3');
         if (stackCol) stackCol.style.setProperty('display', 'none', 'important');
 
-        // Ocultar li con dockme-header-icons y botón Novedades — dejar avatar
-        const dockmeIconsLi = document.querySelector('.dockme-header-icons')?.closest('li.nav-item');
+        // Ocultar li con header-icons y botón Novedades — dejar avatar
+        const dockmeIconsLi = document.querySelector('.header-icons')?.closest('li.nav-item');
         if (dockmeIconsLi) dockmeIconsLi.style.setProperty('display', 'none', 'important');
         const novedadesBtn = document.querySelector('.btn-novedades-dockme');
         if (novedadesBtn) novedadesBtn.style.setProperty('display', 'none', 'important');
@@ -6433,25 +6131,21 @@ function applyAgentMode(centralUrl) {
 }
 
 // ==================== AVISAR VARIABLES OBSOLETAS EN COMPOSE ====================
-// TODO: eliminar en v2.3 cuando todos los usuarios hayan migrado
+// TODO: eliminar en v3.5 cuando todos los usuarios hayan migrado
 function checkDeprecatedVars() {
     if (document.querySelector('.deprecated-vars-modal')) return;
     if (State.settingsData?.migration_2_1_shown) return;
-    if (RouteManager.isSetupPath()) return;
 
-    // Solo mostrar si el settings tiene variables obsoletas realmente
     const settings = State.settingsData || {};
     const hasDeprecated = settings.telegramToken || settings.telegramChatId || 
                           settings.checkTimes || settings.webhookUrl || settings.endpoint;
     if (!hasDeprecated) {
-        // Marcar como visto para no volver a comprobar
         fetch('/api/mark-agents-migration-shown', { method: 'POST' }).catch(() => {});
         if (State.settingsData) State.settingsData.migration_2_1_shown = true;
         return;
     }
 
     const code = v => `<code style="background:#0d1520;padding:2px 6px;border-radius:3px;display:block;margin:3px 0;">${v}</code>`;
-
     const modal = document.createElement('div');
     modal.className = 'deprecated-vars-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;';
@@ -6465,7 +6159,7 @@ function checkDeprecatedVars() {
             <div style="margin:0 0 16px 16px;">
                 ${['TELEGRAM_TOKEN','TELEGRAM_CHATID','CHECK_TIMES'].map(code).join('')}
             </div>
-            <p style="color:#c0cfe0;font-size:0.88em;margin:0 0 6px 0;">Si tienes agentes Dockme remotos, además de eliminar las variables anteriores también debes renombrar en cada uno:</p>
+            <p style="color:#c0cfe0;font-size:0.88em;margin:0 0 6px 0;">Si tienes agentes Dockme remotos, además debes renombrar en cada uno:</p>
             <div style="margin:0 0 20px 16px;">
                 <div style="display:flex;align-items:center;gap:8px;margin:3px 0;">
                     ${code('WEBHOOK_URL')}<span style="color:#7a9cc4;flex-shrink:0;">por</span>${code('CENTRAL_URL')}
@@ -6531,9 +6225,7 @@ function showPrimaryHostModal(endpoint, currentValue, onSave, onCancel, fromServ
     });
 }
 
-
 function renderServidoresTab(container) {
-    readAgentsFromDockgeDOM();
     container.innerHTML = `
         ${createAgentsTable()}
         ${createDetectedServersSection()}
@@ -6680,7 +6372,7 @@ function renderServidoresTab(container) {
         });
     });
 
-    const connectButtons = container.querySelectorAll('.dockme-connect-agent-btn');
+    const connectButtons = container.querySelectorAll('.connect-agent-btn');
     connectButtons.forEach(btn => {
         btn.addEventListener('click', async (e) => {
             e.preventDefault();
@@ -6699,7 +6391,6 @@ function renderServidoresTab(container) {
             btn.textContent = 'Conectando...';
             const success = await addAgentToDockge(`http://${endpoint}`, username, password, endpoint, errorDiv);
             if (success) {
-                readAgentsFromDockgeDOM();
                 container.dataset.loaded = '';
                 renderServidoresTab(container);
             } else {
@@ -6768,7 +6459,7 @@ function renderLinksTab(container) {
                 catEl.dataset.catIdx = catIdx;
                 catEl.innerHTML = `
                     <div class="links-cat-header">
-                        <input class="links-cat-name dockme-service-url-input" value="${cat.category}" style="flex:1;font-size:1em;font-weight:500;">
+                        <input class="links-cat-name editor-input" value="${cat.category}" style="flex:1;font-size:1em;font-weight:500;">
                         <button class="btn btn-danger btn-delete-category" style="padding:2px 8px;">🗑</button>
                     </div>
                     <div class="links-items-list"></div>
@@ -6852,7 +6543,7 @@ function renderGeneralTab(container) {
 
                         <div class="general-field">
                             <label class="general-label" style="margin-bottom:4px;display:block;">Ejemplos por servicio</label>
-                            <select id="gen-notif-service-select" class="dockme-service-url-input" style="margin-bottom:6px;">
+                            <select id="gen-notif-service-select" class="editor-input" style="margin-bottom:6px;">
                                 <option value="">— Selecciona un servicio —</option>
                             </select>
                             <div id="gen-notif-example" style="display:none;background:#0d1520;border-radius:6px;padding:8px 10px;font-size:0.82em;margin-bottom:10px;">
@@ -6874,7 +6565,7 @@ function renderGeneralTab(container) {
                         <div class="general-field">
                             <label class="general-label">URL de notificación</label>
                             <div class="general-input-row">
-                                <input type="text" id="gen-notif-url" class="dockme-service-url-input"
+                                <input type="text" id="gen-notif-url" class="editor-input"
                                     placeholder="telegram://TOKEN@telegram?chats=CHATID" value="${notifUrl}">
                                 <span class="gen-field-status" id="gen-notif-url-status"></span>
                             </div>
@@ -6893,7 +6584,7 @@ function renderGeneralTab(container) {
                             <div class="general-prune-left">
                                 <label class="general-label">Limpieza diaria</label>
                                 <div class="general-input-row">
-                                    <select id="gen-prune-mode" class="dockme-service-url-input">
+                                    <select id="gen-prune-mode" class="editor-input">
                                         <option value="disabled"     ${pruneMode === 'disabled'     ? 'selected' : ''}>Desactivado</option>
                                         <option value="conservative" ${pruneMode === 'conservative' ? 'selected' : ''}>Ligero (recomendado)</option>
                                         <option value="normal"       ${pruneMode === 'normal'       ? 'selected' : ''}>Completo</option>
@@ -6918,7 +6609,7 @@ function renderGeneralTab(container) {
                         <div class="general-field">
                             <label class="general-label">Programación diaria</label>
                             <div class="general-input-row">
-                                <input type="time" id="gen-check-time" class="dockme-service-url-input general-time-input"
+                                <input type="time" id="gen-check-time" class="editor-input general-time-input"
                                     value="${checkTime}">
                                 <span class="gen-field-status" id="gen-check-time-status"></span>
                             </div>
@@ -6931,19 +6622,19 @@ function renderGeneralTab(container) {
                         <div class="general-field">
                             <label class="general-label">Contraseña actual</label>
                             <div class="general-input-row">
-                                <input type="password" id="gen-pass-current" class="dockme-service-url-input" autocomplete="current-password" placeholder="••••••••">
+                                <input type="password" id="gen-pass-current" class="editor-input" autocomplete="current-password" placeholder="••••••••">
                             </div>
                         </div>
                         <div class="general-field">
                             <label class="general-label">Nueva contraseña</label>
                             <div class="general-input-row">
-                                <input type="password" id="gen-pass-new" class="dockme-service-url-input" autocomplete="new-password" placeholder="••••••••">
+                                <input type="password" id="gen-pass-new" class="editor-input" autocomplete="new-password" placeholder="••••••••">
                             </div>
                         </div>
                         <div class="general-field">
                             <label class="general-label">Repetir nueva contraseña</label>
                             <div class="general-input-row">
-                                <input type="password" id="gen-pass-repeat" class="dockme-service-url-input" autocomplete="new-password" placeholder="••••••••">
+                                <input type="password" id="gen-pass-repeat" class="editor-input" autocomplete="new-password" placeholder="••••••••">
                             </div>
                         </div>
                         <div class="general-field">
@@ -6986,18 +6677,34 @@ function renderGeneralTab(container) {
                 });
             };
 
-            // Toggle enabled
+            // Toggle enabled — solo si hay URL guardada en settingsData
             container.querySelector('#gen-notif-enabled').addEventListener('change', function () {
-                saveField(
-                    { notifications: { enabled: this.checked } },
-                    'gen-notif-enabled-status'
-                );
+                const savedUrls = State.settingsData?.notifications?.urls || [];
+                const hasUrl = savedUrls.some(u => u && u.trim());
+                if (this.checked && !hasUrl) {
+                    this.checked = false;
+                    const status = container.querySelector('#gen-notif-enabled-status');
+                    if (status) {
+                        status.textContent = '⚠ Envía una prueba primero para guardar la URL';
+                        status.className = 'icon-status error';
+                        setTimeout(() => { status.textContent = ''; status.className = 'icon-status'; }, 3000);
+                    }
+                    return;
+                }
+                saveField({ notifications: { enabled: this.checked } }, 'gen-notif-enabled-status');
             });
 
-            // URL de notificación
-            bindTextInput('gen-notif-url', 'gen-notif-url-status', val => ({
-                notifications: { urls: val ? [val] : [] }
-            }));
+            // URL de notificación — Enter llama a Enviar prueba, blur no guarda
+            const notifUrlInput = container.querySelector('#gen-notif-url');
+            if (notifUrlInput) {
+                notifUrlInput.addEventListener('keydown', e => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        container.querySelector('#gen-notif-test')?.click();
+                    }
+                });
+                // blur no hace nada — solo guarda si la prueba es correcta
+            }
 
             // Cargar ejemplos de servicios desde el JSON estático
             fetch('/api/shoutrrr-services?t=' + Date.now())
@@ -7039,10 +6746,21 @@ function renderGeneralTab(container) {
                         exampleDiv.style.display = 'block';
 
                         copyBtn.onclick = () => {
-                            navigator.clipboard.writeText(this.value).then(() => {
+                            const urlVal = this.value;
+                            const urlInput = container.querySelector('#gen-notif-url');
+                            if (!urlInput) return;
+                            const existing = urlInput.value.trim();
+                            const apply = () => {
+                                urlInput.value = urlVal;
+                                urlInput.focus();
                                 copyBtn.textContent = '✅';
                                 setTimeout(() => { copyBtn.textContent = 'Copiar'; }, 1500);
-                            }).catch(() => {});
+                            };
+                            if (existing && existing !== urlVal) {
+                                if (confirm('¿Reemplazar la URL actual?')) apply();
+                            } else {
+                                apply();
+                            }
                         };
                     });
                 })
@@ -7050,19 +6768,58 @@ function renderGeneralTab(container) {
 
             // Botón Enviar prueba
             container.querySelector('#gen-notif-test').addEventListener('click', () => {
-                const statusEl = container.querySelector('#gen-notif-test-status');
-                fetch('/api/test-notification', { method: 'POST' })
-                    .then(r => r.json())
-                    .then(d => {
-                        statusEl.textContent = d.success ? '✅' : '❌ ' + (d.message || 'Error');
-                        statusEl.style.color = d.success ? '#8affc1' : '#ff8a8a';
-                        setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 4000);
+                const statusEl  = container.querySelector('#gen-notif-test-status');
+                const urlInput  = container.querySelector('#gen-notif-url');
+                const urlVal    = urlInput?.value?.trim() || '';
+                const enabledEl = container.querySelector('#gen-notif-enabled');
+                // Si input vacío → desactivar y borrar URL
+                if (!urlVal) {
+                    saveField({ notifications: { urls: [], enabled: false } }, null);
+                    if (State.settingsData?.notifications) {
+                        State.settingsData.notifications.urls = [];
+                        State.settingsData.notifications.enabled = false;
+                    }
+                    if (enabledEl) enabledEl.checked = false;
+                    statusEl.textContent = '⚠ URL borrada, notificaciones desactivadas';
+                    statusEl.style.color = '#f0a500';
+                    setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 3000);
+                    return;
+                }
+
+                statusEl.textContent = '⏳';
+                statusEl.style.color = '';
+
+                setTimeout(() => {
+                    // Enviar prueba con la URL del input (sin guardar aún)
+                    fetch('/api/test-notification', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ testUrl: urlVal })
                     })
-                    .catch(() => {
-                        statusEl.textContent = '❌ Error de conexión';
-                        statusEl.style.color = '#ff8a8a';
-                        setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 4000);
-                    });
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.success) {
+                                statusEl.textContent = '✅ Prueba enviada correctamente';
+                                statusEl.style.color = '#8affc1';
+                                // Solo ahora guardar URL y activar
+                                saveField({ notifications: { urls: [urlVal], enabled: true } }, null);
+                                if (State.settingsData?.notifications) {
+                                    State.settingsData.notifications.urls = [urlVal];
+                                    State.settingsData.notifications.enabled = true;
+                                }
+                                if (enabledEl) enabledEl.checked = true;
+                            } else {
+                                statusEl.textContent = '❌ Configuración incorrecta, revisa la url';
+                                statusEl.style.color = '#ff8a8a';
+                            }
+                            setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 4000);
+                        })
+                        .catch(() => {
+                            statusEl.textContent = '❌ Error de conexión';
+                            statusEl.style.color = '#ff8a8a';
+                            setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 4000);
+                        });
+                }, 300);
             });
 
             // Hora del check
@@ -7165,7 +6922,7 @@ function renderGeneralTab(container) {
                     return;
                 }
 
-                const sock = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
+                const sock = window.dockmeSocket;
                 if (!sock) { showMsg('Error de conexión con el servidor.', false); return; }
 
                 sock.emit('changePassword', { currentPassword: current, newPassword: newPass, repeatNewPassword: repeat }, (res) => {
@@ -7209,8 +6966,8 @@ function renderLinks(container, cat, catIdx, saveLinks, rerender) {
                         onerror="this.src='/system-icons/no-icon.svg'">
                     <input type="file" class="links-icon-file" accept=".svg,.png" style="display:none">
                 </span>
-                <input class="links-item-name dockme-service-url-input" value="${link.name}" placeholder="Nombre" style="flex:1;">
-                <input class="links-item-url dockme-service-url-input" value="${link.url}" placeholder="https://..." style="flex:2;">
+                <input class="links-item-name editor-input" value="${link.name}" placeholder="Nombre" style="flex:1;">
+                <input class="links-item-url editor-input" value="${link.url}" placeholder="https://..." style="flex:2;">
                 <button class="btn btn-danger btn-delete-link" style="padding:2px 8px;">🗑</button>
             `;
 
@@ -7348,77 +7105,55 @@ function initLinkDragDrop(container, catIdx, saveLinks, rerender) {
 
 // ==================== ELIMINAR AGENTE ====================
 function deleteAgent(endpoint) {
-    const agentElements = document.querySelectorAll('.first-row .agent');
-    let targetAgent = null;
-    for (const el of agentElements) {
-        const link = el.querySelector('a');
-        const linkText = link ? link.textContent.trim() : '';
-        if (link && linkText === endpoint) {
-            targetAgent = el;
-            break;
+    const sock = window.dockmeSocket;
+    if (!sock) { console.error('[Dockme] Socket no disponible'); return; }
+
+    const url = endpoint.startsWith('http') ? endpoint : `http://${endpoint}`;
+    sock.emit('removeAgent', url, res => {
+        // Limpiar recientes del endpoint
+        let recientes = RecentManager.getAll();
+        recientes = recientes.filter(item =>
+            item.endpoint.toLowerCase() !== endpoint.toLowerCase()
+        );
+        Storage.set(RecentManager.KEY, recientes);
+
+        // Quitar de updates.json
+        if (Array.isArray(State.updatesDataGlobal)) {
+            const updatedData = State.updatesDataGlobal.filter(host =>
+                host.endpoint.toLowerCase() !== endpoint.toLowerCase()
+            );
+            State.setUpdatesData(updatedData);
+            fetch('/api/set-updates-file', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updatedData)
+            });
         }
-    }
-    if (!targetAgent) {
-        console.error('[Dockme] Agente no encontrado en DOM:', endpoint);
-        return;
-    }
-    const trashBtn = targetAgent.querySelector('.remove-agent');
-    if (!trashBtn) {
-        alert('No se pudo eliminar');
-        console.error('[Dockme] Botón de eliminar no encontrado');
-        return;
-    }
-    const clickEvent = new MouseEvent('click', {
-        view: window,
-        bubbles: true,
-        cancelable: true
-    });
-    trashBtn.dispatchEvent(clickEvent);
-    let attempts = 0;
-    const maxAttempts = 10;
-    const checkModal = () => {
-        attempts++;
-        const modal = document.querySelector('.modal.fade.show');
-        if (modal) {
-            const deleteModalBtn = modal.querySelector('.btn-danger');
-            const cancelModalBtn = modal.querySelector('.btn-secondary');
-            if (!deleteModalBtn) {
-                alert('No se pudo eliminar el agente');
-                console.error('[Dockme] Botón de confirmación no encontrado');
-                return;
+
+        // Quitar de AgentsState
+        if (window._dmAgentsState) {
+            const current = window._dmAgentsState.getAgents()
+                .filter(a => a.endpoint.toLowerCase() !== endpoint.toLowerCase());
+            window._dmAgentsState.setAgents(current);
+            fetch('/api/set-connected-endpoints', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ endpoints: current.map(a => a.endpoint) })
+            }).catch(() => {});
+        }
+
+        // Limpiar stacks del endpoint en dm-col2
+        window._dmRemoveEndpoint?.(endpoint);
+
+        // Refrescar tab servidores
+        setTimeout(() => {
+            const configContainer = document.querySelector('#config-tab-servidores');
+            if (configContainer) {
+                configContainer.dataset.loaded = '';
+                renderServidoresTab(configContainer);
             }
-            deleteModalBtn.addEventListener('click', () => {
-                setTimeout(() => {
-                    let recientes = RecentManager.getAll();
-                    recientes = recientes.filter(item => 
-                        item.endpoint.toLowerCase() !== endpoint.toLowerCase()
-                    );
-                    Storage.set(RecentManager.KEY, recientes);
-                    if (Array.isArray(State.updatesDataGlobal)) {
-                        const updatedData = State.updatesDataGlobal.filter(host => 
-                            host.endpoint.toLowerCase() !== endpoint.toLowerCase()
-                        );
-                        State.setUpdatesData(updatedData);
-                        fetch('/api/set-updates-file', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(updatedData)
-                        });
-                    }
-                    readAgentsFromDockgeDOM();
-                    // Refrescar tab servidores del panel de configuración si está abierto
-                    const configContainer = document.querySelector('#config-tab-servidores');
-                    if (configContainer) {
-                        configContainer.dataset.loaded = '';
-                        renderServidoresTab(configContainer);
-                    }
-                }, 1000);
-            }, { once: true });
-        } else if (attempts < maxAttempts) {
-            setTimeout(checkModal, 200);
-        }
-    };
-    setTimeout(checkModal, 300);
+        }, 500);
+    });
 }
 // ==================== AÑADIR AGENTE A DOCKGE ====================
 async function addAgentToDockge(url, username, password, endpoint, errorDiv) {
@@ -7426,82 +7161,50 @@ async function addAgentToDockge(url, username, password, endpoint, errorDiv) {
         if (!url.startsWith('http://') && !url.startsWith('https://')) {
             url = 'http://' + url;
         }
-        const agentBox = Array.from(document.querySelectorAll('.first-row .shadow-box.big-padding'))
-            .find(box => box.querySelector('h4')?.textContent.includes('Agentes Dockge'));
-        if (!agentBox) {
-            throw new Error('No se encontró el panel de agentes');
-        }
-        let form = agentBox.querySelector('form');
-        if (!form) {
-            const buttons = document.querySelectorAll('.first-row .btn.btn-normal');
-            let addAgentBtn = null;
-            buttons.forEach(btn => {
-                if (btn.textContent.trim() === 'Añadir Agente') {
-                    addAgentBtn = btn;
+        const sock = window.dockmeSocket;
+        if (!sock) throw new Error('Socket no disponible');
+
+        return await new Promise((resolve) => {
+            sock.emit('addAgent', { url, username, password }, res => {
+                if (res?.ok) {
+                    // Marcar como logueado en updates.json
+                    fetch('/api/set-agent-logged', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ endpoint, loggedIn: true })
+                    }).catch(() => {});
+                    // Añadir a AgentsState como online
+                    if (window._dmAgentsState && window.updatesDataGlobal) {
+                        const host = window.updatesDataGlobal.find(h =>
+                            h.endpoint.toLowerCase() === endpoint.toLowerCase()
+                        );
+                        const hostname = host?.hostname || endpoint;
+                        const current = window._dmAgentsState.getAgents();
+                        if (!current.find(a => a.endpoint.toLowerCase() === endpoint.toLowerCase())) {
+                            current.push({
+                                endpoint,
+                                hostname,
+                                isOnline: true,
+                                hasMetrics: false
+                            });
+                            window._dmAgentsState.setAgents(current);
+                            // Actualizar hostname en dm-col2
+                            window._dmAddEndpoint?.(endpoint, hostname);
+                            fetch('/api/set-connected-endpoints', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ endpoints: current.map(a => a.endpoint) })
+                            }).catch(() => {});
+                        }
+                    }
+                    resolve(true);
+                } else {
+                    errorDiv.textContent = `⚠️ ${res?.msg || 'Credenciales incorrectas o agente no accesible'}`;
+                    errorDiv.style.display = 'block';
+                    resolve(false);
                 }
             });
-            if (!addAgentBtn) {
-                throw new Error('No se encontró el botón "Añadir Agente"');
-            }
-            addAgentBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            let attempts = 0;
-            while (!form && attempts < 10) {
-                await new Promise(resolve => setTimeout(resolve, 200));
-                form = agentBox.querySelector('form');
-                attempts++;
-            }
-            if (!form) {
-                throw new Error('El formulario no apareció');
-            }
-        }
-        const urlInput = form.querySelector('#url');
-        const usernameInput = form.querySelector('#username');
-        const passwordInput = form.querySelector('#password');
-        if (!urlInput || !usernameInput || !passwordInput) {
-            throw new Error('No se encontraron los campos');
-        }
-        urlInput.value = url;
-        urlInput.dispatchEvent(new Event('input', { bubbles: true }));
-        urlInput.dispatchEvent(new Event('change', { bubbles: true }));
-        usernameInput.value = username;
-        usernameInput.dispatchEvent(new Event('input', { bubbles: true }));
-        usernameInput.dispatchEvent(new Event('change', { bubbles: true }));
-        passwordInput.value = password;
-        passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
-        passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
-        await new Promise(resolve => setTimeout(resolve, 500));
-        const submitBtn = form.querySelector('button[type="submit"]');
-        if (!submitBtn) {
-            throw new Error('No se encontró el botón submit');
-        }
-        submitBtn.click();
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        const agentElements = document.querySelectorAll('.first-row .agent');
-        let found = false;
-        for (const el of agentElements) {
-            const link = el.querySelector('a');
-            if (link && link.textContent.trim() === endpoint) {
-                found = true;
-                break;
-            }
-        }
-        if (found) {
-            // Marcar como logueado en updates.json (persiste entre reinicios)
-            fetch('/api/set-agent-logged', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ endpoint, loggedIn: true })
-            }).catch(() => {});
-            return true;
-        } else {
-            const formStillExists = agentBox.querySelector('form');
-            if (formStillExists) {
-                throw new Error('Credenciales incorrectas o el agente no está accesible');
-            } else {
-                throw new Error('No se pudo verificar si el agente se añadió');
-            }
-        }
-        
+        });
     } catch (err) {
         console.error('[Dockme] Error:', err);
         errorDiv.textContent = `⚠️ ${err.message}`;
@@ -7549,7 +7252,6 @@ function init() {
     if (titleEl) {
         titleEl.style.visibility = 'hidden';
     }
-    ensureCustomCSS();
     DynamicStyles.init();
     DynamicStyles.updateForRoute(State.lastPath);
     setInterval(() => {
@@ -7559,10 +7261,8 @@ function init() {
             DynamicStyles.updateForRoute(currentPath);
         }
     }, 100);
-    // Interceptar clicks en a.item cuando editMode está activo
     document.addEventListener('click', (e) => {
         if (!dockmeEditMode) return;
-        const stackItem = e.target.closest('a.item');
         if (!stackItem) return;
         e.preventDefault();
         e.stopPropagation();
@@ -7570,73 +7270,14 @@ function init() {
         if (href) handleEditStackSelection(href);
     }, true);
 
-    let initialLoginCheckAttempts = 0;
-    const initialLoginCheck = setInterval(() => {
-        initialLoginCheckAttempts++;
-        if (isLoginVisible()) {
-            dockmeWaitingForLogin = true;
-            clearInterval(initialLoginCheck);
-        }
-        if (initialLoginCheckAttempts > 50) {
-            clearInterval(initialLoginCheck);
-        }
-    }, 100);
+    // Login gestionado por init.js — no necesario detectar form-container
 
-    const processTodoCompleto = () => {
-        const loginVisible = isLoginVisible();
-        if (loginVisible && !dockmeLoginWasVisible) {
-            dockmeWaitingForLogin = true;
-        }
-        dockmeLoginWasVisible = loginVisible;
-        if (dockmeWaitingForLogin && !loginVisible) {
-            dockmeWaitingForLogin = false;
-            if (RouteManager.isRootPath()) {
-                hideDockgeHomeBlock();
-                ensureDockmeRoot();
-                // Esperar a que Dockge conecte los agentes antes de cargar
-                setTimeout(() => {
-                    Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
-                    MetricsManager.stop();
-                    MetricsManager.start();
-                }, 2000);
-            }
-        }
-        ItemManager.processAll();
-        ensureTitleIsCorrect();
-        insertEditStacksIcon();
-        setTimeout(() => ItemManager.refreshIcons(), CONFIG.ICON_REFRESH_DELAY);
-        reasignarIconos();
-
-        // Añadir footer de GitHub bajo la lista de stacks
-        if (!document.querySelector('#dockme-github-footer')) {
-            const stackList = document.querySelector('.stack-list.scrollbar');
-            if (stackList) {
-                const footer = document.createElement('a');
-                footer.id = 'dockme-github-footer';
-                footer.href = 'https://github.com/fernandeusto/dockme';
-                footer.target = '_blank';
-                footer.rel = 'noopener';
-                footer.style.cssText = 'display:flex;align-items:center;gap:7px;opacity:0.4;text-decoration:none;color:rgb(204,204,204);transition:opacity 0.2s;justify-content:center;min-height:2.5em;line-height:1.25em;margin-left:-20px;';
-                footer.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="width:24px;height:24px;flex-shrink:0;"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.2 11.38.6.11.82-.26.82-.58v-2.03c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02 0 2.04.13 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58C20.57 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>DockMe — ¡Déjanos una estrella!`;
-                footer.addEventListener('mouseenter', () => footer.style.opacity = '0.8');
-                footer.addEventListener('mouseleave', () => footer.style.opacity = '0.4');
-                stackList.insertAdjacentElement('afterend', footer);
-            }
-        }
-    };
-
-    DOMObserver.init(processTodoCompleto);
-    processTodoCompleto();
-    DOMObserver.start();
-
-    setInterval(() => ItemManager.refreshIcons(), CONFIG.REORDER_INTERVAL);
     // Detectar navegación directa por URL (sin Vue Router)
     window.addEventListener('popstate', () => RouteObserver.observe());
     RouteObserver.observe(); // comprobar ruta inicial
-    // setInterval(reasignarIconos, 500); // desactivado — DOMObserver ya cubre este caso
 
     // CARGAR AGENTES Y MÉTRICAS
-    if (!dockmeWaitingForLogin && RouteManager.isRootPath()) {
+    if (RouteManager.isRootPath()) {
         let attempts = 0;
         const maxAttempts = 50;
         const checkAndLoadAgents = () => {
@@ -7649,9 +7290,8 @@ function init() {
                 return;
             }
 
-            const agentsExist = document.querySelectorAll('.first-row .agent').length > 0;
+            const agentsExist = AgentsState.agents.length > 0;
             if (agentsExist) {
-                readAgentsFromDockgeDOM();
             }
 
             Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
@@ -7665,88 +7305,409 @@ function init() {
                 }
             });
 
-            // Limpiar stacks de agentes que se desconectan
-            const sock = document.querySelector('#app')?._vnode?.component?.root?.proxy?.getSocket();
-            if (sock) {
-                sock.on('agentStatus', (agents) => {
-                    const list = Array.isArray(agents) ? agents : [agents];
-                    const root = document.querySelector('#app')?._vnode?.component?.proxy?.$root;
-                    if (!root) return;
-                    list.forEach(a => {
-                        if (a.status === 'offline' && a.endpoint) {
-                            delete root.allAgentStackList[a.endpoint];
-                        }
-                    });
-                });
-            }
+            // agentStatus gestionado desde init.js
         };
         setTimeout(checkAndLoadAgents, 300);
     }
 
-    // Registrar beforeEach siempre — independientemente de la ruta de entrada
-    const registerBeforeEach = () => {
-        const vueRouter = document.querySelector('#app')?.__vue_app__?.config?.globalProperties?.$router;
-        if (!vueRouter) { setTimeout(registerBeforeEach, 200); return; }
-        if (vueRouter._dockme_guard) return; // ya registrado
-        vueRouter._dockme_guard = true;
-        let lastMousePos = { x: 0, y: 0 };
-        document.addEventListener('mousemove', (e) => { lastMousePos = { x: e.clientX, y: e.clientY }; }, true);
-        vueRouter.beforeEach((to, from, next) => {
-            // Solo notificar al RouteObserver si no vamos a interceptar la ruta
-            if (!to.path?.startsWith('/compose/')) {
-                RouteObserver.lastRoute = to.path;
-                RouteObserver.handleRouteChange(to.path);
-            }
-            // Si venimos de /setup y vamos a /, resetear GlobalData para que recargue todo
-            if (from.path === '/setup' && to.path === '/') {
-                GlobalData.loaded = false;
-                GlobalData.load();
-            }
-            if (to.path?.startsWith('/compose/')) {
-                const allIcons = document.querySelectorAll('img.cp-icon');
-                let img = null;
-                for (const icon of allIcons) {
-                    const rect = icon.getBoundingClientRect();
-                    if (lastMousePos.x >= rect.left && lastMousePos.x <= rect.right &&
-                        lastMousePos.y >= rect.top  && lastMousePos.y <= rect.bottom) {
-                        img = icon; break;
-                    }
-                }
-                if (img) {
-                    const parentItem = img.closest('a.item');
-                    const href = parentItem?.getAttribute('href') || '';
-                    const nameFromHref = href.match(/^\/compose\/([^/]+)/)?.[1];
-                    const endpointFromHref = href.match(/\/compose\/[^/]+\/(.+)$/)?.[1] || 'Actual';
-                    const stackData = stacksConfig.find(s =>
-                        s.name?.toLowerCase() === (nameFromHref || img.dataset.stackName)?.toLowerCase() &&
-                        s.endpoint?.toLowerCase() === (endpointFromHref || img.dataset.stackEndpoint || 'Actual').toLowerCase()
-                    );
-                    if (stackData?.url) window.open(stackData.url, '_blank');
-                    next(false);
-                    return;
-                }
-                const parts = to.path.split('/').filter(Boolean);
-                const stackName = parts[1] || '';
-                const endpoint  = parts[2] || 'Actual';
-                next(false);
-                if (!document.body.classList.contains('dockme-logs-mode')) {
-                    activateLogsMode();
-                    setTimeout(() => openLogsForStack(stackName, endpoint), 100);
-                } else {
-                    openLogsForStack(stackName, endpoint);
-                }
-                return;
-            }
-            next();
-        });
-    };
-    setTimeout(registerBeforeEach, 300);
-}
+}  // end init
 
     // ==================== START ====================
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init, { once: true });
-    } else {
+    const startApp = () => {
         init();
+        // Insertar iconos cuando #dm-icons-li esté listo
+        const waitForIcons = () => {
+            if (document.getElementById('dm-icons-li')) {
+                ensureTitleIsCorrect();
+                insertEditStacksIcon();
+            } else {
+                setTimeout(waitForIcons, 200);
+            }
+        };
+        setTimeout(waitForIcons, 300);
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startApp, { once: true });
+    } else {
+        startApp();
     }
+    // Exponer para uso externo (dm-col2)
+    // Parchear MetricsManager para que el filtro también actúe sobre #dm-stack-list
+    window._dmApplyFilter = null;
+    window._dmClearFilter = null;
+
+    const _dmPatchMetrics = () => {
+        if (!window.MetricsManager && typeof MetricsManager !== 'undefined') {
+            window.MetricsManager = MetricsManager;
+        }
+        const mm = window.MetricsManager || MetricsManager;
+        if (!mm || mm._dmPatched) return;
+        mm._dmPatched = true;
+
+        const origApply = mm.applyHostFilter.bind(mm);
+        mm.applyHostFilter = function(hostname) {
+            origApply(hostname);
+            if (window._dmApplyFilter) window._dmApplyFilter(hostname);
+        };
+
+        const origClear = mm.clearHostFilter.bind(mm);
+        mm.clearHostFilter = function() {
+            origClear();
+            if (window._dmClearFilter) window._dmClearFilter();
+        };
+    };
+    // Intentar parchear ahora y también tras DOMContentLoaded
+    setTimeout(_dmPatchMetrics, 500);
+    setTimeout(_dmPatchMetrics, 2000);
+
+    window._dmDeactivateLogs   = () => deactivateLogsMode();
+    window._dmNewStack         = () => {
+        // Mostrar el panel ANTES de inicializar CodeMirror
+        // (necesita el panel visible para calcular dimensiones)
+        if (!document.body.classList.contains('dockme-logs-mode')) {
+            activateLogsMode();
+        }
+        const p = document.querySelector('#dockme-logs-panel');
+        if (p) p.style.display = '';
+        openNewStackPanel();
+    };
+    window._dmActivateLogs     = () => activateLogsMode();
+    window._dmAgentsState      = AgentsState;
+    window._dmRemoveEndpoint   = (ep) => {
+        // Limpiar stacks del endpoint eliminado de nuestra lista
+        if (window._dmStacksByEndpoint) {
+            delete window._dmStacksByEndpoint[ep];
+            if (window._dmRenderStacks) window._dmRenderStacks();
+        }
+    };
+    window._dmAddEndpoint      = (ep, hostname) => {
+        // Añadir hostname al mapa para que aparezca correctamente en la lista
+        if (window._dmEndpointToHost) {
+            window._dmEndpointToHost[ep] = hostname;
+            if (window._dmRenderStacks) window._dmRenderStacks();
+        }
+    };
+    window._dmGetSidebarWidth  = () => LayoutManager.getSidebarWidth();
+    window._dmLayoutManager    = LayoutManager;
+    window._dmLinksConfig      = () => linksConfig;
+    window._dmCurrentProfile   = () => currentLayoutProfile;
+    window._dmSetSidebarWidth  = (w) => {
+        const col = document.getElementById('dm-col2');
+        if (col) col.style.setProperty('width', w + 'px', 'important');
+        const styleEl = document.querySelector('#estilo-columna-dinamico');
+        if (styleEl) styleEl.textContent = styleEl.textContent.replace(/width:\s*\d+px\s*!important/, `width: ${w}px !important`);
+    };
+    window._dmShowStackEditor  = (name, ep) => showStackEditorForStack(name, ep || 'Actual');
+    window._dmIsEditMode       = () => dockmeEditMode;
+    window._dmDeactivateEdit   = () => { dockmeEditMode = false; updateEditModeToggleUI(); };
+
+    window._dmOpenLogs = (name, ep) => {
+        if (!document.body.classList.contains('dockme-logs-mode')) {
+            activateLogsMode();
+            setTimeout(() => openLogsForStack(name, ep), 100);
+        } else {
+            openLogsForStack(name, ep);
+        }
+    };
+    window._dmStacksCfgRef = () => stacksConfig;
+})();
+/* ================================================================
+   DOCKME V3 — Columna de stacks
+   ================================================================ */
+(function () {
+
+    // ---- CSS propio — NO comparte clases con custom.js ----
+    const CSS = `
+#dm-col2 .dm-list-box { height: calc(100vh - 71px); display:flex; flex-direction:column; }
+#dm-col2 .dm-stack-list { flex:1; overflow-y:auto; }
+#dm-col2 .dm-stack-list::-webkit-scrollbar { width:5px; }
+#dm-col2 .dm-stack-list::-webkit-scrollbar-thumb { background:#2a3441; border-radius:3px; }
+#dm-col2 .dm-item {
+    display:flex; align-items:center; gap:8px;
+    padding:6px 10px; text-decoration:none; color:inherit;
+    border-left:3px solid transparent; border-radius:4px;
+    transition:background .15s;
+}
+#dm-col2 .dm-item:hover { background:#1c2431; }
+#dm-col2 .dm-item .dm-icon { height:35px; width:35px; object-fit:contain; flex-shrink:0; }
+#dm-col2 .dm-item .dm-circle { width:12px; height:12px; border-radius:50%; flex-shrink:0; }
+#dm-col2 .dm-item .dm-name { font-size:.95rem; font-weight:300; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#dm-col2 .dm-item .dm-name.dm-inactive { color:#888; }
+#dm-col2 .dm-item .dm-endpoint { font-size:.75rem; color:rgb(66,117,182); margin-top:1px; }
+`;
+
+    // ---- HTML de la columna ----
+
+    // ---- Helpers ----
+    function dmCap(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+    function dmStatusColor(status) {
+        // Misma lógica que getStateColor del original:
+        // status 3 = activo/running → green
+        // status 2 = exited/parado  → red
+        // resto (1, 0, 4...)        → gray
+        if (status === 3) return 'green';
+        if (status === 2) return 'red';
+        if (status === 4) return 'red';    // parado/stopped
+        return 'gray';
+    }
+
+    function dmIconUrl(name, endpoint) {
+        if (name.toLowerCase() === 'dockme') return '/system-icons/dockme.svg';
+        const ep = endpoint || 'Actual';
+        const cfg = window._dmStacksCfgRef?.() || dmState.stacksCfg;
+        const entry = cfg.find(s =>
+            s.name.toLowerCase() === name.toLowerCase() &&
+            (s.endpoint || 'Actual').toLowerCase() === ep.toLowerCase()
+        ) || cfg.find(s => s.name.toLowerCase() === name.toLowerCase());
+        const file = entry?.icon || `${name}.svg`;
+        const v = window.dockmeIconVersion || dmState.iconVersion;
+        return `/icons/${file}?v=${v}`;
+    }
+
+    function dmHostname(endpoint) {
+        if (!endpoint || endpoint === '' || endpoint.toLowerCase() === 'actual') 
+            return dmState.endpointToHost['Actual'] || window.hostnameLocal || '';
+        return dmState.endpointToHost[endpoint] || endpoint;
+    }
+
+    // ---- Estado ----
+    const dmState = {
+        stacksByEndpoint: {},
+        stacksCfg:        [],
+        endpointToHost:   {},
+        iconVersion:      Date.now(),
+        lastHash:         '',
+        cfgReady:         false,
+    };
+
+    // ---- Render (solo si datos cambiaron) ----
+    function dmRender() {
+        const list = document.getElementById('dm-stack-list');
+        if (!list) return;
+
+        const hash = JSON.stringify(dmState.stacksByEndpoint) + dmState.cfgReady;
+        if (hash === dmState.lastHash) return;
+        dmState.lastHash = hash;
+
+        const all = [];
+        for (const [ep, stacks] of Object.entries(dmState.stacksByEndpoint)) {
+            for (const st of Object.values(stacks)) all.push({ ...st, _ep: ep });
+        }
+        // Grupo 0: activos (status 3) + parados (status 2/4) — arriba
+        // Grupo 1: inactivos (status 1, 0...)                  — abajo
+        // Dentro del mismo nombre → orden según updates.json
+        // Construir mapa de orden: "" y "Actual" son el mismo endpoint local
+        const epOrderMap = {};
+        const epOrderKeys = Object.keys(dmState.endpointToHost);
+        epOrderKeys.forEach((ep, i) => {
+            epOrderMap[ep] = i;
+            if (ep === 'Actual') epOrderMap[''] = i;   // stacks locales tienen _ep=""
+            if (ep === '')       epOrderMap['Actual'] = i;
+        });
+        all.sort((a, b) => {
+            const ga = (a.status === 3 || a.status === 2 || a.status === 4) ? 0 : 1;
+            const gb = (b.status === 3 || b.status === 2 || b.status === 4) ? 0 : 1;
+            if (ga !== gb) return ga - gb;
+            const nameCmp = a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+            if (nameCmp !== 0) return nameCmp;
+            // Mismo nombre → orden del endpoint en updates.json
+            const oa = epOrderMap[a._ep] ?? 999;
+            const ob = epOrderMap[b._ep] ?? 999;
+            return oa - ob;
+        });
+
+        const localHostname = dmState.endpointToHost['Actual'] || '';
+
+        list.innerHTML = all.map(st => {
+            const color   = dmStatusColor(st.status);
+            const iconUrl = dmIconUrl(st.name, st._ep);
+            const hn      = dmHostname(st._ep);
+            const epLabel = hn || '';
+            const nameCls = st.status === 3 ? 'dm-name' : 'dm-name dm-inactive';
+
+            const epAttr = st._ep || 'Actual';
+            const cfg = window._dmStacksCfgRef?.() || dmState.stacksCfg;
+            const entry = cfg.find(s => s.name.toLowerCase() === st.name.toLowerCase() && (s.endpoint||'Actual').toLowerCase() === epAttr.toLowerCase()) || cfg.find(s => s.name.toLowerCase() === st.name.toLowerCase());
+            const hasUrl = !!entry?.url;
+            const iconHtml = hasUrl
+                ? `<div class="dm-icon-flip" data-dm-icon="1" data-dm-name="${st.name}" data-dm-ep="${epAttr}" style="cursor:pointer;width:35px;height:35px;flex-shrink:0;">` +
+                  `<div class="dm-flip-inner"><div class="dm-flip-front"><img src="${iconUrl}" onerror="this.src='/system-icons/no-icon.svg'" alt="" style="width:35px;height:35px;object-fit:contain;"></div>` +
+                  `<div class="dm-flip-back"></div></div></div>`
+                : `<img class="dm-icon" src="${iconUrl}" onerror="this.src='/system-icons/no-icon.svg'" alt="" data-dm-icon="1" data-dm-name="${st.name}" data-dm-ep="${epAttr}" style="cursor:pointer;">`;
+            const epAttr2 = st._ep || 'Actual';
+            return `<a class="dm-item${hasUrl?' has-url':''}" data-dm-name="${st.name}" data-dm-ep="${epAttr}" style="cursor:pointer;">` +
+                iconHtml +
+                `<span class="dm-circle" style="background:${color};"></span>` +
+                `<div style="min-width:0;flex:1;">` +
+                `<div class="${nameCls}">${dmCap(st.name)}</div>` +
+                (epLabel ? `<div class="dm-endpoint">${epLabel}</div>` : '') +
+                `</div></a>`;
+        }).join('');
+    }
+
+    // ---- Insertar CSS ----
+    function dmInjectCSS() {
+        if (document.getElementById('dm-col2-css')) return;
+        const style = document.createElement('style');
+        style.id = 'dm-col2-css';
+        style.textContent = CSS;
+        document.head.appendChild(style);
+    }
+
+    // ---- Click delegado en #dm-stack-list ----
+    function dmBindClicks() {
+        // Botón nuevo stack
+        const btnNew = document.getElementById('dm-btn-newstack');
+        if (btnNew && !btnNew._dmBound) {
+            btnNew._dmBound = true;
+            btnNew.addEventListener('click', () => window._dmNewStack?.());
+        }
+
+        const list = document.getElementById('dm-stack-list');
+        if (!list || list._dmBound) return;
+        list._dmBound = true;
+        list.addEventListener('click', e => {
+            const iconEl = e.target.closest('[data-dm-icon]');
+            if (iconEl) {
+                e.preventDefault(); e.stopPropagation();
+                const name = iconEl.dataset.dmName;
+                const ep   = iconEl.dataset.dmEp || 'Actual';
+                const cfg  = (window._dmStacksCfgRef?.() || dmState.stacksCfg);
+                const entry = cfg.find(s => s.name.toLowerCase() === name.toLowerCase() && (s.endpoint || 'Actual').toLowerCase() === ep.toLowerCase())
+                           || cfg.find(s => s.name.toLowerCase() === name.toLowerCase());
+                if (entry?.url) window.open(entry.url, '_blank');
+                return;
+            }
+            const item = e.target.closest('.dm-item');
+            if (item) {
+                e.preventDefault();
+                const name = item.dataset.dmName;
+                const ep   = item.dataset.dmEp || 'Actual';
+                if (window._dmIsEditMode?.()) {
+                    window._dmShowStackEditor?.(name, ep);
+                } else {
+                    window._dmOpenLogs?.(name, ep);
+                }
+            }
+        });
+    }
+
+    // ---- Buscador ----
+    function dmBindSearch() {
+        const input = document.querySelector('#dm-flt-input');
+        const icon  = document.querySelector('.search-icon');
+        if (!input || input._dmBound) return;
+        input._dmBound = true;
+
+        const applySearch = () => {
+            const q = input.value.trim().toLowerCase();
+            const list = document.getElementById('dm-stack-list');
+            if (!list) return;
+            list.querySelectorAll('.dm-item').forEach(item => {
+                if (item.dataset.dmServerHidden === '1') return;
+                const name = (item.dataset.dmName || '').toLowerCase();
+                item.style.display = (!q || name.includes(q)) ? '' : 'none';
+            });
+            if (icon) icon.innerHTML = q
+                ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" style="width:14px;height:14px;"><path fill="currentColor" d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3l105.4 105.3c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256l105.3-105.4z"/></svg>'
+                : '<svg class="svg-inline--fa fa-magnifying-glass" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="currentColor" d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352a144 144 0 1 0 0-288 144 144 0 1 0 0 288z"/></svg>';
+        };
+
+        input.addEventListener('input', applySearch);
+        if (icon) icon.addEventListener('click', () => { input.value = ''; applySearch(); input.focus(); });
+    }
+
+    // ---- Filtro por servidor ----
+    function dmApplyFilter(hostname) {
+        const list = document.getElementById('dm-stack-list');
+        if (!list) return;
+        const q = (document.getElementById('dm-flt-input')?.value || '').toLowerCase();
+        list.querySelectorAll('.dm-item').forEach(item => {
+            const ep = item.dataset.dmEp || 'Actual';
+            const hn = dmHostname(ep === '' ? 'Actual' : ep);
+            const matchServer = hn === hostname;
+            const matchText   = !q || (item.dataset.dmName || '').toLowerCase().includes(q);
+            item.dataset.dmServerHidden = matchServer ? '' : '1';
+            item.style.display = (matchServer && matchText) ? '' : 'none';
+        });
+    }
+
+    function dmClearFilter() {
+        const list = document.getElementById('dm-stack-list');
+        if (!list) return;
+        const q = (document.getElementById('dm-flt-input')?.value || '').toLowerCase();
+        list.querySelectorAll('.dm-item').forEach(item => {
+            delete item.dataset.dmServerHidden;
+            const matchText = !q || (item.dataset.dmName || '').toLowerCase().includes(q);
+            item.style.display = matchText ? '' : 'none';
+        });
+    }
+
+    function dmBindHeader() {
+        // Título — ya tiene listener desde ensureTitleIsCorrect
+
+        // Scan
+        document.getElementById('dm-btn-scan')?.addEventListener('click', () => {
+            const sock = window.dockmeSocket;
+            if (!sock) return;
+            sock.emit('agent', '##ALL_DOCKGE_ENDPOINTS##', 'requestStackList', null);
+            const toast = document.createElement('div');
+            toast.textContent = '✓ Actualizando stacks...';
+            toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#27ae60;color:#fff;padding:14px 32px;border-radius:800px;font-size:18px;font-weight:600;z-index:9999;transition:opacity .5s;pointer-events:none;';
+            document.body.appendChild(toast);
+            setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 500); }, 5000);
+        });
+
+        // Logout
+        document.getElementById('dm-btn-logout')?.addEventListener('click', () => {
+            window._dmLogout?.();
+        });
+    }
+
+    function dmInit() {
+        dmInjectCSS();
+
+        // Exponer referencias globales
+        window._dmStacksByEndpoint = dmState.stacksByEndpoint;
+        window._dmEndpointToHost   = dmState.endpointToHost;
+        window._dmRenderStacks     = () => { dmState.lastHash = ''; dmRender(); };
+        window._dmApplyFilter      = (hostname) => dmApplyFilter(hostname);
+        window._dmClearFilter      = () => dmClearFilter();
+        window._dmRemoveEndpoint   = (ep) => {
+            delete dmState.stacksByEndpoint[ep];
+            dmState.lastHash = ''; dmRender();
+        };
+        window._dmAddEndpoint      = (ep, hostname) => {
+            dmState.endpointToHost[ep] = hostname;
+            dmState.lastHash = ''; dmRender();
+        };
+
+        dmBindClicks();
+        dmBindSearch();
+        dmBindHeader();
+
+        // Socket — recibir stackList
+        const sock = window.dockmeSocket;
+        if (!sock) return;
+
+        sock.on('agent', (eventName, data) => {
+            if (eventName === 'stackList' && data?.ok) {
+                const ep = data.endpoint || '';
+                dmState.stacksByEndpoint[ep] = data.stackList || {};
+                dmRender();
+            }
+        });
+
+        dmRender();
+    }
+
+    // Arrancar cuando el DOM esté listo
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', dmInit, { once: true });
+    } else {
+        dmInit();
+    }
+
 })();

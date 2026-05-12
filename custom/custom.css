@@ -3,97 +3,6 @@
    ======================================== */
 
 /* Efecto zoom sobre los iconos en compose */
-.cp-icon {
-    transition: transform 0.6s ease-in-out;
-}
-.cp-icon:hover {
-    transform: scale(1.25);
-}
-
-/* Layout de la lista de stacks: cada item en bloque con su altura, no en linea */
-.stack-list .item {
-    display: block ruby;
-    overflow: hidden;
-}
-a.item .title {
-    overflow: hidden;
-    min-width: 0;
-}
-
-a.item .cp-title,
-a.item .endpoint {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    display: block;
-}
-/* convierte los estados de badge "activo" en bolas verdes/rojas/grises en lista de stacks */
-a.item .cp-badge {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: flex-start !important;
-    background: transparent !important;
-    border: 0 !important;
-    border-radius: 0 !important;
-    padding: 0 !important;
-    margin: 0 10px 0 0 !important;
-    width: auto !important;
-    min-width: 0 !important;
-    height: auto !important;
-    line-height: 1 !important;
-    white-space: nowrap !important;
-    overflow: visible !important;
-    gap: 15px !important;
-    flex-shrink: 0;
-}
-
-/* Tamano de icono en lista de stacks */
-a.item .cp-icon {
-    width: 35px !important;
-    height: 35px !important;
-    min-width: 35px !important;
-    min-height: 35px !important;
-    flex: 0 0 auto !important;
-    display: inline-block !important;
-}
-
-/* Bolas de estado en lista de stacks */
-a.item .cp-circle {
-    width: 20px !important;
-    height: 20px !important;
-    border-radius: 50% !important;
-    display: inline-block !important;
-    flex: 0 0 auto !important;
-}
-
-/* tamano del nombre del stack en lista stacks*/
-a.item .title .cp-title {
-    font-size: 1.15em !important;
-}
-
-/* Permitir hover real sobre los stacks */
-a.item * {
-    pointer-events: none;
-}
-a.item {
-    pointer-events: auto;
-}
-
-/* destacar nombre del elemento seleccionado en lista stacks */
-a.item:hover .title .cp-title.active {
-    color: #bbbf53 !important;
-    font-weight: 500 !important;
-}
-
-/* Color del texto del stack segun activo/inactivo en lista stacks */ 
-a.item .title .cp-title.active {
-    color: #fff !important;
-    font-weight: 300 !important;
-}
-a.item .title .cp-title.inactive {
-    color: #888 !important;
-    font-weight: 400 !important;
-}
 
 /* Corrige de layout en la pagina compose */
 .shadow-box.container > .row {
@@ -119,31 +28,6 @@ a.item .title .cp-title.inactive {
     max-width: unset !important;
 }
 
-/* Estilos para poner a solo 2 columnas (stacks izquierda y contenido derecho) */
-div.col-lg-6 {
-    max-width: none !important;
-    width: 100% !important;
-}
-
-div.container.mb-3.big-padding.shadow-box {
-    max-width: none !important;
-    width: 100% !important;
-}
-
-div.col-xl-3.col-md-4.col-12 {
-    width: 350px !important;
-    flex: 0 0 auto !important;
-}
-
-/* En móvil: forzar cero espacio en el flex row (fix iOS Safari bug) */
-@media (max-width: 700px) {
-    div.col-xl-3.col-md-4.col-12 {
-        flex: 0 0 0px !important;
-        min-width: 0 !important;
-        width: 0 !important;
-    }
-}
-
 div.mb-3.col-xl-9.col-md-8.col-12 {
     width: auto !important;
     max-width: none !important;
@@ -151,28 +35,7 @@ div.mb-3.col-xl-9.col-md-8.col-12 {
     min-width: 0 !important;
 }
 
-/* Responsive móvil */
 @media (max-width: 700px) {
-    /* Sidebar: panel overlay desde la izquierda */
-    div.col-xl-3.col-md-4.col-12 {
-        position: fixed !important;
-        left: 0 !important;
-        top: 55px !important;
-        width: 85vw !important;
-        max-width: 350px !important;
-        height: calc(100vh - 55px) !important;
-        background: #090c0f;
-        z-index: 999;
-        overflow-y: auto;
-        overflow-x: visible;
-        box-shadow: 2px 0 10px rgba(0,0,0,0.5);
-        transform: translateX(-100%);
-        transition: transform 0.3s ease;
-    }
-    div.col-xl-3.col-md-4.col-12.mobile-open {
-        transform: translateX(0) !important;
-    }
-
     /* Handle: fijo en body, independiente del sidebar (no lo recorta overflow) */
     #mobile-sidebar-handle {
         position: fixed;
@@ -200,58 +63,55 @@ div.mb-3.col-xl-9.col-md-8.col-12 {
         padding-left: 10px !important;
     }
 
-    /* Categorías de links visibles en móvil — se muestran al final */
+    /* Ocultar iconos de editar y organizar en móvil */
+    .header-icons {
+        display: none !important;
+    }
+}
+
+@media (max-width: 700px) {
+    #dockme-dashboard {
+        margin-left: -25px !important;
+    }
+
+    div.mb-3.col-xl-9.col-md-8.col-12 .metric-card{
+        max-width: 98% !important;
+        min-width: 290px !important;
+    }
+
+    header.justify-content-center {
+        justify-content: space-between !important;
+    }
+
+    /* dm-col2 oculto fuera de pantalla por defecto, desliza con .mobile-open */
+    #dm-col2 {
+        position: fixed !important;
+        left: 0 !important;
+        top: 55px !important;
+        width: 85vw !important;
+        max-width: 350px !important;
+        height: calc(100vh - 55px) !important;
+        background: #090c0f !important;
+        z-index: 999 !important;
+        overflow-y: auto !important;
+        box-shadow: 2px 0 10px rgba(0,0,0,0.5);
+        transform: translateX(-100%);
+        transition: transform 0.3s ease;
+    }
+
+    #dm-col2.mobile-open {
+        transform: translateX(0) !important;
+    }
+
+    /* Categorías al 100% en móvil — no se pueden organizar */
     #dockme-blocks-row [data-block-key^="category:"] {
         width: 100% !important;
         min-width: unset !important;
         max-width: unset !important;
     }
-
-    /* Ocultar iconos de editar y organizar en móvil */
-    .dockme-header-icons {
-        display: none !important;
-    }
-    
-    #dockme-dashboard {
-        margin-left: -25px !important;
-    }
-
-    /* Contenido ocupa todo el ancho */
-    div.mb-3.col-xl-9.col-md-8.col-12 .metric-card{
-        max-width: 98% !important;
-        min-width: 290px !important;
-    }
-    
-    /* Boton hamburguesa (lo creamos en JS) */
-    .mobile-menu-toggle {
-        position: absolute;
-        top: 60px;
-        left: 10px;
-        z-index: 998;
-        background: #142d4f;
-        border: none;
-        border-radius: 6px;
-        padding: 8px 15px;
-        height: 40px;
-        color: #fff;
-        font-size: 20px;
-        line-height: 24px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    /* Header móvil: quitar centrado */
-    header.justify-content-center {
-        justify-content: space-between !important;
-    }
 }
 
 /* Tamano de fuente en el editor y terminal */
-div.editor-box.mb-3.shadow-box {
-    font-size: 14px !important;
-}
 div.xterm-rows {
     font-size: 14px !important;
 }
@@ -271,15 +131,8 @@ div.xterm-rows {
 }
 
 /* Color destacado en azul para la version de la imagen */
-.tag {
-    color: #5fb8ed !important;
-}
 
 /* Caja de los contenedores con fondo mas visible */
-.shadow-box.big-padding {
-    padding: 10px;
-    background-color: #1c2431 !important;
-}
 
 /* Head fijo con el menu superior */
 header {
@@ -288,46 +141,6 @@ header {
     z-index: 1000;
     background: #090c0f;
     height: 55px;
-}
-
-/* Ocultar boton Consola del header */
-header .nav-item.me-2 > a[href="/console"] {
-    display: none !important;
-}
-/* Ocultar boton Inicio del header a la derecha */
-header .nav-item.me-2 > a[href="/"] {
-    display: none !important;
-}
-/* Ocultar item Configuración del menú de usuario del header */
-.dropdown-item[href="/settings/general"] {
-    display: none !important;
-}
-/* Ocultar titulo del header por defecto "Dockge" junto al logo */
-header .fs-4.title {
-    visibility: hidden;
-}
-body.dockme-title-ready header .fs-4.title { /* y mostrarlo cuando lo hemos personalizado */
-    visibility: visible;
-}
-
-/* ocultar SIEMPRE el Home nativo de Dockge */
-.first-row {
-    display: none !important;
-}
-
-
-
-/* Bolas de estado de docker sin degradado */
-span.badge.bg-primary {
-    background: none !important;
-    background-color: #008000 !important;
-    color: #fff !important;
-}
-
-
-/* Ajustar margen del dashboard para compensar el header mas pequeño */
-#dockme-dashboard {
-    margin-top: -12px !important;
 }
 
 /* ========================================
@@ -401,13 +214,13 @@ span.badge.bg-primary {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 1.4em;
+    font-size: 1.3em;
     color: #4f84c8;
 }
 
 /* Hostname */
 .stack-hostname {
-    font-size: 1.05em;
+    font-size: 1.1em;
     font-weight: bold;
     color: #bbb840;
     margin-top: -2px;
@@ -549,17 +362,10 @@ span.badge.bg-primary {
     display: flex;
     align-items: center;
     gap: 10px;
+    padding: 10px;
 }
 
 /* Header del panel */
-.panel-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 15px;
-    background: #2a3441;
-    border-bottom: 1px solid #3a4557;
-}
 
 .panel-header h3 {
     margin: 0;
@@ -636,16 +442,6 @@ span.badge.bg-primary {
 }
 
 /* Ajustar layout de la fila */
-.stack-update-row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.stack-update-name {
-    flex: 1;
-    min-width: 0;
-}
 
 /* Móvil - pantalla completa deslizable */
 @media (max-width: 700px) {
@@ -686,10 +482,10 @@ span.badge.bg-primary {
     border: 1px solid #444;
     border-radius: 8px;
     padding: 15px;
-    cursor: pointer;
+    cursor: default;
     transition: all 0.2s;
-    min-width: 300px;
-    max-width: 300px;
+    min-width: 435px;
+    max-width: 435px;
     height: 210px;
     flex: 1;
 }
@@ -720,6 +516,15 @@ span.badge.bg-primary {
     height: 30px;
 }
 
+.metric-content {
+    display:grid;
+    grid-template-columns:30% 30% 40%;
+    row-gap:12px;
+    margin-top:6px;
+    font-size:0.95em;
+    align-items:center;
+}
+
 .metric-hostname {
     font-size: 1.1em;
     font-weight: bold;
@@ -736,15 +541,6 @@ span.badge.bg-primary {
     font-size: 0.75em;
     font-weight: normal;
     color: #79c0ff;
-}
-
-.metric-uptime {
-    font-size: 0.85em;
-    color: #888;
-}
-
-.metric-uptime.active {
-    color: #2ecc71;
 }
 
 .metric-uptime.disconnected {
@@ -838,7 +634,7 @@ span.badge.bg-primary {
 
 /* Colores segun threshold */
 .metric-value.normal {
-    color: #2ecc71;
+    color: #299a60;
 }
 
 .metric-value.warning {
@@ -847,6 +643,10 @@ span.badge.bg-primary {
 
 .metric-value.danger {
     color: #e74c3c;
+}
+
+.metric-value.charging {
+    color: #3498db;
 }
 
 /* Docker containers */
@@ -860,12 +660,7 @@ span.badge.bg-primary {
 }
 
 /* Titulo de seccion */
-.metrics-section-title {
-    font-size: 1.3em;
-    font-weight: bold;
-    padding-top: 10px;
-}
-#metrics-section .dockme-section-header {
+#metrics-section .section-header {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -895,13 +690,13 @@ span.badge.bg-primary {
 
 /* Grid de actualizaciones (tarjetas mas anchas) */
 .dashboard-grid-updates {
-    grid-template-columns: repeat(auto-fit, minmax(min(450px, 100%), 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(435px, 100%), 1fr));
     margin-bottom: 15px;
 }
 
 /* Grid de recientes (tarjetas mas compactas) */
 .dashboard-grid-recientes {
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(285px, 1fr));
 }
 
 /* Móvil: tarjetas fluidas que ocupan todo el ancho */
@@ -947,16 +742,15 @@ span.badge.bg-primary {
     display: flex;
     align-items: center;
 }
-.dockme-header-icons {
+.header-icons {
     display: flex;
     align-items: center;
     gap: 15px;
     margin-right: 6px;
 }
 
-
-.dockme-edit-stacks-icon,
-.dockme-organize-icon {
+.edit-icon,
+.organize-icon {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -971,27 +765,27 @@ span.badge.bg-primary {
     transition: background-color 0.2s, border-color 0.2s, opacity 0.2s;
 }
 
-.dockme-edit-stacks-icon:hover,
-.dockme-organize-icon:hover {
+.edit-icon:hover,
+.organize-icon:hover {
     opacity: 1;
     background-color: #2a3441;
     border-color: #4f84c8;
 }
 
-.dockme-edit-stacks-icon.active,
-.dockme-organize-icon.active {
+.edit-icon.active,
+.organize-icon.active {
     background-color: #3a4b6b;
     box-shadow: 0 0 0 2px rgba(111,168,255,0.5);
     opacity: 1;
 }
 
-.dockme-edit-stacks-icon.active:hover,
-.dockme-organize-icon.active:hover {
+.edit-icon.active:hover,
+.organize-icon.active:hover {
     background-color: #445a82;
 }
 
 /* Contenedor del editor de iconos */
-.dockme-icon-preview {
+.icon-preview {
     margin-top: 15px;
     width: 96px;
     height: 96px;
@@ -1003,26 +797,17 @@ span.badge.bg-primary {
     border: 1px dashed #3a4557;
     border-radius: 8px;
 }
-.icon-placeholder,
-.icon-missing {
-    font-size: 13px;
-    color: #9aa4b2;
-    text-align: center;
-}
-.dockme-icon-editor {
-    margin-top: 20px;
-}
 
-.dockme-icon-label {
+.icon-label {
     display: block;
     font-size: 14px;
     margin-bottom: 6px;
     color: #cfd6e4;
 }
 
-.dockme-icon-url-input,
-.dockme-service-url-input,
-.dockme-repo-url-input {
+.editor-input,
+.editor-input,
+.editor-input {
     width: 100%;
     padding: 8px;
     border-radius: 6px;
@@ -1031,44 +816,44 @@ span.badge.bg-primary {
     color: #fff;
 }
 
-.dockme-icon-upload-btn {
+.icon-upload-btn {
     cursor: pointer;
 }
 
-.dockme-icon-error {
+.icon-error {
     margin-top: 10px;
     color: #ff8a8a;
     font-size: 13px;
 }
 
-.dockme-icon-success {
+.icon-success {
     margin-top: 10px;
     color: #8affc1;
     font-size: 13px;
 }
-.dockme-editor-header {
+.editor-header {
     display: flex;
     align-items: center;
     gap: 16px;
     margin-bottom: 20px;
 }
-.dockme-stack-editor-container {
+.stack-editor {
     max-width: 700px;
     margin-top: 48px;
 	padding: 20px;
 	background-color: #15263f !important;
 }
 
-.dockme-stack-name {
+.editor-stack-name {
     font-size: 1.8em;
     font-weight: 600;
-    color: #ffffff;
+    color: #4f84c8;
     display: flex;
     align-items: center;
     gap: 10px;
 }
 
-.dockme-favorite-star {
+.favorite-star {
     font-size: 2.5em;
     color: #888;
     cursor: pointer;
@@ -1080,82 +865,69 @@ span.badge.bg-primary {
     margin-top: -20px;
 }
 
-.dockme-favorite-star.active {
+.favorite-star.active {
     color: #f0c040;
     -webkit-text-stroke: 0;
 }
 
-.dockme-editor-hint {
+.editor-hint {
     margin-top: 20px;
     font-size: 13px;
     color: #9aa4b2;
 }
 
-.dockme-icon-preview img {
+.icon-preview img {
     max-width: 96px;
     max-height: 96px;
 }
 
-.dockme-icon-input-row {
+.icon-input-row {
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
-.dockme-icon-status {
-    font-size: 22px;
+.icon-status {
+    font-size: 13px;
     min-width: 20px;
     margin-left: 5px;
 }
 
-.dockme-icon-status.ok {
+.icon-status.ok {
     color: #22c55e; /* verde */
 }
 
-.dockme-icon-status.error {
+.icon-status.error {
     color: #ef4444; /* rojo */
 }
 
-.dockme-inline-error {
+.inline-error {
     margin-left: 6px;
     font-size: 13px;
     color: #ef4444;
 }
-/* En modo edición de stacks, ocultar la lista lateral en pantallas medianas para dar mas espacio al editor */
-@media (max-width: 1100px) {
-    body.dockme-edit-mode div.col-xl-3.col-md-4.col-12 {
-        display: none;
-    }
-    body.dockme-edit-mode div.mb-3.col-xl-9.col-md-8.col-12 {
-        width: 100% !important;
-        max-width: 100% !important;
-    }
-}
 
 /* seccion de gestion de agentes Dockge */
-.dockme-section-header {
+.section-header {
     display: flex;
     align-items: center;
     gap: 12px;              /* aprox. 1 cm visual */
     margin-bottom: 10px;
 }
-.dockme-manage-btn {
+.manage-btn {
     margin-left: 12px;
     cursor: pointer;
 }
 /* ========================================
    GESTIÓN DE AGENTES
    ======================================== */
-.dockme-agents-manager {
-    margin-top: 20px;
-}
 
-.dockme-agents-wrapper {
+.agents-wrapper {
     margin-top: 20px;
     overflow-x: auto;
 }
 
-.dockme-agents-table {
+.agents-table {
     max-width: 800px;
     width: 100%;
     border-collapse: collapse;
@@ -1165,11 +937,11 @@ span.badge.bg-primary {
     overflow: hidden;
 }
 
-.dockme-agents-table thead {
+.agents-table thead {
     background: #2a3441;
 }
 
-.dockme-agents-table th {
+.agents-table th {
     padding: 12px 15px;
     text-align: left;
     font-weight: 600;
@@ -1177,21 +949,21 @@ span.badge.bg-primary {
     border-bottom: 2px solid #3a4557;
 }
 
-.dockme-agents-table td {
+.agents-table td {
     padding: 12px 15px;
     border-bottom: 1px solid #2a3441;
     color: #cfd6e4;
 }
 
-.dockme-agents-table tbody tr:last-child td {
+.agents-table tbody tr:last-child td {
     border-bottom: none;
 }
 
-.dockme-agents-table tbody tr:hover {
+.agents-table tbody tr:hover {
     background: #252d3a;
 }
 
-.dockme-agents-table code,
+.agents-table code,
 .detected-server-endpoint code {
     padding: 3px 8px;
     border-radius: 4px;
@@ -1199,16 +971,16 @@ span.badge.bg-primary {
     color: #79c0ff;
 }
 
-.dockme-agents-table .text-center {
+.agents-table .text-center {
     text-align: center;
 }
 
 @media (max-width: 700px) {
-    .dockme-agents-table thead {
+    .agents-table thead {
         display: none;
     }
 
-    .dockme-agents-table tr {
+    .agents-table tr {
         display: grid;
         grid-template-columns: auto 1fr auto;
         grid-template-rows: auto auto;
@@ -1217,22 +989,22 @@ span.badge.bg-primary {
         border-bottom: 1px solid #2a3441;
     }
 
-    .dockme-agents-table td:nth-child(1) {
+    .agents-table td:nth-child(1) {
         grid-row: 1;
         grid-column: 1;
     }
 
-    .dockme-agents-table td:nth-child(2) {
+    .agents-table td:nth-child(2) {
         grid-row: 1;
         grid-column: 2;
     }
 
-    .dockme-agents-table td:nth-child(3) {
+    .agents-table td:nth-child(3) {
         grid-row: 2;
         grid-column: 1 / -1;
     }
 
-    .dockme-agents-table td:nth-child(4) {
+    .agents-table td:nth-child(4) {
         grid-row: 1;
         grid-column: 3;
     }
@@ -1268,7 +1040,7 @@ span.badge.bg-primary {
 }
 
 /* Servidores detectados */
-.dockme-detected-servers {
+.detected-servers {
     margin-top: 40px;
 }
 
@@ -1347,7 +1119,7 @@ span.badge.bg-primary {
     color: #666;
 }
 
-.dockme-connect-agent-btn {
+.connect-agent-btn {
     white-space: nowrap;
     align-self: end;
 }
@@ -1371,7 +1143,7 @@ span.badge.bg-primary {
 }
 
 /* Alerta simple de servidores detectados */
-.dockme-detected-alert-simple {
+.detected-alert-simple {
     color: #f39c12;
     font-size: 1em;
     font-weight: 500;
@@ -1379,7 +1151,7 @@ span.badge.bg-primary {
     padding: 0;
 }
 /* Alerta temporal de actualizacion */
-.dockme-updating-alert {
+.updating-alert {
     font-size: 1em;
     font-weight: 500;
     color: #f39c12;
@@ -1403,12 +1175,6 @@ span.badge.bg-primary {
     transform: scale(1.2);
 }
 /* Boton descartar servidor detectado */
-.detected-server-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    margin-bottom: 15px;
-}
 
 .detected-server-info {
     flex: 1;
@@ -1502,10 +1268,6 @@ button.btn.btn-danger:hover {
     background-color: #2385d2 !important;
 }
 
-/* Ocultar siempre el botón nativo de Dockge — tenemos el nuestro */
-a.btn.btn-primary[href="/compose"] {
-    display: none !important;
-}
 
 /* ========================================
    EFECTO FLIP EN LOS ICONOS DE LOS STACKS AL PASAR EL RATON
@@ -1516,10 +1278,20 @@ a.btn.btn-primary[href="/compose"] {
     perspective: 600px;
 }
 
+.stack-logo-left {
+    perspective: 400px;
+}
+
 .stack-logo-flip {
     width: 100%;
     height: 100%;
     position: relative;
+    transform-style: preserve-3d;
+    transition: transform 0.4s ease;
+}
+
+.stack-logo-left.has-url:hover .stack-logo-flip {
+    transform: rotateY(180deg);
 }
 
 .logo-front,
@@ -1530,7 +1302,7 @@ a.btn.btn-primary[href="/compose"] {
     align-items: center;
     justify-content: center;
     backface-visibility: hidden;
-    transition: transform 0.4s ease;
+    -webkit-backface-visibility: hidden;
 }
 
 .logo-front {
@@ -1539,16 +1311,6 @@ a.btn.btn-primary[href="/compose"] {
 
 .logo-back {
     transform: rotateY(180deg);
-    background: transparent;
-    border-radius: 8px;
-}
-
-.stack-logo-left.has-url:hover .logo-front {
-    transform: rotateY(180deg);
-}
-
-.stack-logo-left.has-url:hover .logo-back {
-    transform: rotateY(360deg);
 }
 
 .logo-back::after {
@@ -1799,7 +1561,7 @@ a.btn.btn-primary[href="/compose"] {
     resize: none;
 }
 
-#metrics-box .dockme-section-header {
+#metrics-box .section-header {
     display: flex;
 }
 
@@ -1813,7 +1575,7 @@ a.btn.btn-primary[href="/compose"] {
     border-color: #2a3441;
 }
 
-#dockme-blocks-row.organizing > .links-cat-box .dockme-section-header {
+#dockme-blocks-row.organizing > .links-cat-box .section-header {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
@@ -1826,7 +1588,7 @@ a.btn.btn-primary[href="/compose"] {
     cursor: grab;
 }
 
-/* Título en métricas va dentro de dockme-section-header, sin borde propio */
+/* Título en métricas va dentro de section-header, sin borde propio */
 #dockme-blocks-row.organizing > #metrics-box .links-cat-box-title {
     margin-bottom: 0;
     padding-bottom: 0;
@@ -2046,7 +1808,7 @@ body.dockme-organizing #dockme-sidebar-handle {
     gap: 8px;
 }
 
-.general-input-row .dockme-service-url-input {
+.general-input-row .editor-input {
     flex: 1;
 }
 
@@ -2126,9 +1888,7 @@ body.dockme-organizing #dockme-sidebar-handle {
     width: 100%;
     height: calc(100vh - 120px);
     min-height: 400px;
-    margin-top: 15px;
 }
-
 
 #logs-header-bar {
     display: flex;
@@ -2154,13 +1914,6 @@ body.dockme-organizing #dockme-sidebar-handle {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-}
-
-.logs-controls-row1 {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    flex-shrink: 0;
 }
 
 .logs-action-btns {
@@ -2397,19 +2150,8 @@ body:not(.logs-hide-ts) .logs-line.logs-single-cn .logs-msg { grid-column: 2; }
     flex-shrink: 0;
 }
 
-/* Ocultar sidebar de stacks en modo expandido */
-body.logs-expanded .col-12.col-md-4.col-xl-3[data-v-97ab40f4] {
-    display: none !important;
-}
-
-
 body.dockme-logs-mode #dockme-blocks-row {
     display: none !important;
-}
-
-/* Expandir lista de stacks siempre — el botón nativo ya no ocupa espacio */
-.stack-list[data-v-06020958] {
-    height: calc(100% - 10px) !important;
 }
 
 /* ── Tabs de logs/compose ── */
@@ -2479,11 +2221,515 @@ body.dockme-logs-mode #dockme-blocks-row {
 }
 
 #compose-editor-wrap .CodeMirror-scroll,
-#env-editor-wrap .CodeMirror-scroll {
-    overflow-x: hidden !important;
-}
 
 #compose-editor-wrap,
 #env-editor-wrap {
     box-sizing: border-box;
+}/* ================================================================
+   DockMe v2 — app.css
+   Estilos propios del frontend v2
+================================================================ */
+
+/* ===== FIXES CSS v2 — basado en estilos computados del original ===== */
+    body, html { background:#090c0f !important; }
+
+    /* shadow-box */
+
+    /* list-header */
+    #dm-col2 .list-header {
+        background: rgb(22,27,34);
+        border-radius: 10px 10px 0 0;
+        padding: 10px;
+        height: 64px;
+        box-sizing: border-box;
+    }
+
+    /* header-top */
+    #dm-col2 .header-top {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        height: 44px;
+        padding: 0;
+        margin: 0;
+    }
+
+    /* search-wrapper */
+    #dm-col2 .search-wrapper {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        height: 44px;
+        flex: 1;
+        min-width: 0;
+    }
+
+    /* search-icon */
+    #dm-col2 .search-icon {
+        display: block;
+        padding: 10px;
+        width: 36px;
+        height: 44px;
+        cursor: pointer;
+        flex-shrink: 0;
+        box-sizing: border-box;
+    }
+    #dm-col2 .search-icon svg { width: 16px; height: 16px; }
+
+    /* search-input */
+    #dm-col2 .search-input {
+        display: block;
+        padding: 6px 12px;
+        height: 38px;
+        background: rgb(7,10,16) !important;
+        border: 1px solid rgb(29,38,52) !important;
+        border-radius: 800px !important;
+        color: rgb(177,184,192) !important;
+        font-size: 16px;
+        max-width: none !important;
+        width: 100% !important;
+        min-width: 0;
+        box-sizing: border-box;
+        outline: none;
+    }
+    #dm-col2 .search-input:focus { border-color: #4f84c8 !important; }
+
+    /* stack-list */
+    #dm-col2 .dm-stack-list {
+        display: block;
+        overflow: auto;
+        padding: 0;
+        margin: 0;
+    }
+
+    /* items */
+    #dm-col2 .dm-item {
+        display: flex;
+        align-items: center;
+        padding: 0 8px;
+        height: 52px;
+        border-radius: 10px;
+        color: rgb(177,184,192);
+        overflow: hidden;
+        cursor: pointer;
+        box-sizing: border-box;
+        border-left: 3px solid transparent;
+        text-decoration: none;
+    }
+    #dm-col2 .dm-item:hover { background: rgba(255,255,255,0.05); }
+
+    /* placeholder — width:0 en el original */
+    #dm-col2 .placeholder { display: block; width: 0; overflow: hidden; flex-shrink: 0; }
+
+    /* ===== HEADER CSS — basado en estilos computados del original ===== */
+
+    #dm-header {
+        display: flex;
+        flex-direction: row;
+        align-items: normal;
+        justify-content: center;
+        flex-wrap: wrap;
+        padding: 8px 0;
+        margin: 0 0 16px;
+        height: 55px;
+        background: rgb(22,27,34);
+        background-color: rgb(22,27,34);
+        border-bottom: 1px solid #1c5185 !important;
+        color: rgb(177,184,192);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        box-sizing: border-box;
+        width: 100%;
+    }
+
+    /* logo + título */
+    #dm-header .d-flex.align-items-center {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        margin: 0 auto 0 0;
+        padding: 0;
+        height: 42px;
+        cursor: pointer;
+        text-decoration: none;
+    }
+
+    /* título */
+    #dm-header-title {
+        display: block;
+        color: rgb(240,246,252);
+        font-size: 24px;
+        font-weight: 700;
+        cursor: pointer;
+        text-decoration: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    /* nav */
+    #dm-header .nav {
+        display: flex;
+        flex-direction: row;
+        padding: 0;
+        margin: 0 25px 0 0;
+        height: 42px;
+        list-style: none;
+    }
+
+    /* nav-item */
+    #dm-header .nav-item {
+        display: list-item;
+        margin: 0 8px 0 0;
+        height: 42px;
+    }
+
+    /* nav-link — ocultos en el original */
+    #dm-header .nav-link {
+        display: none;
+    }
+
+    /* dropdown profile */
+    #dm-header .dropdown-profile-pic {
+        display: block;
+        position: relative;
+        height: 40px;
+        cursor: pointer;
+    }
+    #dm-header .nav-link.dropdown-toggle,
+    #dm-header [data-bs-toggle="dropdown"] {
+        display: flex !important;
+        align-items: center;
+        cursor: pointer;
+        padding: 8px 4px;
+        height: 40px;
+    }
+
+    /* profile pic */
+    #dm-header .profile-pic {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        background: rgb(35,133,210);
+        border-radius: 800px;
+        color: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        margin: 0 5px 0 0;
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+
+    /* dropdown menu */
+    #dm-header .dropdown-menu .svg-inline--fa {
+    width: 1em;
+    height: 1em;
+    flex-shrink: 0;
+}
+
+#dm-header .dropdown-menu {
+        background: rgb(13,17,23);
+        border: 1px solid rgb(29,38,52);
+        border-radius: 16px;
+        min-width: 160px;
+        padding: 8px 0 0;
+        margin: 8px 0 0;
+        overflow: hidden;
+        color: rgb(177,184,192);
+    }
+    #dm-header .dropdown-menu .dropdown-item,
+    #dm-header .dropdown-menu .dropdown-item-text {
+        color: rgb(177,184,192);
+        background: transparent;
+        padding: 8px 16px;
+        font-size: 14px;
+    }
+    #dm-header .dropdown-menu .dropdown-item:hover { background: rgb(22,27,34); }
+    #dm-header .dropdown-menu button.dropdown-item { width: 100%; text-align: left; border: none; cursor: pointer; }
+    #dm-header .dropdown-divider { border-color: rgb(29,38,52); margin: 4px 0; }
+
+    /* header icons */
+    #dm-header .header-icons {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 15px;
+        margin: 0 6px 0 0;
+        height: 42px;
+    }
+
+    /* edit/organize icons — heredan de custom.css */
+    #dm-header .edit-icon,
+    #dm-header .organize-icon {
+        width: 42px;
+        height: 42px;
+    }
+
+    /* icons-li — slot para iconos movidos */
+    #dm-icons-li {
+        display: flex;
+        align-items: center;
+        height: 42px;
+    }
+
+/* ===== Ajustes items lista v2 ===== */
+#dm-col2 .dm-item .dm-circle {
+    margin: 3px;
+    padding: 8px;
+}
+
+#dm-col2 .dm-item .dm-name {
+    font-size: 1.15em !important;
+}
+
+#dm-col2 .dm-item:hover .dm-name {
+    color: #bbbf53;
+    font-weight: 500;
+}
+
+/* ===== Inputs nuevo stack ===== */
+#new-stack-name,
+#new-stack-server {
+    background: rgb(7,10,16) !important;
+    border: 1px solid rgb(29,38,52) !important;
+    border-radius: 800px !important;
+    color: rgb(177,184,192) !important;
+    padding: 6px 12px;
+    font-size: 16px;
+}
+#new-stack-name:focus,
+#new-stack-server:focus {
+    border-color: #4f84c8 !important;
+    outline: none;
+}
+
+/* ===== Expandir logs — ocultar columna de stacks ===== */
+body.logs-expanded #dm-col2 {
+    display: none !important;
+}
+
+body.logs-expanded .col-12.col-md-8.col-xl-9.mb-3 {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 0 0 100% !important;
+}
+
+/* ===== Layout fijo — scroll solo en contenido ===== */
+html, body {
+    height: 100%;
+    overflow: hidden;
+}
+
+#app {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#app > div {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
+main {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+main > .container-fluid {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+main > .container-fluid > .row {
+    flex: 1;
+    min-height: 0;
+    flex-wrap: nowrap !important;
+    overflow: hidden;
+    margin: 0;
+}
+
+/* Columna stack — fija, sin scroll propio (lo gestiona dm-list-box) */
+#dm-col2 {
+    overflow: hidden;
+    flex-shrink: 0;
+    height: 100%;
+}
+
+/* Columna contenido — scroll interno */
+.col-12.col-md-8.col-xl-9.mb-3 {
+    height: 100%;
+    overflow-y: auto !important;
+    overflow-x: hidden;
+    padding-bottom: 20px;
+}
+
+/* ===== AUTH OVERLAY (login + setup) ===== */
+#dm-auth-overlay {
+    background: #090c0f;
+}
+
+#dm-auth-overlay .form-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 0;
+    width: 100%;
+    min-height: 100vh;
+    box-sizing: border-box;
+}
+
+#dm-auth-overlay .form {
+    display: block;
+    padding: 15px;
+    margin: auto;
+    width: 330px;
+    max-width: 330px;
+    box-sizing: border-box;
+}
+
+.dm-auth-field {
+    width: 100%;
+}
+
+.dm-auth-input {
+    display: block;
+    width: 100%;
+    padding: 16px 12px 16px 20.8px;
+    height: 58px;
+    background: rgb(7,10,16) !important;
+    border: 1px solid rgb(29,38,52) !important;
+    border-radius: 800px !important;
+    color: rgb(177,184,192) !important;
+    font-size: 16px;
+    box-sizing: border-box;
+    outline: none;
+}
+
+.dm-auth-input:focus {
+    border-color: #4f84c8 !important;
+    color: rgb(240,246,252) !important;
+}
+
+.dm-auth-input::placeholder {
+    color: rgb(87,92,98);
+}
+
+#dm-auth-overlay .form-check-input {
+    background-color: rgb(7,10,16);
+    border-color: rgb(29,38,52);
+}
+
+#dm-auth-overlay .form-check-label {
+    color: rgb(177,184,192);
+}
+
+#dm-auth-overlay .btn-primary {
+    width: 100%;
+    margin-top: 8px;
+}
+
+/* ===== Formulario conectar agente — fila horizontal ===== */
+
+.detected-server-form .connect-agent-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+    align-self: flex-end;
+}
+
+/* ===== Reglas específicas v2 que sobreescriben custom.css ===== */
+
+/* editmode no oculta dm-col2 */
+body.dockme-edit-mode #dm-col2 { display: block !important; }
+
+/* dark mode links */
+.dark a:not(.btn), .dark .table, .dark .nav-link { color: #b1b8c0; }
+
+/* stack editor margin */
+.stack-editor { margin-top: 0 !important; }
+
+/* dm-col2 en editmode */
+body.dockme-edit-mode #dm-col2 { display: block !important; }
+
+/* Eliminar margin-top heredado de Bootstrap en dashboard */
+#dockme-dashboard.mt-4 { margin-top: 0 !important; }
+
+/* ===== Flip icon en lista de stacks ===== */
+.dm-icon-flip {
+    perspective: 300px;
+    flex-shrink: 0;
+    overflow: hidden;
+    border-radius: 4px;
+}
+
+.dm-flip-inner {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    transform-style: preserve-3d;
+    transition: transform 0.35s ease;
+}
+
+.dm-icon-flip:hover .dm-flip-inner {
+    transform: rotateY(180deg);
+}
+
+.dm-flip-front,
+.dm-flip-back {
+    position: absolute;
+    inset: 0;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+}
+
+.dm-flip-front img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.dm-flip-back {
+    transform: rotateY(180deg);
+    background: #142d4f;
+    background-image: url('/system-icons/open-external.svg');
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 60%;
+}
+
+/* ===== Botón expandir/contraer panel logs ===== */
+#logs-expand-btn {
+    position: absolute;
+    top: 45px;
+    left: -12px;
+    z-index: 10;
+    width: 25px;
+    height: 30px;
+    border-radius: 6px;
+    background: #1c2431;
+    border: 2px solid #4f84c8;
+    color: #4f84c8;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
 }

@@ -7,30 +7,22 @@ COPY dockge/extra/healthcheck.go ./extra/healthcheck.go
 RUN go build -x -o ./extra/healthcheck ./extra/healthcheck.go
 
 ############################################
-# Stage 2: Build Dockge Frontend
+# Stage 2: Instalar dependencias Node para Dockge backend
 ############################################
 FROM node:22-bookworm-slim AS build_dockge
 WORKDIR /app
 
-# Crear usuario apps en el build stage
 RUN groupadd -g 568 apps 2>/dev/null || true \
     && useradd -u 568 -g 568 -m -s /bin/bash apps 2>/dev/null || true
 
-# Copiar package files de Dockge
 COPY dockge/package.json ./package.json
 COPY dockge/package-lock.json ./package-lock.json
 
-# Instalar dependencias YA como usuario apps
 RUN chown -R apps:apps /app
 USER apps
 RUN npm ci
 
-# Copiar frontend de Dockge
-COPY --chown=apps:apps dockge/frontend ./frontend
-COPY --chown=apps:apps dockge/common ./common
 
-# Build frontend
-RUN npm run build:frontend
 
 ############################################
 # Stage 3: Runtime Unificado
@@ -112,9 +104,6 @@ COPY --from=build_healthcheck /app/extra/healthcheck /app/extra/healthcheck
 # Node modules ya vienen con owner apps:apps del build stage
 COPY --from=build_dockge --chown=apps:apps /app/node_modules /app/node_modules
 
-# Frontend compilado
-COPY --from=build_dockge --chown=apps:apps /app/frontend-dist /app/frontend-dist
-
 # Backend y archivos necesarios de Dockge
 COPY --chown=apps:apps dockge/backend /app/backend/
 COPY --chown=apps:apps dockge/common /app/common/
@@ -132,8 +121,7 @@ COPY version.json /tools/version.json
 # ========================================
 COPY tools/check-updates.sh /tools/check-updates.sh
 COPY tools/prune.sh /tools/prune.sh
-COPY tools/metrics.sh /tools/metrics.sh
-COPY tools/api_metrics.py /tools/api_metrics.py
+COPY tools/MetricsService.js /tools/MetricsService.js
 
 # ========================================
 # Descargar binario shoutrrr (notificaciones multi-servicio)
@@ -158,9 +146,7 @@ RUN set -e; \
 
 RUN chmod +x \
     /tools/check-updates.sh \
-    /tools/prune.sh \
-    /tools/metrics.sh \
-    /tools/api_metrics.py
+    /tools/prune.sh
 
 # ========================================
 # Copiar custom (Nginx + API Node + custom.js)
@@ -171,6 +157,9 @@ COPY custom/shoutrrr-services.json /custom/shoutrrr-services.json
 # Instalar dependencias de la API Node (como apps para evitar chown posterior)
 WORKDIR /custom
 RUN chown -R apps:apps /custom     && chmod +x /custom/api.js     && su -s /bin/sh apps -c "npm install --omit=dev" 
+
+# frontend-dist para Dockge backend — usar nuestro index.html de /custom/
+RUN mkdir -p /app/frontend-dist && cp /custom/index.html /app/frontend-dist/index.html
 
 # Configurar Nginx - remover config por defecto y copiar la nuestra
 RUN rm -f /etc/nginx/sites-enabled/default \
