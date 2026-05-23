@@ -87,6 +87,7 @@
                             cat.type === 'favoritos' || 
                             cat.type === 'recientes' ||
                             cat.type === 'metrics' ||
+                            cat.type === 'iframe' ||
                             (cat.links.length > 0 || (cat.category && cat.category !== 'Nueva categoría'))
                         );
                 }
@@ -137,6 +138,8 @@
                     entry = linksConfig.find(c => c.type === keyVal);
                 } else if (keyType === 'category') {
                     entry = linksConfig.find(c => c.category === keyVal);
+                } else if (keyType === 'iframe') {
+                    entry = linksConfig.find(c => c.iframeId === keyVal);
                 }
                 if (entry) {
                     if (b.order != null) entry.order = b.order;
@@ -156,9 +159,20 @@
             const blocksRow = document.querySelector('#dockme-blocks-row');
             if (!blocksRow) return [];
             const localWidths = {};
-            const blocks = [...blocksRow.children].map((el, i) => {
+
+            // Ordenar por CSS order (no por posición DOM) para que los iframes
+            // preservados en DOM no contaminen el orden guardado
+            const children = [...blocksRow.children].filter(el => el.dataset.blockKey);
+            children.sort((a, b) => {
+                const oa = parseInt(a.style.order ?? 9999);
+                const ob = parseInt(b.style.order ?? 9999);
+                return oa - ob;
+            });
+            // Normalizar los valores de order (0,1,2...)
+            children.forEach((el, i) => { el.style.order = i; });
+
+            const blocks = children.map((el, i) => {
                 const key = el.dataset.blockKey;
-                if (!key) return null;
                 const block = { key, order: i };
                 if (el.offsetWidth) {
                     block.width = el.offsetWidth;
@@ -1004,7 +1018,8 @@ async switchTo(profileName) {
                 blocksRow.id = 'dockme-blocks-row';
                 col7.appendChild(blocksRow);
             }
-            // Limpiar solo los boxes de categorías, no métricas ni favoritos
+            // Limpiar solo los boxes de categorías e iframes nuevos, no métricas ni favoritos
+            // Los iframes existentes se preservan para no recargarlos
             [...blocksRow.children].forEach(el => {
                 const key = el.dataset.blockKey;
                 if (!key || key.startsWith('category:')) el.remove();
@@ -1111,13 +1126,19 @@ async switchTo(profileName) {
                     if (block.links?.length > 0) {
                         renderCategoryBox(block, blocksRow);
                     }
+                } else if (block.type === 'iframe') {
+                    IframeManager.renderBox(block, blocksRow);
                 }
             }
-            // Reordenar elementos del blocksRow según el orden del perfil
-            sortedBlocks.forEach(block => {
-                const key = block.type ? `type:${block.type}` : `category:${block.category}`;
+            // Reordenar visualmente con CSS order — no mueve el DOM (los iframes se recargarían)
+            sortedBlocks.forEach((block, i) => {
+                const key = block.type === 'iframe'
+                    ? `iframe:${block.iframeId}`
+                    : block.type
+                        ? `type:${block.type}`
+                        : `category:${block.category}`;
                 const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
-                if (el) blocksRow.appendChild(el);
+                if (el) el.style.order = i;
             });
             // Aplicar anchos del perfil al DOM una vez renderizados los boxes
             const activeBlocks = LayoutManager.getActiveBlocks();
@@ -1335,6 +1356,23 @@ let layoutDirty = false;
 
     // ── Drag & drop unificado para cualquier bloque del row ───────────────────
     function setupBlockDrag(box, blocksRow) {
+
+        // Reordena visualmente con CSS order — nunca mueve el DOM (los iframes se recargarían)
+        const reorderByCssOrder = (dragging, target, beforeTarget) => {
+            const els = [...blocksRow.children]
+                .filter(el => el.dataset.blockKey)
+                .sort((a, b) => (parseInt(a.style.order) || 0) - (parseInt(b.style.order) || 0));
+            const fromIdx = els.indexOf(dragging);
+            if (fromIdx === -1) return;
+            els.splice(fromIdx, 1);
+            let toIdx = els.indexOf(target);
+            if (toIdx === -1) return;
+            if (!beforeTarget) toIdx++;
+            // Ajustar índice por la extracción anterior
+            els.splice(toIdx, 0, dragging);
+            els.forEach((el, i) => { el.style.order = i; });
+        };
+
         // ── Mouse drag ────────────────────────────────────────────────────────
         box.addEventListener('mousedown', e => {
             if (e.target.closest('.links-cat-box-title')?.closest('.links-cat-box') === box) {
@@ -1356,14 +1394,9 @@ let layoutDirty = false;
             if (!e.dataTransfer.types.includes('block-drag')) return;
             e.preventDefault();
             const dragging = [...blocksRow.children].find(el => el.style.opacity === '0.4');
-            if (dragging && dragging !== box) {
-                const rect = box.getBoundingClientRect();
-                if (e.clientX < rect.left + rect.width / 2) {
-                    blocksRow.insertBefore(dragging, box);
-                } else {
-                    blocksRow.insertBefore(dragging, box.nextSibling);
-                }
-            }
+            if (!dragging || dragging === box) return;
+            const rect = box.getBoundingClientRect();
+            reorderByCssOrder(dragging, box, e.clientX < rect.left + rect.width / 2);
         });
 
         // ── Touch drag (iPad / móvil) ─────────────────────────────────────────
@@ -1410,16 +1443,15 @@ let layoutDirty = false;
             touchClone.style.left = (touch.clientX - touchOffsetX) + 'px';
             touchClone.style.top  = (touch.clientY - touchOffsetY) + 'px';
 
-            const els = [...blocksRow.children].filter(el => el !== box);
+            const els = [...blocksRow.children]
+                .filter(el => el !== box && el.dataset.blockKey)
+                .sort((a, b) => (parseInt(a.style.order) || 0) - (parseInt(b.style.order) || 0));
+
             for (const target of els) {
                 const rect = target.getBoundingClientRect();
                 if (touch.clientX >= rect.left && touch.clientX <= rect.right &&
                     touch.clientY >= rect.top  && touch.clientY <= rect.bottom) {
-                    if (touch.clientX < rect.left + rect.width / 2) {
-                        blocksRow.insertBefore(box, target);
-                    } else {
-                        blocksRow.insertBefore(box, target.nextSibling);
-                    }
+                    reorderByCssOrder(box, target, touch.clientX < rect.left + rect.width / 2);
                     break;
                 }
             }
@@ -1490,6 +1522,216 @@ let layoutDirty = false;
             startResize(e.touches[0].clientX);
         }, { passive: true });
     }
+
+    function setupResizeHandleBoth(box, onResizeEnd) {
+        const handle = document.createElement('div');
+        handle.className = 'dockme-resize-handle-corner';
+        box.appendChild(handle);
+
+        let startX = 0, startY = 0, startW = 0, startH = 0, resizing = false;
+
+        const onMove = (clientX, clientY) => {
+            if (!resizing) return;
+            const newW = Math.max(200, startW + (clientX - startX));
+            const newH = Math.max(150, startH + (clientY - startY));
+            box.style.width  = newW + 'px';
+            box.style.height = newH + 'px';
+        };
+
+        const onEnd = () => {
+            if (!resizing) return;
+            resizing = false;
+            document.removeEventListener('mousemove', mouseMove);
+            document.removeEventListener('mouseup', mouseUp);
+            document.removeEventListener('touchmove', touchMove);
+            document.removeEventListener('touchend', touchEnd);
+            if (onResizeEnd) onResizeEnd();
+        };
+
+        const mouseMove = e => onMove(e.clientX, e.clientY);
+        const mouseUp   = () => onEnd();
+        const touchMove = e => { e.preventDefault(); e.stopPropagation(); onMove(e.touches[0].clientX, e.touches[0].clientY); };
+        const touchEnd  = () => onEnd();
+
+        const startResize = (clientX, clientY) => {
+            resizing = true;
+            startX = clientX;
+            startY = clientY;
+            startW = box.offsetWidth;
+            startH = box.offsetHeight;
+            document.addEventListener('mousemove', mouseMove);
+            document.addEventListener('mouseup', mouseUp);
+            document.addEventListener('touchmove', touchMove, { passive: false });
+            document.addEventListener('touchend', touchEnd);
+        };
+
+        handle.addEventListener('mousedown', e => {
+            e.preventDefault(); e.stopPropagation();
+            startResize(e.clientX, e.clientY);
+        });
+        handle.addEventListener('touchstart', e => {
+            e.stopPropagation();
+            startResize(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: true });
+    }
+    const IframeManager = {
+        // Almacena los intervalos activos por iframeId
+        _intervals: {},
+
+        clearInterval(iframeId) {
+            if (this._intervals[iframeId]) {
+                clearInterval(this._intervals[iframeId]);
+                delete this._intervals[iframeId];
+            }
+        },
+
+        refreshBox(widget) {
+            const blocksRow = document.querySelector('#dockme-blocks-row');
+            if (!blocksRow) return;
+            const existing = blocksRow.querySelector(`[data-block-key="iframe:${widget.iframeId}"]`);
+            if (!existing) return;
+            // Preservar posición y orden antes de eliminar
+            widget.width  = existing.offsetWidth  || widget.width;
+            widget.height = existing.offsetHeight || widget.height;
+            const order   = existing.style.order;
+            this.clearInterval(widget.iframeId);
+            existing.remove();
+            this.renderBox(widget, blocksRow);
+            // Restaurar order
+            const newEl = blocksRow.querySelector(`[data-block-key="iframe:${widget.iframeId}"]`);
+            if (newEl && order) newEl.style.order = order;
+        },
+
+        setAutoRefresh(iframeId, seconds, iframeEl, callback) {
+            this.clearInterval(iframeId);
+            if (!seconds || seconds <= 0) return;
+            this._intervals[iframeId] = setInterval(() => {
+                if (callback) callback();
+                else if (iframeEl) iframeEl.src = iframeEl.src;
+            }, seconds * 1000);
+        },
+
+        renderBox(widget, blocksRow) {
+            const blockKey = `iframe:${widget.iframeId}`;
+
+            // Si ya está en el DOM, solo actualizamos dimensiones y order sin recargar
+            const existing = blocksRow.querySelector(`[data-block-key="${blockKey}"]`);
+            if (existing) {
+                if (widget.width)  existing.style.width  = widget.width  + 'px';
+                if (widget.height) existing.style.height = widget.height + 'px';
+                if (widget.order != null) existing.style.order = widget.order;
+                return;
+            }
+
+            const box = document.createElement('div');
+            box.className = 'links-cat-box iframe-widget-box';
+            box.dataset.blockKey = blockKey;
+            if (widget.width)  box.style.width  = widget.width  + 'px';
+            if (widget.height) box.style.height = widget.height + 'px';
+            if (widget.enabled === false) box.style.display = 'none';
+
+            // ── Título ────────────────────────────────────────────────────────
+            const titleBar = document.createElement('div');
+            titleBar.className = 'links-cat-box-title';
+            titleBar.textContent = widget.label;
+            box.appendChild(titleBar);
+
+            // ── Contenedor del iframe ─────────────────────────────────────────
+            const wrap = document.createElement('div');
+            wrap.className = `iframe-widget-wrap iframe-fit-${widget.fitContent || 'scale'}`;
+            box.appendChild(wrap);
+
+            // ── Detección de imagen ────────────────────────────────────────────
+            const isImage = /\.(jpe?g|png|gif|webp|svg|bmp)(\?.*)?$/i.test(widget.url);
+
+            if (isImage) {
+                const img = document.createElement('img');
+                img.src = widget.url;
+                const fit = widget.fitContent || 'fit-width';
+                let objFit = 'cover', objPos = 'center';
+                if      (fit === 'fill')       { objFit = 'fill'; }
+                else if (fit === 'fit-width')  { objFit = 'cover'; objPos = 'center top'; }
+                else if (fit === 'fit-height') { objFit = 'cover'; objPos = 'left center'; }
+                img.style.cssText = `width:100%;height:100%;display:block;object-fit:${objFit};object-position:${objPos};`;
+                wrap.appendChild(img);
+
+                if ((widget.clickable || 'refresh') === 'refresh') {
+                    const overlay = document.createElement('div');
+                    overlay.className = 'iframe-widget-overlay';
+                    overlay.title = 'Click para recargar';
+                    overlay.addEventListener('click', () => {
+                        img.src = widget.url.split('?')[0] + '?t=' + Date.now();
+                    });
+                    wrap.appendChild(overlay);
+                }
+
+                this.setAutoRefresh(widget.iframeId, widget.autoRefresh, null, () => {
+                    img.src = widget.url.split('?')[0] + '?t=' + Date.now();
+                });
+
+            } else {
+                // ── Iframe ─────────────────────────────────────────────────────
+                const iframeEl = document.createElement('iframe');
+                iframeEl.src = widget.url;
+                iframeEl.setAttribute('frameborder', '0');
+
+                const fit        = widget.fitContent || 'responsive';
+                const scrollable = !!widget.scrollable;
+
+                if (fit === 'scale') {
+                    // Escala el contenido de 1280px al ancho del iframe
+                    iframeEl.setAttribute('scrolling', 'no');
+                    iframeEl.setAttribute('sandbox', 'allow-forms allow-modals allow-pointer-lock allow-popups allow-same-origin allow-scripts allow-top-navigation-by-user-activation');
+                    wrap.appendChild(iframeEl);
+
+                    const DESIGN_W = 1280;
+                    const applyScale = () => {
+                        const w = wrap.offsetWidth  || DESIGN_W;
+                        const h = wrap.offsetHeight || 720;
+                        const scale = w / DESIGN_W;
+                        iframeEl.style.width  = DESIGN_W + 'px';
+                        iframeEl.style.height = Math.round(h / scale) + 'px';
+                        iframeEl.style.transform = `scale(${scale})`;
+                        iframeEl.style.transformOrigin = 'top left';
+                    };
+                    applyScale();
+                    const ro = new ResizeObserver(applyScale);
+                    ro.observe(wrap);
+
+                } else {
+                    // Responsive — el iframe ocupa el ancho del wrap
+                    iframeEl.style.width  = '100%';
+                    iframeEl.style.height = '100%';
+                    iframeEl.setAttribute('scrolling', scrollable ? 'yes' : 'no');
+                    iframeEl.setAttribute('sandbox', 'allow-forms allow-modals allow-pointer-lock allow-popups allow-same-origin allow-scripts allow-top-navigation-by-user-activation');
+
+                    if (scrollable) {
+                        wrap.style.overflowY = 'auto';
+                        wrap.style.overflowX = 'hidden';
+                    }
+                    wrap.appendChild(iframeEl);
+                }
+
+                // ── Modo clickable ─────────────────────────────────────────────
+                if ((widget.clickable || 'refresh') === 'refresh') {
+                    const overlay = document.createElement('div');
+                    overlay.className = 'iframe-widget-overlay';
+                    overlay.title = 'Click para recargar';
+                    overlay.addEventListener('click', () => { iframeEl.src = iframeEl.src; });
+                    wrap.appendChild(overlay);
+                }
+
+                // ── AutoRefresh iframe ─────────────────────────────────────────
+                this.setAutoRefresh(widget.iframeId, widget.autoRefresh, iframeEl, null);
+            }
+
+            // ── Resize bidireccional (ancho + alto) y drag ────────────────────
+            setupResizeHandleBoth(box, () => saveBlockOrder());
+            setupBlockDrag(box, blocksRow);
+
+            blocksRow.appendChild(box);
+        }
+    };
 
     // ── Renderiza un box de categoría de links en el blocksRow ────────────────
     function renderCategoryBox(cat, blocksRow) {
@@ -3143,7 +3385,7 @@ let layoutDirty = false;
                             <input type="checkbox" id="logs-autoscroll" checked="">
                             <span class="general-toggle-slider"></span>
                         </label>
-                    </label><div class="logs-controls-sep"></div><button class="btn btn-normal" id="logs-clear">🗑 Limpiar</button>
+                    </label><div class="logs-controls-sep"></div><button class="btn btn-normal" id="logs-download" title="Descargar logs"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;"><path fill="currentColor" d="M288 32c0-17.7-14.3-32-32-32s-32 14.3-32 32V274.7l-73.4-73.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l128 128c12.5 12.5 32.8 12.5 45.3 0l128-128c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L288 274.7V32zM64 352c-35.3 0-64 28.7-64 64v32c0 35.3 28.7 64 64 64H448c35.3 0 64-28.7 64-64V416c0-35.3-28.7-64-64-64H346.5l-45.3 45.3c-25 25-65.5 25-90.5 0L165.5 352H64zm368 56a24 24 0 1 1 0 48 24 24 0 1 1 0-48z"/></svg></button><button class="btn btn-normal" id="logs-clear">🗑 Limpiar</button>
                 </div>
             </div>
             <div id="terminal-area" style="display:none;flex:1;flex-direction:column;min-height:0;gap:0;">
@@ -3192,6 +3434,7 @@ let layoutDirty = false;
         const filterClear  = panel.querySelector('#logs-filter-clear');
         const autoToggle   = panel.querySelector('#logs-autoscroll');
         const clearBtn     = panel.querySelector('#logs-clear');
+        const downloadBtn  = panel.querySelector('#logs-download');
         const logsArea     = panel.querySelector('#logs-area');
         const btnBack      = panel.querySelector('#logs-btn-back');
         const btnStartStop = panel.querySelector('#logs-btn-startstop');
@@ -3463,6 +3706,16 @@ let layoutDirty = false;
             applyFilter('');
         });
 
+        downloadBtn.addEventListener('click', () => {
+            const text = Array.from(logsArea.querySelectorAll('.log-line, span, div'))
+                .map(el => el.textContent).join('\n') || logsArea.innerText;
+            const blob = new Blob([text], { type: 'text/plain' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${logsCurrentStack || 'logs'}-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.txt`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        });
         clearBtn.addEventListener('click', () => { logsArea.innerHTML = ''; });
 
         // ── Tabs ──
@@ -3699,7 +3952,7 @@ let layoutDirty = false;
             btnDelete.style.display   = editing ? 'none' : '';
             [[cmCompose, composeEditorWrap], [cmEnv, envEditorWrap]].forEach(([ed, el]) => {
                 if (window.CodeMirror && ed?.setOption) {
-                    ed.setOption('readOnly', editing ? false : 'nocursor');
+                    ed.setOption('readOnly', editing ? false : true);
                 } else if (ed) {
                     ed.readOnly = !editing;
                     ed.style.color = editing ? '#ccc' : '#888';
@@ -3948,7 +4201,6 @@ let layoutDirty = false;
             cmEnv     = makeEditor(envEditorWrap, envContent, false, 'shell');
             setTimeout(applySplit, 50);
             setEditMode(false);
-            setTimeout(() => panel.querySelector('.logs-tab[data-tab="logs"]')?.click(), 100);
         });
 
         btnDeploy.addEventListener('click', async () => {
@@ -4784,11 +5036,13 @@ let layoutDirty = false;
                 <button class="config-tab active" data-tab="stacks">📦 Stacks</button>
                 <button class="config-tab" data-tab="servidores">🖥️ Servidores</button>
                 <button class="config-tab" data-tab="links">🔗 Links</button>
+                <button class="config-tab" data-tab="widgets">🖼️ Widgets</button>
                 <button class="config-tab" data-tab="general">⚙️ General</button>
             </div>
             <div class="config-content active" id="config-tab-stacks"></div>
             <div class="config-content" id="config-tab-servidores"></div>
             <div class="config-content" id="config-tab-links"></div>
+            <div class="config-content" id="config-tab-widgets"></div>
             <div class="config-content" id="config-tab-general"></div>
         `;
 
@@ -4835,6 +5089,13 @@ let layoutDirty = false;
             if (container) {
                 container.dataset.loaded = 'true';
                 renderLinksTab(container);
+            }
+        }
+        if (tab === 'widgets') {
+            const container = panel.querySelector('#config-tab-widgets');
+            if (container) {
+                container.dataset.loaded = 'true';
+                renderWidgetsTab(container);
             }
         }
         if (tab === 'general') {
@@ -5485,10 +5746,10 @@ let layoutDirty = false;
                     _updatesCell = `<span class="metric-value warning">Limpiando...&nbsp;🧹</span>`;
                 } else if (checkUpdates > 0) {
                     const _upd = checkUpdates === 1 ? '1&nbsp;actualización&nbsp;pendiente' : `${checkUpdates}&nbsp;actualizaciones&nbsp;pendientes`;
-                    _updatesCell = `<span class="btn-check-now metric-value danger" data-endpoint="${endpoint}" style="${_clickStyle}">${_upd}</span>`;
+                    _updatesCell = `<span class="btn-check-now metric-value danger" data-endpoint="${endpoint}" style="${_clickStyle}" title="${checkLastTooltip}">${_upd}</span>`;
                 } else {
                     const _prune = _showPrune ? `&nbsp;·&nbsp;<span class="metric-value normal">🧹${_pruneDisplay}</span>` : '';
-                    _updatesCell = `<span class="btn-check-now metric-value normal" data-endpoint="${endpoint}" style="${_clickStyle}">✓&nbsp;Actualizaciones&nbsp;al&nbsp;día${_prune}</span>`;
+                    _updatesCell = `<span class="btn-check-now metric-value normal" data-endpoint="${endpoint}" style="${_clickStyle}" title="${checkLastTooltip}">✓&nbsp;Actualizaciones&nbsp;al&nbsp;día${_prune}</span>`;
                 }
 
                 card.innerHTML = `
@@ -5695,13 +5956,12 @@ let layoutDirty = false;
             const manageBtn = header.querySelector('.manage-btn');
             if (manageBtn) manageBtn.remove();
             
-            // ALERTA DE DETECTADOS
+            // ALERTA DE DETECTADOS — se crea oculta y solo se muestra tras recibir métricas
             let alert = this.container.querySelector('.detected-alert-simple');
-            if (detected.length > 0 && !alert) {
+            if (!alert) {
                 alert = document.createElement('div');
                 alert.className = 'detected-alert-simple';
-                alert.innerHTML = `⚠️ Hay ${detected.length} servidor${detected.length > 1 ? 'es' : ''} detectado${detected.length > 1 ? 's' : ''} sin conectar`;
-                alert.style.cssText = 'cursor:pointer;font-size:0.82em;color:#f0a500;margin-top:4px;';
+                alert.style.cssText = 'display:none;cursor:pointer;font-size:0.82em;color:#f0a500;margin-top:4px;';
                 alert.addEventListener('click', () => {
                     dockmeEditMode = true;
                     updateEditModeToggleUI();
@@ -5709,10 +5969,14 @@ let layoutDirty = false;
                 });
                 const cardsContainer = this.container.querySelector('.metrics-container');
                 cardsContainer.insertAdjacentElement('afterend', alert);
-            } else if (detected.length === 0 && alert) {
-                alert.remove();
-            } else if (detected.length > 0 && alert) {
+            }
+            const cardsContainer2 = this.container.querySelector('.metrics-container');
+            const hasCards = cardsContainer2 && cardsContainer2.children.length > 0;
+            if (detected.length > 0 && hasCards) {
                 alert.innerHTML = `⚠️ Hay ${detected.length} servidor${detected.length > 1 ? 'es' : ''} detectado${detected.length > 1 ? 's' : ''} sin conectar`;
+                alert.style.display = 'block';
+            } else {
+                alert.style.display = '';
             }
         },
 
@@ -6527,6 +6791,369 @@ function renderLinksTab(container) {
     };
 
     render();
+}
+
+// ==================== WIDGETS TAB ====================
+
+function isValidIframeUrl(url, allowExternalImages = false) {
+    try {
+        const parsed = new URL(url);
+        if (allowExternalImages && /\.(jpe?g|png|gif|webp|svg|bmp)(\?.*)?$/i.test(url)) return true;
+        const dockmeHost = window.location.hostname;
+        const privateRanges = [
+            /^localhost$/i,
+            /^127\./,
+            /^192\.168\./,
+            /^10\./,
+            /^172\.(1[6-9]|2[0-9]|3[01])\./,
+        ];
+        const isPrivate = privateRanges.some(r => r.test(parsed.hostname));
+        const isSameDomain = parsed.hostname === dockmeHost ||
+                             parsed.hostname.endsWith('.' + dockmeHost);
+        return isPrivate || isSameDomain;
+    } catch {
+        return false;
+    }
+}
+
+function renderWidgetsTab(container) {
+    const saveWidgets = () => fetch('/api/set-links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ links: linksConfig })
+    }).then(r => r.json());
+
+    const isImageUrl = url => /\.(jpe?g|png|gif|webp|svg|bmp)(\?.*)?$/i.test(url);
+
+    const fitOptionsForUrl = (url, current) => {
+        if (isImageUrl(url)) {
+            const opts = [
+                { v: 'fill',       l: '↔↕ Estirar' },
+                { v: 'fit-width',  l: '↔ Ajustar ancho' },
+                { v: 'fit-height', l: '↕ Ajustar alto' },
+            ];
+            return opts.map(o => `<option value="${o.v}" ${current === o.v ? 'selected' : ''}>${o.l}</option>`).join('');
+        } else {
+            const opts = [
+                { v: 'scale',      l: '🔍 Escalar (fit width)' },
+                { v: 'responsive', l: '📐 Responsive' },
+            ];
+            return opts.map(o => `<option value="${o.v}" ${current === o.v ? 'selected' : ''}>${o.l}</option>`).join('');
+        }
+    };
+
+    const render = () => {
+        container.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <span style="font-size:1em;color:#aaa;">Añade paneles embebidos al dashboard</span>
+                <button class="btn btn-normal btn-add-widget">+ Nuevo Widget</button>
+            </div>
+            <div id="widgets-list"></div>
+            <div id="widget-new-form"></div>
+        `;
+
+        renderWidgetList(container.querySelector('#widgets-list'), saveWidgets, render, isImageUrl, fitOptionsForUrl);
+
+        container.querySelector('.btn-add-widget').addEventListener('click', () => {
+            const form = container.querySelector('#widget-new-form');
+            if (form.querySelector('.links-category-editor')) return; // ya abierto
+
+            const existingCount = linksConfig.filter(c => c.type === 'iframe').length;
+            const defaultName   = `Widget ${existingCount + 1}`;
+
+            form.innerHTML = `
+                <div class="links-category-editor" style="margin-bottom:16px;">
+                    <div class="links-cat-header">
+                        <span style="color:#aaa;font-size:0.9em;font-weight:500;">Nuevo widget</span>
+                        <button class="btn btn-normal btn-cancel-new-widget" style="padding:2px 8px;">✕ Cancelar</button>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px;">
+                        <div class="general-field">
+                            <label class="general-label">Nombre</label>
+                            <input id="new-widget-name" class="editor-input" value="${defaultName}" style="width:100%;">
+                            <div id="new-widget-name-error" style="color:#ef5350;font-size:0.83em;margin-top:3px;display:none;">El nombre es obligatorio</div>
+                        </div>
+                        <div class="general-field">
+                            <label class="general-label">URL <span style="color:#666;font-size:0.85em;">(solo red local o mismo dominio)</span></label>
+                            <input id="new-widget-url" class="editor-input" placeholder="http://192.168.1.100:8123" style="width:100%;">
+                            <div id="new-widget-url-error" style="color:#ef5350;font-size:0.83em;margin-top:3px;display:none;"></div>
+                        </div>
+                        <div>
+                            <button class="btn btn-primary btn-confirm-new-widget">✓ Añadir widget</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Scroll al formulario + focus en nombre
+            form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            setTimeout(() => {
+                const nameInput = form.querySelector('#new-widget-name');
+                nameInput.focus();
+                nameInput.select();
+            }, 80);
+
+            // Enter en nombre → salto a URL
+            form.querySelector('#new-widget-name').addEventListener('keydown', e => {
+                if (e.key === 'Enter') { e.preventDefault(); form.querySelector('#new-widget-url').focus(); }
+            });
+
+            form.querySelector('.btn-cancel-new-widget').addEventListener('click', () => {
+                form.innerHTML = '';
+            });
+
+            form.querySelector('.btn-confirm-new-widget').addEventListener('click', () => {
+                const nameInput = form.querySelector('#new-widget-name');
+                const urlInput  = form.querySelector('#new-widget-url');
+                const nameErr   = form.querySelector('#new-widget-name-error');
+                const urlErr    = form.querySelector('#new-widget-url-error');
+
+                const name = nameInput.value.trim();
+                let url    = urlInput.value.trim();
+                if (url && !url.match(/^https?:\/\//)) { url = 'http://' + url; urlInput.value = url; }
+
+                let valid = true;
+
+                if (!name) {
+                    nameInput.style.borderColor = '#ef5350';
+                    nameErr.style.display = '';
+                    valid = false;
+                } else {
+                    nameInput.style.borderColor = '';
+                    nameErr.style.display = 'none';
+                }
+
+                if (!url) {
+                    urlErr.textContent = 'La URL es obligatoria';
+                    urlErr.style.display = '';
+                    valid = false;
+                } else if (!isValidIframeUrl(url, true)) {
+                    urlErr.textContent = isImageUrl(url)
+                        ? 'URL de imagen no válida'
+                        : 'Solo se permiten URLs de red local (IP privada) o del mismo dominio que DockMe';
+                    urlErr.style.display = '';
+                    valid = false;
+                } else {
+                    urlErr.style.display = 'none';
+                }
+
+                if (!valid) return;
+
+                const isImg = isImageUrl(url);
+                linksConfig.push({
+                    type:        'iframe',
+                    iframeId:    'iframe-' + Math.random().toString(36).slice(2, 10),
+                    label:       name,
+                    url,
+                    clickable:   'refresh',
+                    fitContent:  isImg ? 'fit-width' : 'responsive',
+                    scrollable:  false,
+                    autoRefresh: 0,
+                    order:       Math.max(-1, ...linksConfig.map(c => c.order ?? -1)) + 1
+                });
+
+                saveWidgets().then(() => render());
+            });
+        });
+    };
+
+    render();
+}
+
+function renderWidgetList(container, saveWidgets, rerender, isImageUrl, fitOptionsForUrl) {
+    container.innerHTML = '';
+    const widgets = linksConfig.filter(c => c.type === 'iframe');
+
+    if (widgets.length === 0) {
+        container.innerHTML = '<p style="color:#666;font-size:0.9em;padding:4px 0;">No hay widgets configurados aún.</p>';
+        return;
+    }
+
+    widgets.forEach(widget => {
+        const idx    = linksConfig.indexOf(widget);
+        const isImg  = isImageUrl(widget.url);
+        const el     = document.createElement('div');
+        el.className = 'links-category-editor';
+
+        el.innerHTML = `
+            <div style="display:flex;flex-direction:column;gap:10px;padding:12px 0 4px;">
+
+                <div class="general-field">
+                    <label class="general-label">Nombre</label>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <input class="editor-input widget-label-input" value="${widget.label}" style="flex:1;">
+                        <label class="general-toggle" title="${widget.enabled === false ? 'Desactivado' : 'Activo'}">
+                            <input type="checkbox" class="widget-enabled-input" ${widget.enabled === false ? '' : 'checked'}>
+                            <span class="general-toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="widget-label-error" style="color:#ef5350;font-size:0.83em;margin-top:3px;display:none;">El nombre es obligatorio</div>
+                </div>
+
+                <div class="general-field">
+                    <label class="general-label">URL <span style="color:#666;font-size:0.85em;">(solo red local o mismo dominio)</span></label>
+                    <div style="display:flex;gap:6px;align-items:center;">
+                        <input class="editor-input widget-url-input" value="${widget.url}" style="flex:1;">
+                        <span class="widget-url-badge" style="font-size:1em;flex-shrink:0;">${isValidIframeUrl(widget.url, true) ? '✅' : '⚠️'}</span>
+                    </div>
+                    <div class="widget-url-error" style="color:#ef5350;font-size:0.83em;margin-top:3px;display:none;"></div>
+                </div>
+
+                <div style="display:flex;gap:16px;flex-wrap:wrap;">
+                    <div class="general-field" style="flex:1;min-width:140px;">
+                        <label class="general-label">Al hacer click</label>
+                        <select class="editor-input widget-clickable-input">
+                            <option value="refresh"     ${widget.clickable === 'refresh'     ? 'selected' : ''}>🔄 Refresco</option>
+                            <option value="interactive" ${widget.clickable === 'interactive' ? 'selected' : ''}>🖱️ Interactivo</option>
+                        </select>
+                    </div>
+                    <div class="general-field" style="flex:1;min-width:140px;">
+                        <label class="general-label">Ajuste de contenido</label>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <select class="editor-input widget-fitcontent-input" style="flex:1;">
+                                ${fitOptionsForUrl(widget.url, widget.fitContent)}
+                            </select>
+                            <label class="general-label" style="margin:0;white-space:nowrap;display:flex;align-items:center;gap:4px;">
+                                <input type="checkbox" class="widget-scrollable-input"
+                                    ${widget.scrollable ? 'checked' : ''}
+                                    ${isImg ? 'disabled' : ''}
+                                    style="margin:0;">
+                                Scroll
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="general-field">
+                    <label class="general-label">Auto-refresco</label>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <input type="number" class="editor-input widget-refresh-input" value="${widget.autoRefresh}" min="0"
+                               style="width:75px;text-align:center;">
+                        <span style="color:#aaa;font-size:0.9em;">seg</span>
+                        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                            ${[0, 15, 30, 60, 300].map(v =>
+                                `<button class="btn btn-normal widget-refresh-chip${widget.autoRefresh === v ? ' active' : ''}"
+                                         data-val="${v}"
+                                         style="padding:1px 8px;font-size:0.8em;">
+                                    ${v === 0 ? 'Off' : v < 60 ? v + 's' : (v / 60) + 'min'}
+                                </button>`
+                            ).join('')}
+                        </div>
+                        <button class="btn btn-danger btn-delete-widget" style="padding:2px 8px;margin-left:auto;">🗑</button>
+                    </div>
+                </div>
+
+            </div>
+        `;
+
+        // ── Nombre ────────────────────────────────────────────────────────────
+        const labelInput = el.querySelector('.widget-label-input');
+        const labelErr   = el.querySelector('.widget-label-error');
+        labelInput.addEventListener('change', () => {
+            const val = labelInput.value.trim();
+            if (!val) { labelInput.style.borderColor = '#ef5350'; labelErr.style.display = ''; return; }
+            labelInput.style.borderColor = '';
+            labelErr.style.display = 'none';
+            linksConfig[idx].label = val;
+            saveWidgets().then(() => IframeManager.refreshBox(linksConfig[idx]));
+        });
+
+        // ── Enabled toggle ────────────────────────────────────────────────────
+        el.querySelector('.widget-enabled-input').addEventListener('change', e => {
+            linksConfig[idx].enabled = e.target.checked;
+            const blockEl = document.querySelector(`[data-block-key="iframe:${widget.iframeId}"]`);
+            if (blockEl) blockEl.style.display = e.target.checked ? '' : 'none';
+            saveWidgets();
+        });
+
+        // ── URL ───────────────────────────────────────────────────────────────
+        const urlInput = el.querySelector('.widget-url-input');
+        const urlBadge = el.querySelector('.widget-url-badge');
+        const urlErr   = el.querySelector('.widget-url-error');
+        let   prevUrl  = widget.url;
+
+        const handleUrlSave = () => {
+            let url = urlInput.value.trim();
+            if (url && !url.match(/^https?:\/\//)) { url = 'http://' + url; urlInput.value = url; }
+            if (!url || !isValidIframeUrl(url, true)) {
+                urlErr.textContent = !url
+                    ? 'La URL es obligatoria'
+                    : isImageUrl(url)
+                        ? 'URL de imagen no válida'
+                        : 'Solo se permiten URLs de red local (IP privada) o del mismo dominio que DockMe';
+                urlErr.style.display = '';
+                urlBadge.textContent = '❌';
+                setTimeout(() => {
+                    urlInput.value = prevUrl;
+                    urlErr.style.display = 'none';
+                    urlBadge.textContent = isValidIframeUrl(prevUrl) ? '✅' : '⚠️';
+                }, 2000);
+                return;
+            }
+            urlErr.style.display = 'none';
+            urlBadge.textContent = '✅';
+            prevUrl = url;
+            linksConfig[idx].url = url;
+            // Actualizar opciones fitContent si cambia tipo imagen/web
+            const newIsImg = isImageUrl(url);
+            if (newIsImg !== isImg) {
+                const fitSel = el.querySelector('.widget-fitcontent-input');
+                const scrollChk = el.querySelector('.widget-scrollable-input');
+                fitSel.innerHTML = fitOptionsForUrl(url, newIsImg ? 'fit-width' : 'responsive');
+                linksConfig[idx].fitContent = newIsImg ? 'fit-width' : 'responsive';
+                scrollChk.disabled = newIsImg;
+            }
+            saveWidgets().then(() => IframeManager.refreshBox(linksConfig[idx]));
+        };
+
+        urlInput.addEventListener('blur', handleUrlSave);
+        urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); urlInput.blur(); } });
+
+        // ── Clickable ─────────────────────────────────────────────────────────
+        el.querySelector('.widget-clickable-input').addEventListener('change', e => {
+            linksConfig[idx].clickable = e.target.value;
+            saveWidgets().then(() => IframeManager.refreshBox(linksConfig[idx]));
+        });
+
+        // ── FitContent ────────────────────────────────────────────────────────
+        el.querySelector('.widget-fitcontent-input').addEventListener('change', e => {
+            linksConfig[idx].fitContent = e.target.value;
+            saveWidgets().then(() => IframeManager.refreshBox(linksConfig[idx]));
+        });
+
+        // ── Scrollable ────────────────────────────────────────────────────────
+        el.querySelector('.widget-scrollable-input').addEventListener('change', e => {
+            linksConfig[idx].scrollable = e.target.checked;
+            saveWidgets().then(() => IframeManager.refreshBox(linksConfig[idx]));
+        });
+
+        // ── Auto-refresco ─────────────────────────────────────────────────────
+        const refreshInput = el.querySelector('.widget-refresh-input');
+        const setRefresh = (val) => {
+            val = Math.max(0, parseInt(val) || 0);
+            refreshInput.value = val;
+            linksConfig[idx].autoRefresh = val;
+            el.querySelectorAll('.widget-refresh-chip').forEach(c => {
+                c.classList.toggle('active', parseInt(c.dataset.val) === val);
+            });
+            saveWidgets();
+        };
+        refreshInput.addEventListener('change', () => setRefresh(refreshInput.value));
+        el.querySelectorAll('.widget-refresh-chip').forEach(chip => {
+            chip.addEventListener('click', () => setRefresh(chip.dataset.val));
+        });
+
+        // ── Eliminar ──────────────────────────────────────────────────────────
+        el.querySelector('.btn-delete-widget').addEventListener('click', () => {
+            if (!confirm(`¿Eliminar el widget "${widget.label}"?`)) return;
+            IframeManager.clearInterval(widget.iframeId);
+            document.querySelector(`[data-block-key="iframe:${widget.iframeId}"]`)?.remove();
+            linksConfig.splice(idx, 1);
+            saveWidgets().then(() => rerender());
+        });
+
+        container.appendChild(el);
+    });
 }
 
 function renderGeneralTab(container) {

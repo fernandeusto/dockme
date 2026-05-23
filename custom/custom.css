@@ -1144,6 +1144,7 @@ header {
 
 /* Alerta simple de servidores detectados */
 .detected-alert-simple {
+    display: none;
     color: #f39c12;
     font-size: 1em;
     font-weight: 500;
@@ -2732,4 +2733,117 @@ body.dockme-edit-mode #dm-col2 { display: block !important; }
     align-items: center;
     justify-content: center;
     padding: 0;
+}
+
+/* ========================================
+   IFRAME WIDGETS
+   ======================================== */
+
+.iframe-widget-box {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bs-dark, #161b22);
+    border-radius: 8px;
+    border: 1px solid #30363d;
+    min-width: 200px;
+    min-height: 150px;
+    position: relative;
+}
+
+/* En modo normal, igual que el resto de links-cat-box */
+#dockme-blocks-row > .iframe-widget-box {
+    background: transparent;
+    border-color: transparent;
+}
+
+/* En modo organización, visible como el resto de bloques */
+#dockme-blocks-row.organizing > .iframe-widget-box {
+    background: #1c2431;
+    border-color: #2a3441;
+}
+
+.iframe-widget-wrap {
+    position: relative;
+    flex: 1;
+    overflow: hidden;
+}
+
+.iframe-widget-wrap iframe {
+    display: block;
+    border: none;
+}
+
+.iframe-fit-scale iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+.iframe-fit-clip iframe {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+}
+
+/* Overlay para modo refresco — bloquea clicks y recarga al pulsar */
+.iframe-widget-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    cursor: pointer;
+    background: transparent;
+}
+
+.iframe-widget-overlay:hover::after {
+    content: '🔄';
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    font-size: 1.1em;
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* ── Handle de esquina (resize bidireccional) ─────────────────────────────── */
+.dockme-resize-handle-corner {
+    display: none; /* Solo visible en modo layout */
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 18px;
+    height: 18px;
+    cursor: nwse-resize;
+    z-index: 20;
+    opacity: 0.4;
+    transition: opacity 0.15s;
+    background:
+        linear-gradient(135deg, transparent 40%, #63b3ed 40%, #63b3ed 50%, transparent 50%),
+        linear-gradient(135deg, transparent 60%, #63b3ed 60%, #63b3ed 70%, transparent 70%),
+        linear-gradient(135deg, transparent 80%, #63b3ed 80%, #63b3ed 90%, transparent 90%);
+}
+
+body.dockme-organizing .dockme-resize-handle-corner {
+    display: block;
+}
+
+.iframe-widget-box:hover .dockme-resize-handle-corner {
+    opacity: 1;
+}
+
+/* ── Profile bar sticky en modo layout ───────────────────────────────────── */
+body.dockme-organizing #dockme-profile-bar {
+    position: sticky;
+    top: 0;
+    z-index: 1050;
+}
+
+/* ── Espacio extra al final en modo layout para redimensionar con comodidad ── */
+body.dockme-organizing #dockme-blocks-row::after {
+    content: '';
+    display: block;
+    width: 100%;
+    height: 600px;
+    flex-shrink: 0;
+    order: 99999; /* Siempre al final aunque se use CSS order en los bloques */
 }

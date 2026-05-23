@@ -56,7 +56,7 @@ fi
 # ============================
 send_webhook() {
     local updates_json="$1"
-    curl -s -X POST "$WEBHOOK_ENDPOINT" \
+    curl -s --retry 3 --retry-delay 30 --retry-connrefused -X POST "$WEBHOOK_ENDPOINT" \
         -H "Content-Type: application/json" \
         -d "{\"hostname\":\"$HOSTNAME\",\"endpoint\":\"$ENDPOINT\",\"updates\":$updates_json}" \
         >/dev/null

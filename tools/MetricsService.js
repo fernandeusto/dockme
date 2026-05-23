@@ -240,10 +240,22 @@ function getDisk() {
   // disk_util_24h — snapshots horarios
   const cutoff = now - 86400;
   _diskSnaps = _diskSnaps.filter(s => s.ts >= cutoff);
+
+  // Detectar reset de contadores (reinicio del sistema/contenedor)
   const lastSnap = _diskSnaps[_diskSnaps.length - 1];
-  if (!lastSnap || now - lastSnap.ts >= 3600) {
+  if (lastSnap && sumIo < lastSnap.sumIo) {
+    _diskSnaps = []; // reset detectado — empezar desde cero
+  } else {
+    // Descartar snapshots anteriores al último reset en el historial
+    let resetIdx = 0;
+    for (let i = 1; i < _diskSnaps.length; i++) {
+      if (_diskSnaps[i].sumIo < _diskSnaps[i - 1].sumIo) resetIdx = i;
+    }
+    if (resetIdx > 0) _diskSnaps = _diskSnaps.slice(resetIdx);
+  }
+
+  if (!_diskSnaps.length || now - _diskSnaps[_diskSnaps.length - 1].ts >= 3600) {
     _diskSnaps.push({ ts: now, sumIo });
-    // Persistir a disco para sobrevivir reinicios
     try {
       fs.writeFileSync(SNAP_CACHE,
         _diskSnaps.map(s => `${Math.floor(s.ts)}:${s.sumIo}`).join('\n') + '\n');
@@ -308,21 +320,30 @@ async function getUps() {
   if (now - _upsCacheTs < 60_000) return _upsCache;
 
   const candidates = [];
-  const _extractIp = url => url?.match(/(?:https?:\/\/)?([^:/]+)/)?.[1];
 
-  // AGENT_URL del compose tiene la IP del central (NUT) — quitamos el puerto
-  const _agentIp = _extractIp(process.env.AGENT_URL);
-  if (_agentIp) candidates.push(_agentIp);
-
-  // Fallbacks: primaryHost, centralUrl, localhost
-  try {
-    const s = JSON.parse(readFile('/app/data/config/settings.json') || '{}');
-    const _ph = s.primaryHost;
-    const _cu = _extractIp(s.centralUrl);
-    if (_ph && !candidates.includes(_ph)) candidates.push(_ph);
-    if (_cu && !candidates.includes(_cu)) candidates.push(_cu);
-  } catch {}
+  // UPS siempre local — buscar NUT solo en este servidor
+  // Para central: localhost tiene NUT → datos correctos
+  // Para agentes remotos: localhost no tiene NUT → vacío, no se hereda del central
   candidates.push('localhost');
+
+  // Gateway como fallback para usuarios con UPS en red local (raro pero posible)
+  try {
+    const routes = readFile('/proc/net/route');
+    if (routes) {
+      for (const line of routes.split('\n').slice(1)) {
+        const f = line.trim().split(/\s+/);
+        if (f[1] === '00000000' && f[7] === '00000000') {
+          // Convertir gateway hex a IP
+          const hex = f[2];
+          const gw = [3,2,1,0].map(i =>
+            parseInt(hex.slice(i*2, i*2+2), 16)
+          ).join('.');
+          if (gw !== '0.0.0.0' && !candidates.includes(gw)) candidates.push(gw);
+          break;
+        }
+      }
+    }
+  } catch {}
 
   for (const host of candidates) {
     const r1 = await nutQuery(host, ['LIST UPS', 'LOGOUT']);
