@@ -6808,8 +6808,11 @@ function isValidIframeUrl(url, allowExternalImages = false) {
             /^172\.(1[6-9]|2[0-9]|3[01])\./,
         ];
         const isPrivate = privateRanges.some(r => r.test(parsed.hostname));
+        // Mismo host, subdominio, o subdominio hermano (mismo dominio raíz)
+        const getRootDomain = h => h.split('.').slice(-2).join('.');
         const isSameDomain = parsed.hostname === dockmeHost ||
-                             parsed.hostname.endsWith('.' + dockmeHost);
+                             parsed.hostname.endsWith('.' + dockmeHost) ||
+                             getRootDomain(parsed.hostname) === getRootDomain(dockmeHost);
         return isPrivate || isSameDomain;
     } catch {
         return false;
