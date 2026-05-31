@@ -1988,7 +1988,14 @@ window.addEventListener('resize', () => {
 
         // Flex: drag HTML nativo
         box.addEventListener('dragstart', e => {
-            if (isAbs()) { e.preventDefault(); return; }
+            if (isAbs()) {
+                // En modo absoluto cancelar solo si el origen es el propio bloque o su título
+                // NO cancelar si viene de un item interno (favoritos, categorías)
+                if (e.target === box || e.target.closest('.links-cat-box-title')?.closest('.links-cat-box') === box) {
+                    e.preventDefault();
+                }
+                return;
+            }
             if (e.target !== box && !e.target.closest('.links-cat-box-title')) return;
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('block-drag', '1');
