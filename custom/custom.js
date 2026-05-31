@@ -70,6 +70,77 @@
     let linksConfig = [];
     let currentLayoutProfile = 'default';
     let currentDeviceId = localStorage.getItem('dockme-device-id') || 'default';
+
+    // ==================== CONSTANTES v3.3 ====================
+    const GRID_UNIT     = 113;  // px — unidad de snap del canvas (CARD_SIZE + CARD_GAP)
+    const CARD_SIZE     = 98;   // px — tarjeta de categoría (width real: 98px)
+    const CARD_GAP      = 15;   // px — gap entre tarjetas
+    const METRIC_WIDTH  = 430;  // px — ancho tarjeta métrica (≈ 4 slots)
+    const WIDGET_SNAP   = 10;   // px — snap libre para widgets
+
+    // Redondea al múltiplo de `unit` más cercano
+    const snapToGrid = (v, unit) => Math.round(v / unit) * unit;
+
+    // Redondea el ancho de una caja de categoría al número exacto de columnas.
+    // Sin margin-right:-15px (anulado en absolute mode):
+    // content_area = W - 24(padding) - 2(border) = W - 26
+    // N cols necesitan: N×98 + (N-1)×15 = N×113 - 15
+    // → W = N×113 - 15 + 26 = N×113 + 11
+    const snapCategoryWidth = (w) => {
+        const N = Math.max(1, Math.round((w - 11) / GRID_UNIT));
+        return N * GRID_UNIT + 11;
+    };
+
+    // Mismo modelo que categorías pero con tarjetas de métrica (430px + 15px gap)
+    const METRIC_SLOT = METRIC_WIDTH + CARD_GAP; // 445px por tarjeta
+    const snapMetricWidth = (w) => {
+        const N = Math.max(1, Math.round((w - 11) / METRIC_SLOT));
+        return N * METRIC_SLOT + 11;
+    };
+
+    // Snap de posición: busca el borde más cercano de los demás bloques y snappea a él
+    // con GAP=15px de separación, o al borde izquierdo/superior del bloque vecino (alineación).
+    // Si no hay ningún punto de snap cerca del umbral, devuelve el valor libre.
+    const SNAP_GAP       = 11;   // restado al borde para obtener 15px gap visual entre contenidos (padding 12 + border 1 = 13 cada lado → 13+13-11=15)
+    const SNAP_THRESHOLD = 20;   // px de distancia máxima para activar el snap
+
+    const snapToEdges = (rawX, rawY, box, blocksRow) => {
+        const siblings = [...blocksRow.children].filter(el =>
+            el.dataset.blockKey && el !== box
+        );
+
+        const snapX = [0];
+        const snapY = [0];
+
+        siblings.forEach(el => {
+            const l = parseInt(el.style.left) || 0;
+            const t = parseInt(el.style.top)  || 0;
+            const r = l + el.offsetWidth;
+            const b = t + el.offsetHeight;
+            snapX.push(r - SNAP_GAP, l);   // pegar a la derecha: r-11 → 15px visual gap
+            snapY.push(b - SNAP_GAP, t);   // pegar debajo: b-11 → 15px visual gap
+        });
+
+        const nearest = (val, points) => {
+            let best = null, bestDist = SNAP_THRESHOLD;
+            points.forEach(p => {
+                const d = Math.abs(val - p);
+                if (d < bestDist) { bestDist = d; best = p; }
+            });
+            return best !== null ? best : val;
+        };
+
+        return {
+            x: nearest(Math.max(0, rawX), snapX),
+            y: nearest(Math.max(0, rawY), snapY)
+        };
+    };
+
+    // Detecta modo absoluto leyendo linksConfig — válido en tiempo de render
+    // (la clase absolute-layout se añade al DOM después del render)
+    // Los event handlers usan classList directamente con su referencia local al row
+    const isAbsoluteLayout = () => linksConfig.some(b => b.x !== undefined);
+    // =========================================================
     const loadLinksConfig = () => {
         return fetch('/api/get-links')
             .then(r => r.json())
@@ -99,16 +170,38 @@
     const LayoutManager = {
         layouts: {},
 
+        // Devuelve el nombre del perfil con minWidth más alto que no supere width
+        // Solo considera perfiles con minWidth definido
+        getAutoProfile(width) {
+            const candidates = Object.entries(this.layouts)
+                .filter(([name, p]) => name !== 'default' && p.minWidth !== undefined && p.minWidth <= width)
+                .sort((a, b) => b[1].minWidth - a[1].minWidth);
+            return candidates.length ? candidates[0][0] : null;
+        },
+
         async load() {
             const r = await fetch('/api/get-layouts');
             const data = await r.json();
             this.layouts = data.layouts || {};
-            // Buscar perfil por deviceId
-            const match = Object.entries(this.layouts).find(([, v]) => v.deviceId === currentDeviceId);
-            if (match) {
-                currentLayoutProfile = match[0];
-            } else {
-                currentLayoutProfile = 'default';
+
+            // Solo auto-seleccionar si no hay override manual activo
+            if (!manualProfileOverride) {
+                const autoProfile = this.getAutoProfile(window.innerWidth);
+                if (autoProfile) {
+                    currentLayoutProfile = autoProfile;
+                    currentDeviceId = this.layouts[autoProfile]?.deviceId || currentDeviceId;
+                } else if (currentLayoutProfile === 'default') {
+                    // Fallback: buscar por deviceId solo si no hay perfil activo
+                    const match = Object.entries(this.layouts).find(([, v]) => v.deviceId === currentDeviceId);
+                    currentLayoutProfile = match ? match[0] : 'default';
+                }
+            }
+
+            // Aplicar ancho del sidebar inmediatamente
+            if (window.innerWidth > 700) {
+                const col2 = document.getElementById('dm-col2');
+                const w = this.getSidebarWidth();
+                if (col2 && w) col2.style.setProperty('width', w + 'px', 'important');
             }
             return this.getActiveBlocks();
         },
@@ -147,10 +240,24 @@
                     const finalW = localW ?? b.width;
                     if (finalW != null) entry.width = finalW;
                     if (b.height != null) entry.height = localWidths[`${b.key}_h`] ?? b.height;
+                    // v3.3 — posición absoluta
+                    if (b.x !== undefined) { entry.x = b.x; entry.y = b.y ?? 0; }
+                    else { delete entry.x; delete entry.y; }
+                    // Visibilidad — propagar hidden desde el perfil
+                    if (b.hidden) entry.hidden = true;
+                    else delete entry.hidden;
 
-                    // Aplicar ancho directamente al DOM si el elemento ya existe
                     const el = document.querySelector(`[data-block-key="${b.key}"]`);
-                    if (el && finalW) el.style.width = finalW + 'px';
+                    if (el) {
+                        if (finalW) el.style.width = finalW + 'px';
+                        if (b.x !== undefined) {
+                            el.style.left = b.x + 'px';
+                            el.style.top  = (b.y ?? 0) + 'px';
+                        } else {
+                            el.style.left = '';
+                            el.style.top  = '';
+                        }
+                    }
                 }
             });
         },
@@ -159,29 +266,39 @@
             const blocksRow = document.querySelector('#dockme-blocks-row');
             if (!blocksRow) return [];
             const localWidths = {};
+            const absoluteMode = isAbsoluteLayout();
 
-            // Ordenar por CSS order (no por posición DOM) para que los iframes
-            // preservados en DOM no contaminen el orden guardado
             const children = [...blocksRow.children].filter(el => el.dataset.blockKey);
-            children.sort((a, b) => {
-                const oa = parseInt(a.style.order ?? 9999);
-                const ob = parseInt(b.style.order ?? 9999);
-                return oa - ob;
-            });
-            // Normalizar los valores de order (0,1,2...)
-            children.forEach((el, i) => { el.style.order = i; });
+
+            if (!absoluteMode) {
+                // Modo flex — ordenar por CSS order como antes
+                children.sort((a, b) => {
+                    const oa = parseInt(a.style.order ?? 9999);
+                    const ob = parseInt(b.style.order ?? 9999);
+                    return oa - ob;
+                });
+                children.forEach((el, i) => { el.style.order = i; });
+            }
 
             const blocks = children.map((el, i) => {
                 const key = el.dataset.blockKey;
-                const block = { key, order: i };
-                if (el.offsetWidth) {
-                    block.width = el.offsetWidth;
-                    localWidths[key] = el.offsetWidth;
+                const block = { key };
+
+                if (absoluteMode) {
+                    block.x = parseInt(el.style.left) || 0;
+                    block.y = parseInt(el.style.top)  || 0;
+                    if (el.offsetWidth)  { block.width  = el.offsetWidth;  localWidths[key] = el.offsetWidth; }
+                    const hasExplicitH = el.style.height && el.style.height !== 'auto';
+                    if (hasExplicitH)   { block.height = el.offsetHeight; localWidths[`${key}_h`] = el.offsetHeight; }
+                } else {
+                    block.order = i;
+                    if (el.offsetWidth)  { block.width  = el.offsetWidth;  localWidths[key] = el.offsetWidth; }
+                    if (el.offsetHeight) { block.height = el.offsetHeight; localWidths[`${key}_h`] = el.offsetHeight; }
                 }
-                if (el.offsetHeight) {
-                    block.height = el.offsetHeight;
-                    localWidths[`${key}_h`] = el.offsetHeight;
-                }
+
+                // Preservar estado hidden
+                if (el.dataset.dmHidden === '1') block.hidden = true;
+
                 return block;
             }).filter(Boolean);
             // Capturar ancho del sidebar
@@ -202,8 +319,112 @@
 
         async save() {
             if (currentLayoutProfile === 'default') return;
-            const blocks = this.collectBlocks(); // ya guarda en localStorage
+            const blocks = this.collectBlocks();
+
+            // Reempaquetar bloques ocultos: apilarlos justo después del último visible
+            if (isAbsoluteLayout()) {
+                const visible = blocks.filter(b => !b.hidden);
+                const hidden  = blocks.filter(b => b.hidden);
+                if (hidden.length) {
+                    // maxBottom de los visibles
+                    let maxBottom = 0;
+                    const blocksRow = document.querySelector('#dockme-blocks-row');
+                    visible.forEach(b => {
+                        const el = blocksRow?.querySelector(`[data-block-key="${b.key}"]`);
+                        if (el) maxBottom = Math.max(maxBottom, (b.y || 0) + el.offsetHeight);
+                    });
+                    let yOff = maxBottom + CARD_GAP;
+                    hidden.forEach(b => {
+                        const el = blocksRow?.querySelector(`[data-block-key="${b.key}"]`);
+                        b.x = 0;
+                        b.y = yOff;
+                        if (el) {
+                            el.style.left = '0px';
+                            el.style.top  = yOff + 'px';
+                            yOff += el.offsetHeight + CARD_GAP;
+                        } else {
+                            yOff += GRID_UNIT + CARD_GAP;
+                        }
+                    });
+                }
+            }
+
             const sidebarWidth = this.layouts[currentLayoutProfile]?.sidebarWidth;
+            const minWidth = window.innerWidth;
+            const alreadyHasMinWidth = this.layouts[currentLayoutProfile]?.minWidth !== undefined;
+
+            // Si es absoluto y aún no tiene minWidth, preguntar si convertirlo en automático
+            let finalMinWidth = undefined;
+            if (isAbsoluteLayout() && !alreadyHasMinWidth) {
+                const setAuto = await new Promise(resolve => {
+                    const overlay = document.createElement('div');
+                    overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;';
+                    overlay.innerHTML = `
+                        <div style="background:#1c2431;border:1px solid #2a3441;border-radius:12px;padding:28px 32px;max-width:420px;width:90%;color:#ccc;">
+                            <div style="font-size:1.05em;font-weight:600;margin-bottom:12px;color:#f0f6fc;">¿Perfil automático?</div>
+                            <div style="font-size:0.9em;color:#8b949e;line-height:1.6;margin-bottom:20px;">
+                                ¿Quieres que este perfil se active automáticamente cuando la ventana tenga <strong style="color:#ccc;">${minWidth}px</strong> o más de ancho?
+                            </div>
+                            <div style="display:flex;gap:10px;justify-content:flex-end;">
+                                <button id="dm-auto-no"  style="padding:8px 18px;background:transparent;border:1px solid #2a3441;border-radius:6px;color:#8b949e;cursor:pointer;">No, solo manual</button>
+                                <button id="dm-auto-yes" style="padding:8px 18px;background:#4f84c8;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">Sí, activar automáticamente</button>
+                            </div>
+                        </div>`;
+                    document.body.appendChild(overlay);
+                    overlay.querySelector('#dm-auto-yes').addEventListener('click', () => { overlay.remove(); resolve(true); });
+                    overlay.querySelector('#dm-auto-no').addEventListener('click',  () => { overlay.remove(); resolve(false); });
+                });
+                if (setAuto) finalMinWidth = minWidth;
+            } else if (alreadyHasMinWidth) {
+                // Ya tiene minWidth — actualizarlo al ancho actual
+                finalMinWidth = minWidth;
+            }
+
+            // Comprobar conflicto solo si vamos a guardar un minWidth
+            const conflict = finalMinWidth !== undefined
+                ? Object.entries(this.layouts).find(([name, p]) =>
+                    name !== currentLayoutProfile &&
+                    name !== 'default' &&
+                    p.minWidth === finalMinWidth)
+                : null;
+            let resolvedMinWidth = finalMinWidth;
+            if (conflict) {
+                const [conflictName] = conflict;
+                const take = await new Promise(resolve => {
+                    const overlay = document.createElement('div');
+                    overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;';
+                    overlay.innerHTML = `
+                        <div style="background:#1c2431;border:1px solid #2a3441;border-radius:12px;padding:28px 32px;max-width:420px;width:90%;color:#ccc;">
+                            <div style="font-size:1.05em;font-weight:600;margin-bottom:12px;color:#f0f6fc;">Ancho de pantalla en uso</div>
+                            <div style="font-size:0.9em;color:#8b949e;line-height:1.6;margin-bottom:20px;">
+                                El perfil <strong style="color:#ccc;">${conflictName}</strong> es el utilizado por defecto para este ancho de pantalla (${finalMinWidth}px).<br><br>
+                                ¿Quieres utilizar el perfil actual como perfil por defecto para este ancho?
+                            </div>
+                            <div style="display:flex;gap:10px;justify-content:flex-end;">
+                                <button id="dm-mw-no"  style="padding:8px 18px;background:transparent;border:1px solid #2a3441;border-radius:6px;color:#8b949e;cursor:pointer;">No, mantener "${conflictName}"</button>
+                                <button id="dm-mw-yes" style="padding:8px 18px;background:#4f84c8;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">Sí, usar este perfil</button>
+                            </div>
+                        </div>`;
+                    document.body.appendChild(overlay);
+                    overlay.querySelector('#dm-mw-yes').addEventListener('click', () => { overlay.remove(); resolve(true); });
+                    overlay.querySelector('#dm-mw-no').addEventListener('click',  () => { overlay.remove(); resolve(false); });
+                });
+                if (take) {
+                    await fetch('/api/set-layout', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            profileName: conflictName,
+                            deviceId: this.layouts[conflictName]?.deviceId,
+                            blocks: this.layouts[conflictName]?.blocks || [],
+                            sidebarWidth: this.layouts[conflictName]?.sidebarWidth
+                        })
+                    });
+                } else {
+                    resolvedMinWidth = undefined;
+                }
+            }
+
             await fetch('/api/set-layout', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -211,7 +432,8 @@
                     profileName: currentLayoutProfile,
                     deviceId: currentDeviceId,
                     blocks,
-                    sidebarWidth
+                    sidebarWidth,
+                    ...(resolvedMinWidth !== undefined && { minWidth: resolvedMinWidth })
                 })
             });
             const r = await fetch('/api/get-layouts');
@@ -249,7 +471,7 @@
             this.layouts = data.layouts || {};
             // Mantener modo organizar activo
             const row = document.querySelector('#dockme-blocks-row');
-            if (row) row.classList.add('organizing');
+            if (row) { row.classList.add('organizing'); recalcLayout(); }
             document.querySelector('.organize-icon')?.classList.add('active');
             document.body.classList.add('dockme-organizing');
         },
@@ -260,6 +482,16 @@ async switchTo(profileName) {
             currentLayoutProfile = profileName;
             currentDeviceId = profile.deviceId;
             localStorage.setItem('dockme-device-id', currentDeviceId);
+
+            // Limpiar clase de modo antes de redibujar — se reaplica si corresponde en loadAndDisplay
+            const blocksRow = document.querySelector('#dockme-blocks-row');
+            blocksRow?.classList.remove('absolute-layout');
+            // Limpiar posición absoluta residual de todos los bloques existentes
+            blocksRow?.querySelectorAll('[data-block-key]').forEach(el => {
+                el.style.left = '';
+                el.style.top  = '';
+            });
+
             this.applyToLinksConfig(profile.blocks);
 
             // Actualizar ancho del sidebar inmediatamente (CSS rule + inline style)
@@ -270,14 +502,18 @@ async switchTo(profileName) {
                 if (sidebar) sidebar.style.setProperty('width', newSidebarW + 'px', 'important');
             }
 
+            const wasOrganizing = document.querySelector('#dockme-blocks-row')?.classList.contains('organizing');
+
             await Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => {
                 this.applyToLinksConfig(profile.blocks);
                 DataLoader.loadAndDisplay();
-                // Restaurar modo organizar tras recargar
+                // Restaurar modo organizar tras recargar solo si ya estábamos en él
+                if (!wasOrganizing) return;
                 setTimeout(() => {
                     const row = document.querySelector('#dockme-blocks-row');
                     if (row) {
                         row.classList.add('organizing');
+                        recalcLayout();
                         row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
                             el.draggable = true;
                         });
@@ -577,14 +813,24 @@ async switchTo(profileName) {
                     wrapper.id = `${idBase}-wrapper`;
                     wrapper.className = 'links-cat-box';
                     wrapper.dataset.blockKey = 'type:favoritos';
+                    // Aplicar dimensiones y posición guardadas
+                    const favEntry = linksConfig.find(c => c.type === 'favoritos');
+                    if (favEntry?.width)  wrapper.style.width  = favEntry.width  + 'px';
+                    if (favEntry?.height) wrapper.style.height = favEntry.height + 'px';
+                    if (favEntry?.x !== undefined) {
+                        wrapper.style.left = favEntry.x + 'px';
+                        wrapper.style.top  = favEntry.y + 'px';
+                    }
                     // Añadir al blocksRow
                     const blocksRow = document.querySelector('#dockme-blocks-row') || contenedor;
                     blocksRow.appendChild(wrapper);
-                    // Drag & drop
                     setupBlockDrag(wrapper, blocksRow);
-                    setupResizeHandle(wrapper, (newWidth) => {
-                        saveBlockOrder();
+                    setupResizeHandleBoth(wrapper, () => {
+                        recalcLayout();
+                        recalcLayout();
+                        markLayoutDirty();
                     });
+                    // Sin botón de visibilidad — favoritos es un bloque básico
                 }
                 return wrapper;
             })() : contenedor;
@@ -1027,11 +1273,23 @@ async switchTo(profileName) {
 
             // Orden por defecto si no hay perfil activo
             if (currentLayoutProfile === 'default') {
-                const metricsEntry = linksConfig.find(b => b.type === 'metrics');
-                const favEntry = linksConfig.find(b => b.type === 'favoritos');
-                if (metricsEntry) metricsEntry.order = 0;
-                if (favEntry) favEntry.order = 1;
-                linksConfig.filter(b => b.category).forEach((b, i) => { b.order = 2 + i; });
+                // Orden: métricas → favoritos → categorías → widgets
+                const typeOrder = b => {
+                    if (b.type === 'metrics')   return 0;
+                    if (b.type === 'favoritos') return 1;
+                    if (!b.type && b.category)  return 2;
+                    return 3;
+                };
+                [...linksConfig]
+                    .sort((a, b) => typeOrder(a) - typeOrder(b))
+                    .forEach((b, i) => {
+                        b.order = i;
+                        // Ancho 100% — limpiar cualquier valor guardado
+                        delete b.width;
+                        delete b.height;
+                        delete b.x;
+                        delete b.y;
+                    });
             } else {
                 // Aplicar orden del perfil primero, luego normalizar los que falten
                 const maxProfileOrd = layoutBlocks.reduce((m, b) => Math.max(m, b.order ?? 0), -1);
@@ -1130,43 +1388,146 @@ async switchTo(profileName) {
                     IframeManager.renderBox(block, blocksRow);
                 }
             }
-            // Reordenar visualmente con CSS order — no mueve el DOM (los iframes se recargarían)
-            sortedBlocks.forEach((block, i) => {
-                const key = block.type === 'iframe'
-                    ? `iframe:${block.iframeId}`
-                    : block.type
-                        ? `type:${block.type}`
-                        : `category:${block.category}`;
-                const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
-                if (el) el.style.order = i;
-            });
-            // Aplicar anchos del perfil al DOM una vez renderizados los boxes
+            // Reordenar visualmente — modo flex: CSS order / modo absoluto: left+top
+            if (isAbsoluteLayout()) {
+                blocksRow.classList.add('absolute-layout');
+                // Aplicar posición absoluta a cada bloque desde linksConfig
+                sortedBlocks.forEach(block => {
+                    const key = block.type === 'iframe'
+                        ? `iframe:${block.iframeId}`
+                        : block.type
+                            ? `type:${block.type}`
+                            : `category:${block.category}`;
+                    const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
+                    if (!el) return;
+                    const entry = linksConfig.find(c =>
+                        (block.iframeId && c.iframeId === block.iframeId) ||
+                        (block.type && !block.iframeId && c.type === block.type) ||
+                        (!block.type && c.category === block.category)
+                    );
+                    if (entry?.x !== undefined) {
+                        el.style.left = entry.x + 'px';
+                        el.style.top  = entry.y + 'px';
+                    }
+                });
+            } else {
+                blocksRow.classList.remove('absolute-layout');
+                sortedBlocks.forEach((block, i) => {
+                    const key = block.type === 'iframe'
+                        ? `iframe:${block.iframeId}`
+                        : block.type
+                            ? `type:${block.type}`
+                            : `category:${block.category}`;
+                    const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
+                    if (el) {
+                        el.style.order = i;
+                        el.style.left  = '';
+                        el.style.top   = '';
+                    }
+                });
+            }
+            // Aplicar anchos (y posición en modo absoluto) al DOM una vez renderizados los boxes
             const activeBlocks = LayoutManager.getActiveBlocks();
             const localWidths = JSON.parse(localStorage.getItem(`dockme-widths-${currentDeviceId}`) || '{}');
             activeBlocks.forEach(b => {
                 const finalW = localWidths[b.key] ?? b.width;
-                if (!finalW) return;
                 const el = document.querySelector(`[data-block-key="${b.key}"]`);
-                if (el) el.style.width = finalW + 'px';
+                if (!el) return;
+                if (finalW) el.style.width = finalW + 'px';
+                if (b.x !== undefined) {
+                    el.style.left = b.x + 'px';
+                    el.style.top  = (b.y ?? 0) + 'px';
+                } else {
+                    el.style.left = '';
+                    el.style.top  = '';
+                }
+                // Aplicar estado hidden
+                if (b.hidden) {
+                    el.dataset.dmHidden = '1';
+                    el.style.display = blocksRow?.classList.contains('organizing') ? '' : 'none';
+                    el.style.opacity = b.hidden ? '0.45' : '';
+                    el.style.outline = b.hidden ? '2px dashed #4f84c8' : '';
+                } else {
+                    el.dataset.dmHidden = '';
+                    el.style.display = '';
+                    el.style.opacity = '';
+                    el.style.outline = '';
+                }
             });
-            // Reaplicar filtro activo si existe
+            recalcLayout();
+            recalcLayout();
             if (MetricsManager.filterActive && MetricsManager.currentFilter) {
                 MetricsManager.applyHostFilter(MetricsManager.currentFilter);
             }
 
-            // Resetear modo organizar al recargar dashboard
-            document.querySelector('#dockme-blocks-row')?.classList.remove('organizing');
-            document.querySelector('.organize-icon')?.classList.remove('active');
+            // Resetear modo organizar al recargar dashboard — solo si NO estábamos ya organizando
+            const wasOrganizing = document.querySelector('#dockme-blocks-row')?.classList.contains('organizing');
+            if (!wasOrganizing) {
+                document.querySelector('#dockme-blocks-row')?.classList.remove('organizing');
+                document.querySelector('.organize-icon')?.classList.remove('active');
+            }
         }
     };
 
-    // ── Guarda el orden actual de todos los bloques en #dockme-blocks-row ──────
-    function saveBlockOrder() {
-        markLayoutDirty();
+    // ── Recalcula altura del contenedor y columnas de favoritos ─────────────────
+    function recalcLayout() {
+        const row = document.querySelector('#dockme-blocks-row');
+        if (!row || !row.classList.contains('absolute-layout')) return;
+        // Altura del contenedor
+        const isOrganizing = row.classList.contains('organizing');
+        const children = [...row.children].filter(el => el.dataset.blockKey);
+        let maxBottom = 0;
+        children.forEach(el => {
+            if (!isOrganizing && el.dataset.dmHidden === '1') return;
+            const top = parseInt(el.style.top) || 0;
+            maxBottom = Math.max(maxBottom, top + el.offsetHeight);
+        });
+        if (maxBottom > 0) {
+            const extra = isOrganizing ? 600 : 0;
+            row.style.height = (maxBottom + extra) + 'px';
+        }
+        // Columnas de favoritos
+        const wrapper = row.querySelector('#favoritos-wrapper');
+        const favRow  = wrapper?.querySelector('#favoritos-row');
+        if (favRow && wrapper) {
+            const innerW = wrapper.offsetWidth - 24 + 15;
+            const cols   = Math.max(1, Math.floor(innerW / (285 + 15)));
+            favRow.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        }
     }
 
     // ── Barra de perfiles en modo organizar ───────────────────────────────────
 let layoutDirty = false;
+let previousProfile = null; // perfil anterior al crear nuevo, para restaurar si se cancela
+let manualProfileOverride = false; // true cuando el usuario eligió perfil manualmente — el resize lo resetea
+
+// TODO v3.4 — Eliminar deviceId y limpiar localStorage:
+// Con minWidth como criterio de selección, deviceId ha quedado como fallback legacy.
+// Pasos: 1) sustituir clave localStorage dockme-widths-{deviceId} por dockme-widths-{profileName},
+// 2) eliminar dockme-device-id del localStorage, 3) hacerlo opcional en el servidor,
+// 4) eliminarlo del payload de save() y del layouts.json en una limpieza final.
+
+// ── Cambio automático de perfil al redimensionar ventana ─────────────────────
+let _resizeTimer = null;
+window.addEventListener('resize', () => {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(() => {
+        // No cambiar si estamos en modo organizar
+        const row = document.querySelector('#dockme-blocks-row');
+        if (row?.classList.contains('organizing')) return;
+        // Al redimensionar, el override manual se cancela
+        manualProfileOverride = false;
+        const best = LayoutManager.getAutoProfile(window.innerWidth);
+        if (best && best !== currentLayoutProfile) {
+            // Asegurar que salimos del modo organizar antes de cambiar
+            row?.classList.remove('organizing');
+            document.body.classList.remove('dockme-organizing');
+            document.querySelector('.organize-icon')?.classList.remove('active');
+            document.querySelector('#dockme-profile-bar')?.remove();
+            LayoutManager.switchTo(best).then(() => DataLoader.loadAndDisplay());
+        }
+    }, 400);
+});
 
     function markLayoutDirty() {
         layoutDirty = true;
@@ -1182,68 +1543,158 @@ let layoutDirty = false;
         const bar = document.createElement('div');
         bar.id = 'dockme-profile-bar';
 
-        // ── Nombre del perfil activo (solo si no hay cambios pendientes) ──────
-        if (currentLayoutProfile !== 'default' && !layoutDirty) {
-            const nameLabel = document.createElement('span');
-            nameLabel.className = 'profile-bar-name-label';
-            nameLabel.textContent = currentLayoutProfile;
-            bar.appendChild(nameLabel);
-        }
+        // ── Input nombre + botón guardar — siempre visibles en modo organizar ──
+        const nameInput = document.createElement('input');
+        nameInput.className = 'profile-bar-input';
+        nameInput.value = currentLayoutProfile === 'default' ? 'Mi layout' : currentLayoutProfile;
+        nameInput.placeholder = 'Nombre del perfil';
+        nameInput.addEventListener('keydown', async e => {
+            if (e.key !== 'Enter') return;
+            const name = nameInput.value.trim();
+            if (!name) { nameInput.style.borderColor = 'red'; return; }
+            nameInput.style.borderColor = '';
+            const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+            nameInput.value = capitalized;
+            nameInput.select();
+        });
 
-        // ── Input nombre + botón guardar (solo si hay cambios) ────────────────
-        if (layoutDirty) {
-            const nameInput = document.createElement('input');
-            nameInput.className = 'profile-bar-input';
-            nameInput.value = currentLayoutProfile === 'default' ? 'Mi layout' : currentLayoutProfile;
-            nameInput.placeholder = 'Nombre del perfil';
-            nameInput.addEventListener('keydown', async e => {
-                if (e.key !== 'Enter') return;
-                const name = nameInput.value.trim();
-                if (!name) { nameInput.style.borderColor = 'red'; return; }
-                nameInput.style.borderColor = '';
-                const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
-                nameInput.value = capitalized;
-                nameInput.select();
-            });
+        const btnSave = document.createElement('button');
+        btnSave.className = 'btn btn-primary';
+        btnSave.textContent = '💾 Guardar';
+        btnSave.addEventListener('click', async () => {
+            const name = nameInput.value.trim();
+            if (!name) { nameInput.style.borderColor = 'red'; return; }
+            nameInput.style.borderColor = '';
+            const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
+            if (currentLayoutProfile === 'default') {
+                currentLayoutProfile = capitalized;
+                currentDeviceId = 'device-' + Math.random().toString(36).slice(2, 10);
+                localStorage.setItem('dockme-device-id', currentDeviceId);
+            } else if (capitalized !== currentLayoutProfile) {
+                await LayoutManager.rename(currentLayoutProfile, capitalized);
+            }
+            await LayoutManager.save();
+            layoutDirty = false;
+            // Cerrar modo organizar
+            const row = document.querySelector('#dockme-blocks-row');
+            if (row) {
+                row.classList.remove('organizing');
+                recalcLayout();
+                row.querySelectorAll('[data-dm-hidden="1"]').forEach(el => {
+                    el.style.display  = 'none';
+                    el.style.opacity  = '';
+                    el.style.outline  = '';
+                });
+                row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
+                    el.draggable = false;
+                });
+            }
+            document.querySelector('.organize-icon')?.classList.remove('active');
+            document.body.classList.remove('dockme-organizing');
+            document.querySelector('#dockme-profile-bar')?.remove();
+        });
 
-            const btnSave = document.createElement('button');
-            btnSave.className = 'btn btn-primary';
-            btnSave.textContent = '💾 Guardar';
-            btnSave.addEventListener('click', async () => {
-                const name = nameInput.value.trim();
-                if (!name) { nameInput.style.borderColor = 'red'; return; }
-                nameInput.style.borderColor = '';
-                const capitalized = name.charAt(0).toUpperCase() + name.slice(1);
-                if (currentLayoutProfile === 'default') {
-                    currentLayoutProfile = capitalized;
-                    currentDeviceId = 'device-' + Math.random().toString(36).slice(2, 10);
-                    localStorage.setItem('dockme-device-id', currentDeviceId);
-                } else if (capitalized !== currentLayoutProfile) {
-                    await LayoutManager.rename(currentLayoutProfile, capitalized);
-                }
-                await LayoutManager.save();
-                layoutDirty = false;
-                // Cerrar modo organizar
-                const row = document.querySelector('#dockme-blocks-row');
-                if (row) {
-                    row.classList.remove('organizing');
-                    row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
-                        el.draggable = false;
+        bar.appendChild(nameInput);
+        bar.appendChild(btnSave);
+        // ── Select de tipo de layout (a la izquierda de + Nuevo) ──────────────
+        const currentIsAbs = isAbsoluteLayout();
+
+        const typeSelect = document.createElement('div');
+        typeSelect.className = 'profile-type-select';
+        typeSelect.title = 'Tipo de layout del perfil actual';
+
+        const typeBtn = document.createElement('button');
+        typeBtn.className = 'btn btn-normal';
+        typeBtn.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:110px;';
+        typeBtn.innerHTML = currentIsAbs
+            ? '<span>⊞</span><span>Tipo Absoluto</span><span style="opacity:0.5;font-size:0.8em;">▾</span>'
+            : '<span>≡</span><span>Tipo Flex</span><span style="opacity:0.5;font-size:0.8em;">▾</span>';
+
+        const typeMenu = document.createElement('div');
+        typeMenu.className = 'profile-bar-dropdown-menu';
+        typeMenu.style.display = 'none';
+
+        const makeTypeOption = (icon, label, desc, value) => {
+            const opt = document.createElement('div');
+            opt.className = 'profile-bar-dropdown-item' + (currentIsAbs === (value === 'absolute') ? ' active' : '');
+            opt.style.cssText = 'flex-direction:column;align-items:flex-start;gap:2px;padding:10px 12px;cursor:pointer;';
+            opt.innerHTML = `<div style="display:flex;align-items:center;gap:6px;font-weight:600;">${icon} ${label}</div>
+                             <div style="font-size:0.8em;color:#8b949e;">${desc}</div>`;
+            opt.addEventListener('click', async () => {
+                typeMenu.style.display = 'none';
+                const blocksRow = document.querySelector('#dockme-blocks-row');
+                if (!blocksRow) return;
+
+                if (value === 'absolute' && !isAbsoluteLayout()) {
+                    // ── Flex → Absoluto: medir posiciones reales del DOM ──────
+                    blocksRow.getBoundingClientRect();
+                    const rowRect = blocksRow.getBoundingClientRect();
+                    linksConfig.forEach(b => {
+                        const key = b.iframeId ? `iframe:${b.iframeId}`
+                                  : b.type     ? `type:${b.type}`
+                                  :              `category:${b.category}`;
+                        const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
+                        if (!el) return;
+                        const rect = el.getBoundingClientRect();
+                        b.x = Math.round(rect.left - rowRect.left);
+                        b.y = Math.round(rect.top  - rowRect.top);
+                        b.width  = el.offsetWidth;
+                        b.height = (b.type === 'metrics' || b.category) ? undefined : el.offsetHeight;
+                        delete b.order;
+                        el.style.left = b.x + 'px';
+                        el.style.top  = b.y + 'px';
                     });
-                }
-                document.querySelector('.organize-icon')?.classList.remove('active');
-                document.body.classList.remove('dockme-organizing');
-                document.querySelector('#dockme-profile-bar')?.remove();
-            });
+                    blocksRow.classList.add('absolute-layout');
+                    recalcLayout();
 
-            bar.appendChild(nameInput);
-            bar.appendChild(btnSave);
-        }
+                } else if (value === 'flex' && isAbsoluteLayout()) {
+                    // ── Absoluto → Flex: ordenar por Y luego X ───────────────
+                    blocksRow.getBoundingClientRect();
+                    const withPos = linksConfig.map(b => {
+                        const key = b.iframeId ? `iframe:${b.iframeId}`
+                                  : b.type     ? `type:${b.type}`
+                                  :              `category:${b.category}`;
+                        const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
+                        return { b, y: parseInt(el?.style.top) || 0, x: parseInt(el?.style.left) || 0, el };
+                    });
+                    withPos.sort((a, b) => a.y !== b.y ? a.y - b.y : a.x - b.x);
+                    withPos.forEach(({ b, el }, i) => {
+                        b.order = i;
+                        delete b.x; delete b.y;
+                        if (el) { el.style.order = i; el.style.left = ''; el.style.top = ''; }
+                    });
+                    blocksRow.classList.remove('absolute-layout');
+                    blocksRow.style.height = '';
+                } else {
+                    return; // mismo tipo, nada que hacer
+                }
+
+                markLayoutDirty();
+                renderProfileBar(); // refrescar el select con el nuevo tipo
+            });
+            return opt;
+        };
+
+        typeMenu.appendChild(makeTypeOption('⊞', 'Tipo Absoluto', 'Posicionamiento libre en lienzo', 'absolute'));
+        typeMenu.appendChild(makeTypeOption('≡', 'Tipo Flex',     'Flujo automático en filas',        'flex'));
+
+        typeSelect.appendChild(typeBtn);
+        typeSelect.appendChild(typeMenu);
+
+        typeBtn.addEventListener('click', () => {
+            typeMenu.style.display = typeMenu.style.display === 'none' ? 'block' : 'none';
+        });
+        document.addEventListener('click', e => {
+            if (!typeSelect.contains(e.target)) typeMenu.style.display = 'none';
+        }, { capture: true });
+
         // ── Botón nuevo perfil ─────────────────────────────────────────────────
         const btnNew = document.createElement('button');
         btnNew.className = 'btn btn-normal';
         btnNew.textContent = '+ Nuevo';
         btnNew.addEventListener('click', async () => {
+            // Siempre se crea en modo absoluto (flex deprecado en v3.3)
+            const layoutType = 'absolute';
             // Generar nombre por defecto único
             const baseName = 'Mi layout';
             const existing = Object.keys(LayoutManager.layouts).filter(n => n !== 'default');
@@ -1253,30 +1704,120 @@ let layoutDirty = false;
                 newName = `${baseName} ${idx++}`;
             }
 
+            // Guardar perfil anterior para poder restaurarlo si se cancela
+            previousProfile = currentLayoutProfile;
+
             // Nuevo deviceId y limpiar localStorage
             currentLayoutProfile = newName;
             currentDeviceId = 'device-' + Math.random().toString(36).slice(2, 10);
             localStorage.setItem('dockme-device-id', currentDeviceId);
             localStorage.removeItem(`dockme-widths-${currentDeviceId}`);
 
-            // Resetear órdenes a default
-            const metricsEntry = linksConfig.find(b => b.type === 'metrics');
-            const favEntry = linksConfig.find(b => b.type === 'favoritos');
-            if (metricsEntry) { metricsEntry.order = 0; delete metricsEntry.width; delete metricsEntry.height; }
-            if (favEntry) { favEntry.order = 1; delete favEntry.width; delete favEntry.height; }
-            linksConfig.filter(b => b.category).forEach((b, i) => {
-                b.order = 2 + i;
-                delete b.width;
-                delete b.height;
-            });
-
-            // Redibujar paneles en orden default sin salir del modo organizar
+            // Redibujar en modo flex primero (loadLinksConfig sobrescribiría x,y si lo asignamos antes)
             layoutDirty = true;
+            manualProfileOverride = true; // evitar que load() sobreescriba el nuevo perfil con el automático
             await DataLoader.loadAndDisplay();
+
+            // AHORA asignar x,y sobre el linksConfig ya cargado desde servidor y aplicar al DOM
+            const blocksRow = document.querySelector('#dockme-blocks-row');
+            if (blocksRow && layoutType === 'absolute') {
+                // ── MODO ABSOLUTO ─────────────────────────────────────────────
+                blocksRow.classList.add('absolute-layout');
+
+                // ── Ordenar: métricas → favoritos → categorías → widgets ──────────
+                const order = b => {
+                    if (b.type === 'metrics')   return 0;
+                    if (b.type === 'favoritos') return 1;
+                    if (!b.type && b.category)  return 2;
+                    return 3; // iframes/widgets
+                };
+                linksConfig.sort((a, b) => order(a) - order(b));
+
+                // ── Pasada 1: calcular ancho correcto para cada bloque ────────────
+                linksConfig.forEach(b => {
+                    delete b.order;
+                    b.x = 0;
+                    b.y = 0; // provisional
+
+                    const key = b.iframeId ? `iframe:${b.iframeId}`
+                              : b.type     ? `type:${b.type}`
+                              :              `category:${b.category}`;
+                    const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
+                    if (el) el.style.left = '0px'; // x=0 explícito siempre
+
+                    if (b.type === 'metrics') {
+                        const nCards = blocksRow.querySelectorAll('.metric-card').length || 1;
+                        b.width = snapMetricWidth(nCards * METRIC_SLOT);
+                        delete b.height;
+                        if (el) { el.style.width = b.width + 'px'; el.style.removeProperty('height'); }
+
+                    } else if (b.type === 'favoritos') {
+                        const FAV_COLS   = 2;
+                        const FAV_CARD_W = 285;
+                        b.width  = FAV_COLS * (FAV_CARD_W + CARD_GAP) - CARD_GAP + 26;
+                        delete b.height; // auto height como categorías — pasada 2 lee offsetHeight real
+                        if (el) { el.style.width = b.width + 'px'; el.style.removeProperty('height'); }
+
+                    } else if (b.iframeId) {
+                        b.width  = GRID_UNIT * 3 + 11;
+                        b.height = GRID_UNIT * 2;
+                        if (el) { el.style.width = b.width + 'px'; el.style.height = b.height + 'px'; }
+
+                    } else {
+                        // Categoría: 1 fila, N columnas según items
+                        const nItems = el?.querySelectorAll('.links-item-card').length || 1;
+                        b.width = snapCategoryWidth(nItems * GRID_UNIT);
+                        delete b.height;
+                        if (el) { el.style.width = b.width + 'px'; el.style.removeProperty('height'); }
+                    }
+                });
+
+                // ── Pasada 2: leer heights reales del DOM y calcular y-offsets ───
+                blocksRow.getBoundingClientRect(); // fuerza layout
+
+                let yOff = 0;
+                linksConfig.forEach(b => {
+                    b.y = yOff;
+                    const key = b.iframeId ? `iframe:${b.iframeId}`
+                              : b.type     ? `type:${b.type}`
+                              :              `category:${b.category}`;
+                    const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
+                    if (el) {
+                        el.style.top = yOff + 'px';
+                        yOff += el.offsetHeight + CARD_GAP;
+                    } else {
+                        yOff += (b.height || GRID_UNIT) + CARD_GAP;
+                    }
+                });
+
+                recalcLayout();
+                recalcLayout();
+            } else if (blocksRow && layoutType === 'flex') {
+                // ── MODO FLEX ─────────────────────────────────────────────────
+                blocksRow.classList.remove('absolute-layout');
+                blocksRow.style.height = '';
+                // Ordenar: métricas → favoritos → categorías → widgets
+                const typeOrder = b => {
+                    if (b.type === 'metrics')   return 0;
+                    if (b.type === 'favoritos') return 1;
+                    if (!b.type && b.category)  return 2;
+                    return 3;
+                };
+                linksConfig.sort((a, b) => typeOrder(a) - typeOrder(b));
+                linksConfig.forEach((b, i) => {
+                    b.order = i;
+                    delete b.x; delete b.y;
+                    const key = b.iframeId ? `iframe:${b.iframeId}`
+                              : b.type     ? `type:${b.type}`
+                              :              `category:${b.category}`;
+                    const el = blocksRow.querySelector(`[data-block-key="${key}"]`);
+                    if (el) { el.style.order = i; el.style.left = ''; el.style.top = ''; }
+                });
+            }
 
             // Mantener modo organizar activo tras redibujar
             const row = document.querySelector('#dockme-blocks-row');
-            if (row) row.classList.add('organizing');
+            if (row) { row.classList.add('organizing'); recalcLayout(); }
             document.body.classList.add('dockme-organizing');
 
             // Redibujar barra (mostrará input con newName y botón guardar)
@@ -1297,10 +1838,17 @@ let layoutDirty = false;
 
         Object.entries(LayoutManager.layouts)
             .filter(([name]) => name !== 'default')
-            .forEach(([name]) => {
+            .forEach(([name, profile]) => {
                 const item = document.createElement('div');
                 item.className = 'profile-bar-dropdown-item' + (name === currentLayoutProfile ? ' active' : '');
                 item.style.cursor = 'pointer';
+
+                // Icono de tipo: ⊞ absoluto / ≡ flex
+                const isAbs = profile.blocks?.some(b => b.x !== undefined);
+                const typeIcon = document.createElement('span');
+                typeIcon.textContent = isAbs ? '⊞' : '≡';
+                typeIcon.title = isAbs ? 'Layout absoluto' : 'Layout flex';
+                typeIcon.style.cssText = 'margin-right:6px;opacity:0.6;font-size:1em;flex-shrink:0;';
 
                 const itemName = document.createElement('span');
                 itemName.textContent = name;
@@ -1310,6 +1858,7 @@ let layoutDirty = false;
                     if (e.target.closest('.profile-bar-btn-del')) return;
                     dropdown.style.display = 'none';
                     layoutDirty = false;
+                    manualProfileOverride = true; // el resize no cambiará hasta que el usuario redimensione
                     await LayoutManager.switchTo(name);
                     renderProfileBar();
                 });
@@ -1326,6 +1875,7 @@ let layoutDirty = false;
                     window.location.reload();
                 });
 
+                item.appendChild(typeIcon);
                 item.appendChild(itemName);
                 item.appendChild(btnDel);
                 dropdown.appendChild(item);
@@ -1347,17 +1897,23 @@ let layoutDirty = false;
         btnList.appendChild(btnListToggle);
         btnList.appendChild(dropdown);
 
+        bar.appendChild(typeSelect);
         bar.appendChild(btnNew);
         bar.appendChild(btnList);
 
         const dashboard = document.querySelector('#dockme-dashboard');
-        if (dashboard) dashboard.insertBefore(bar, dashboard.firstChild);
+        if (dashboard) dashboard.parentNode.insertBefore(bar, dashboard);
     }
 
     // ── Drag & drop unificado para cualquier bloque del row ───────────────────
+    // El modo (flex vs absoluto) se decide en cada evento comprobando si el row
+    // tiene la clase .absolute-layout — nunca en el momento del setup.
     function setupBlockDrag(box, blocksRow) {
 
-        // Reordena visualmente con CSS order — nunca mueve el DOM (los iframes se recargarían)
+        // En eventos usamos la clase del DOM — es fiable en tiempo de evento
+        const isAbs = () => blocksRow.classList.contains('absolute-layout');
+
+        // ── Helpers modo flex ─────────────────────────────────────────────────
         const reorderByCssOrder = (dragging, target, beforeTarget) => {
             const els = [...blocksRow.children]
                 .filter(el => el.dataset.blockKey)
@@ -1368,109 +1924,179 @@ let layoutDirty = false;
             let toIdx = els.indexOf(target);
             if (toIdx === -1) return;
             if (!beforeTarget) toIdx++;
-            // Ajustar índice por la extracción anterior
             els.splice(toIdx, 0, dragging);
             els.forEach((el, i) => { el.style.order = i; });
         };
 
         // ── Mouse drag ────────────────────────────────────────────────────────
+        let dragging = false;
+        let startMouseX = 0, startMouseY = 0, startLeft = 0, startTop = 0;
+
+        const onMouseMove = e => {
+            if (!dragging) return;
+            if (isAbs()) {
+                const rawX = startLeft + e.clientX - startMouseX;
+                const rawY = startTop  + e.clientY - startMouseY;
+                const { x, y } = snapToEdges(rawX, rawY, box, blocksRow);
+                box.style.left = x + 'px';
+                box.style.top  = y + 'px';
+                recalcLayout();
+            }
+        };
+
+        const onMouseUp = e => {
+            if (!dragging) return;
+            if (!isAbs()) {
+                // Flex: el reorder ya se hizo en dragover, nada más que hacer
+                box.style.opacity = '';
+                box.draggable = false;
+            } else {
+                box.style.zIndex  = '';
+                box.style.opacity = '';
+            }
+            dragging = false;
+            // Restaurar pointer-events en iframes
+            document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = '');
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup',   onMouseUp);
+            markLayoutDirty();
+        };
+
         box.addEventListener('mousedown', e => {
-            if (e.target.closest('.links-cat-box-title')?.closest('.links-cat-box') === box) {
+            if (!blocksRow.classList.contains('organizing')) return;
+            if (box.dataset.dmHidden === '1') return; // bloques ocultos no se arrastran
+            const title = e.target.closest('.links-cat-box-title');
+            if (!title || title.closest('.links-cat-box') !== box) return;
+
+            if (isAbs()) {
+                e.preventDefault();
+                dragging    = true;
+                startMouseX = e.clientX;
+                startMouseY = e.clientY;
+                startLeft   = parseInt(box.style.left) || 0;
+                startTop    = parseInt(box.style.top)  || 0;
+                box.style.zIndex  = '100';
+                box.style.opacity = '0.85';
+                // Iframes capturan eventos del mouse — deshabilitarlos durante el drag
+                document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = 'none');
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup',   onMouseUp);
+            } else {
                 box.draggable = true;
             }
         });
+
+        // Flex: drag HTML nativo
         box.addEventListener('dragstart', e => {
+            if (isAbs()) { e.preventDefault(); return; }
             if (e.target !== box && !e.target.closest('.links-cat-box-title')) return;
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('block-drag', '1');
+            dragging = true;
             box.style.opacity = '0.4';
         });
         box.addEventListener('dragend', () => {
+            if (isAbs()) return;
             box.style.opacity = '';
             box.draggable = false;
-            saveBlockOrder();
+            dragging = false;
+            markLayoutDirty();
         });
         box.addEventListener('dragover', e => {
+            if (isAbs()) return;
             if (!e.dataTransfer.types.includes('block-drag')) return;
             e.preventDefault();
-            const dragging = [...blocksRow.children].find(el => el.style.opacity === '0.4');
-            if (!dragging || dragging === box) return;
+            const draggingEl = [...blocksRow.children].find(el => el.style.opacity === '0.4');
+            if (!draggingEl || draggingEl === box) return;
             const rect = box.getBoundingClientRect();
-            reorderByCssOrder(dragging, box, e.clientX < rect.left + rect.width / 2);
+            reorderByCssOrder(draggingEl, box, e.clientX < rect.left + rect.width / 2);
         });
 
-        // ── Touch drag (iPad / móvil) ─────────────────────────────────────────
+        // ── Touch drag ────────────────────────────────────────────────────────
         let touchDragging = false;
-        let touchClone = null;
-        let touchOffsetX = 0;
-        let touchOffsetY = 0;
-        let touchStartTimer = null;
+        let touchClone    = null;
+        let touchOffX = 0, touchOffY = 0;
+        let touchStartX = 0, touchStartY = 0, touchStartLeft = 0, touchStartTop = 0;
+        let touchTimer = null;
 
         box.addEventListener('touchstart', e => {
-            if (!document.querySelector('#dockme-blocks-row')?.classList.contains('organizing')) return;
+            if (!blocksRow.classList.contains('organizing')) return;
             if (e.target.closest('.links-item-card') || e.target.closest('.stack-card-link')) return;
             const title = e.target.closest('.links-cat-box-title');
             if (!title || title.closest('.links-cat-box') !== box) return;
 
             const touch = e.touches[0];
-            const rect = box.getBoundingClientRect();
-            touchOffsetX = touch.clientX - rect.left;
-            touchOffsetY = touch.clientY - rect.top;
 
-            // Retrasar inicio para dar tiempo a stopPropagation de hijos
-            touchStartTimer = setTimeout(() => {
-                touchDragging = true;
-                touchClone = box.cloneNode(true);
-                touchClone.style.cssText = `
-                    position: fixed;
-                    pointer-events: none;
-                    opacity: 0.7;
-                    z-index: 9999;
-                    width: ${rect.width}px;
-                    left: ${touch.clientX - touchOffsetX}px;
-                    top: ${touch.clientY - touchOffsetY}px;
-                    margin: 0;
-                `;
-                document.body.appendChild(touchClone);
-                box.style.opacity = '0.3';
-            }, 50);
+            if (isAbs()) {
+                touchStartX    = touch.clientX;
+                touchStartY    = touch.clientY;
+                touchStartLeft = parseInt(box.style.left) || 0;
+                touchStartTop  = parseInt(box.style.top)  || 0;
+                touchTimer = setTimeout(() => {
+                    touchDragging = true;
+                    box.style.opacity = '0.85';
+                    box.style.zIndex  = '100';
+                }, 50);
+            } else {
+                const rect = box.getBoundingClientRect();
+                touchOffX = touch.clientX - rect.left;
+                touchOffY = touch.clientY - rect.top;
+                touchTimer = setTimeout(() => {
+                    touchDragging = true;
+                    touchClone = box.cloneNode(true);
+                    touchClone.style.cssText = `position:fixed;pointer-events:none;opacity:0.7;z-index:9999;width:${rect.width}px;left:${touch.clientX - touchOffX}px;top:${touch.clientY - touchOffY}px;margin:0;`;
+                    document.body.appendChild(touchClone);
+                    box.style.opacity = '0.3';
+                }, 50);
+            }
         }, { passive: true });
 
         box.addEventListener('touchmove', e => {
-            if (!touchDragging || !touchClone) return;
+            if (!touchDragging) return;
             e.preventDefault();
             const touch = e.touches[0];
-            touchClone.style.left = (touch.clientX - touchOffsetX) + 'px';
-            touchClone.style.top  = (touch.clientY - touchOffsetY) + 'px';
 
-            const els = [...blocksRow.children]
-                .filter(el => el !== box && el.dataset.blockKey)
-                .sort((a, b) => (parseInt(a.style.order) || 0) - (parseInt(b.style.order) || 0));
-
-            for (const target of els) {
-                const rect = target.getBoundingClientRect();
-                if (touch.clientX >= rect.left && touch.clientX <= rect.right &&
-                    touch.clientY >= rect.top  && touch.clientY <= rect.bottom) {
-                    reorderByCssOrder(box, target, touch.clientX < rect.left + rect.width / 2);
-                    break;
+            if (isAbs()) {
+                const rawX = touchStartLeft + touch.clientX - touchStartX;
+                const rawY = touchStartTop  + touch.clientY - touchStartY;
+                const { x, y } = snapToEdges(rawX, rawY, box, blocksRow);
+                box.style.left = x + 'px';
+                box.style.top  = y + 'px';
+                recalcLayout();
+            } else {
+                if (touchClone) {
+                    touchClone.style.left = (touch.clientX - touchOffX) + 'px';
+                    touchClone.style.top  = (touch.clientY - touchOffY) + 'px';
+                }
+                const els = [...blocksRow.children]
+                    .filter(el => el !== box && el.dataset.blockKey)
+                    .sort((a, b) => (parseInt(a.style.order) || 0) - (parseInt(b.style.order) || 0));
+                for (const target of els) {
+                    const rect = target.getBoundingClientRect();
+                    if (touch.clientX >= rect.left && touch.clientX <= rect.right &&
+                        touch.clientY >= rect.top  && touch.clientY <= rect.bottom) {
+                        reorderByCssOrder(box, target, touch.clientX < rect.left + rect.width / 2);
+                        break;
+                    }
                 }
             }
         }, { passive: false });
 
         const endTouch = () => {
-            clearTimeout(touchStartTimer);
+            clearTimeout(touchTimer);
             if (!touchDragging) return;
             touchDragging = false;
             if (touchClone) { touchClone.remove(); touchClone = null; }
             box.style.opacity = '';
-            saveBlockOrder();
+            box.style.zIndex  = '';
+            markLayoutDirty();
         };
-        box.addEventListener('touchend', endTouch, { passive: true });
-        box.addEventListener('touchcancel', endTouch, { passive: true });
+        box.addEventListener('touchend',   endTouch, { passive: true });
+        box.addEventListener('touchcancel',endTouch, { passive: true });
     }
 
 // ── Handle de resize custom (esquina superior derecha) ────────────────────
-    function setupResizeHandle(box, onResizeEnd) {
+    function setupResizeHandle(box, onResizeEnd, snapFn) {
         const handle = document.createElement('div');
         handle.className = 'dockme-resize-handle';
         box.appendChild(handle);
@@ -1481,34 +2107,37 @@ let layoutDirty = false;
 
         const onMove = (clientX) => {
             if (!resizing) return;
-            const diff = clientX - startX;
-            const newW = Math.max(96, startW + diff);
+            const raw  = Math.max(CARD_SIZE, startW + (clientX - startX));
+            const newW = snapFn ? snapFn(raw) : raw;
             box.style.width = newW + 'px';
         };
 
         const onEnd = () => {
             if (!resizing) return;
             resizing = false;
+            document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = '');
             document.removeEventListener('mousemove', mouseMove);
-            document.removeEventListener('mouseup', mouseUp);
+            document.removeEventListener('mouseup',   mouseUp);
             document.removeEventListener('touchmove', touchMove);
-            document.removeEventListener('touchend', touchEnd);
+            document.removeEventListener('touchend',  touchEnd);
+            recalcLayout();
             if (onResizeEnd) onResizeEnd(box.offsetWidth);
         };
 
         const mouseMove = e => onMove(e.clientX);
-        const mouseUp = () => onEnd();
+        const mouseUp   = () => onEnd();
         const touchMove = e => { e.preventDefault(); e.stopPropagation(); onMove(e.touches[0].clientX); };
-        const touchEnd = () => onEnd();
+        const touchEnd  = () => onEnd();
 
         const startResize = (clientX) => {
             resizing = true;
             startX = clientX;
             startW = box.offsetWidth;
+            document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = 'none');
             document.addEventListener('mousemove', mouseMove);
-            document.addEventListener('mouseup', mouseUp);
+            document.addEventListener('mouseup',   mouseUp);
             document.addEventListener('touchmove', touchMove, { passive: false });
-            document.addEventListener('touchend', touchEnd);
+            document.addEventListener('touchend',  touchEnd);
         };
 
         handle.addEventListener('mousedown', e => {
@@ -1532,19 +2161,38 @@ let layoutDirty = false;
 
         const onMove = (clientX, clientY) => {
             if (!resizing) return;
-            const newW = Math.max(200, startW + (clientX - startX));
-            const newH = Math.max(150, startH + (clientY - startY));
-            box.style.width  = newW + 'px';
-            box.style.height = newH + 'px';
+            const row   = box.closest('#dockme-blocks-row');
+            const abs   = row?.classList.contains('absolute-layout');
+            const isFav = box.dataset.blockKey === 'type:favoritos';
+            const rawW  = Math.max(WIDGET_SNAP * 2, startW + (clientX - startX));
+            const rawH  = Math.max(WIDGET_SNAP * 2, startH + (clientY - startY));
+            const snapW = (abs && isFav) ? snapToGrid(rawW, GRID_UNIT) : snapToGrid(rawW, WIDGET_SNAP);
+            let snapH;
+            if (abs && isFav) {
+                // Medir el título para que las tarjetas encajen sin partirse
+                const titleEl = box.querySelector('.links-cat-box-title');
+                const titleH  = titleEl ? titleEl.offsetHeight + parseInt(getComputedStyle(titleEl).marginBottom || 0) : 0;
+                const padding = 24; // 12px top + 12px bottom del links-cat-box
+                const contentH = Math.max(GRID_UNIT, snapToGrid(rawH - titleH - padding, GRID_UNIT));
+                snapH = contentH + titleH + padding;
+            } else {
+                snapH = snapToGrid(rawH, WIDGET_SNAP);
+            }
+            box.style.width  = snapW + 'px';
+            box.style.height = snapH + 'px';
+            recalcLayout();
+            if (isFav) recalcLayout();
         };
 
         const onEnd = () => {
             if (!resizing) return;
             resizing = false;
+            document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = '');
             document.removeEventListener('mousemove', mouseMove);
-            document.removeEventListener('mouseup', mouseUp);
+            document.removeEventListener('mouseup',   mouseUp);
             document.removeEventListener('touchmove', touchMove);
-            document.removeEventListener('touchend', touchEnd);
+            document.removeEventListener('touchend',  touchEnd);
+            recalcLayout();
             if (onResizeEnd) onResizeEnd();
         };
 
@@ -1555,25 +2203,126 @@ let layoutDirty = false;
 
         const startResize = (clientX, clientY) => {
             resizing = true;
-            startX = clientX;
-            startY = clientY;
-            startW = box.offsetWidth;
-            startH = box.offsetHeight;
+            startX = clientX; startY = clientY;
+            startW = box.offsetWidth; startH = box.offsetHeight;
+            document.querySelectorAll('iframe').forEach(f => f.style.pointerEvents = 'none');
             document.addEventListener('mousemove', mouseMove);
-            document.addEventListener('mouseup', mouseUp);
+            document.addEventListener('mouseup',   mouseUp);
             document.addEventListener('touchmove', touchMove, { passive: false });
-            document.addEventListener('touchend', touchEnd);
+            document.addEventListener('touchend',  touchEnd);
         };
 
-        handle.addEventListener('mousedown', e => {
-            e.preventDefault(); e.stopPropagation();
-            startResize(e.clientX, e.clientY);
-        });
-        handle.addEventListener('touchstart', e => {
-            e.stopPropagation();
-            startResize(e.touches[0].clientX, e.touches[0].clientY);
-        }, { passive: true });
+        handle.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); startResize(e.clientX, e.clientY); });
+        handle.addEventListener('touchstart', e => { e.stopPropagation(); startResize(e.touches[0].clientX, e.touches[0].clientY); }, { passive: true });
     }
+    // ── Botón de visibilidad (👁) para ocultar/mostrar bloques en modo organizar ─
+    function setupVisibilityBtn(box, blocksRow) {
+        const btn = document.createElement('button');
+        btn.className = 'dockme-visibility-btn';
+        btn.title = 'Ocultar bloque en este perfil';
+        btn.textContent = '👁';
+        box.appendChild(btn);
+
+        const getEntry = () => {
+            const key = box.dataset.blockKey;
+            return linksConfig.find(b => {
+                const k = b.iframeId ? `iframe:${b.iframeId}`
+                        : b.type     ? `type:${b.type}`
+                        :              `category:${b.category}`;
+                return k === key;
+            });
+        };
+
+        const applyHiddenStyle = (hidden) => {
+            box.style.opacity  = hidden ? '0.45' : '';
+            box.style.outline  = hidden ? '2px dashed #4f84c8' : '';
+            btn.textContent    = hidden ? '👁' : '👁';
+            btn.title          = hidden ? 'Mostrar bloque' : 'Ocultar bloque en este perfil';
+            btn.style.opacity  = hidden ? '1' : ''; // siempre visible si oculto
+            // Bloquear drag y resize en bloques ocultos
+            box.dataset.dmHidden = hidden ? '1' : '';
+        };
+
+        // Aplicar estado inicial
+        const entry = getEntry();
+        if (entry?.hidden) applyHiddenStyle(true);
+
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            e.preventDefault();
+            const entry = getEntry();
+            if (!entry) return;
+            const abs = blocksRow.classList.contains('absolute-layout');
+            // Estado real: leer del DOM (fuente de verdad), no solo de entry.hidden
+            const currentlyHidden = box.dataset.dmHidden === '1';
+
+            if (!currentlyHidden) {
+                // ── OCULTAR ───────────────────────────────────────────────────
+                entry.hidden = true;
+
+                if (abs) {
+                    // Calcular y-offset de la zona de ocultos (debajo del área 600px)
+                    const visibles = [...blocksRow.children].filter(el =>
+                        el.dataset.blockKey && !el.dataset.dmHidden
+                    );
+                    let maxBottom = 0;
+                    visibles.forEach(el => {
+                        const t = parseInt(el.style.top) || 0;
+                        maxBottom = Math.max(maxBottom, t + el.offsetHeight);
+                    });
+                    // Apilar ocultos justo después de los visibles, sin hueco extra
+                    const ocultos = [...blocksRow.children].filter(el =>
+                        el.dataset.blockKey && el.dataset.dmHidden && el !== box
+                    );
+                    let yOcultos = maxBottom + CARD_GAP;
+                    ocultos.forEach(el => {
+                        const t = parseInt(el.style.top) || 0;
+                        yOcultos = Math.max(yOcultos, t + el.offsetHeight + CARD_GAP);
+                    });
+                    entry.x = 0; entry.y = yOcultos;
+                    box.style.left = '0px';
+                    box.style.top  = yOcultos + 'px';
+                } else {
+                    entry.order = 9999 + (entry.order ?? 0);
+                    box.style.order = '9999';
+                }
+
+                applyHiddenStyle(true);
+                recalcLayout();
+
+            } else {
+                // ── MOSTRAR ───────────────────────────────────────────────────
+                delete entry.hidden;
+
+                if (abs) {
+                    // Colocar detrás del último visible
+                    const visibles = [...blocksRow.children].filter(el =>
+                        el.dataset.blockKey && !el.dataset.dmHidden
+                    );
+                    let maxBottom = 0;
+                    visibles.forEach(el => {
+                        const t = parseInt(el.style.top) || 0;
+                        maxBottom = Math.max(maxBottom, t + el.offsetHeight);
+                    });
+                    entry.x = 0; entry.y = maxBottom + CARD_GAP;
+                    box.style.left = '0px';
+                    box.style.top  = entry.y + 'px';
+                } else {
+                    const maxOrder = Math.max(0, ...linksConfig
+                        .filter(b => !b.hidden)
+                        .map(b => b.order ?? 0));
+                    entry.order = maxOrder + 1;
+                    box.style.order = entry.order;
+                }
+
+                applyHiddenStyle(false);
+                recalcLayout();
+            }
+
+            markLayoutDirty();
+        });
+    }
+
     const IframeManager = {
         // Almacena los intervalos activos por iframeId
         _intervals: {},
@@ -1585,6 +2334,33 @@ let layoutDirty = false;
             }
         },
 
+        stopAll() {
+            Object.keys(this._intervals).forEach(id => this.clearInterval(id));
+        },
+
+        startAll() {
+            linksConfig.filter(b => b.iframeId && parseInt(b.autoRefresh) > 0).forEach(b => {
+                const box = document.querySelector(`[data-block-key="iframe:${b.iframeId}"]`);
+                if (!box) return;
+                const isImage = /\.(jpe?g|png|gif|webp|svg|bmp)(\?.*)?$/i.test(b.url || '');
+                if (isImage) {
+                    const img = box.querySelector('img');
+                    if (img) {
+                        img.src = b.url.split('?')[0] + '?t=' + Date.now();
+                        this.setAutoRefresh(b.iframeId, b.autoRefresh, null, () => {
+                            img.src = b.url.split('?')[0] + '?t=' + Date.now();
+                        });
+                    }
+                } else {
+                    const iframeEl = box.querySelector('iframe');
+                    if (iframeEl) {
+                        iframeEl.src = iframeEl.src;
+                        this.setAutoRefresh(b.iframeId, b.autoRefresh, iframeEl, null);
+                    }
+                }
+            });
+        },
+
         refreshBox(widget) {
             const blocksRow = document.querySelector('#dockme-blocks-row');
             if (!blocksRow) return;
@@ -1594,12 +2370,17 @@ let layoutDirty = false;
             widget.width  = existing.offsetWidth  || widget.width;
             widget.height = existing.offsetHeight || widget.height;
             const order   = existing.style.order;
+            const savedLeft = existing.style.left;
+            const savedTop  = existing.style.top;
             this.clearInterval(widget.iframeId);
             existing.remove();
             this.renderBox(widget, blocksRow);
-            // Restaurar order
+            // Restaurar posición
             const newEl = blocksRow.querySelector(`[data-block-key="iframe:${widget.iframeId}"]`);
-            if (newEl && order) newEl.style.order = order;
+            if (newEl) {
+                if (savedLeft) { newEl.style.left = savedLeft; newEl.style.top = savedTop; }
+                else if (order) newEl.style.order = order;
+            }
         },
 
         setAutoRefresh(iframeId, seconds, iframeEl, callback) {
@@ -1614,12 +2395,16 @@ let layoutDirty = false;
         renderBox(widget, blocksRow) {
             const blockKey = `iframe:${widget.iframeId}`;
 
-            // Si ya está en el DOM, solo actualizamos dimensiones y order sin recargar
+            // Si ya está en el DOM, solo actualizamos dimensiones y posición sin recargar
             const existing = blocksRow.querySelector(`[data-block-key="${blockKey}"]`);
             if (existing) {
                 if (widget.width)  existing.style.width  = widget.width  + 'px';
                 if (widget.height) existing.style.height = widget.height + 'px';
-                if (widget.order != null) existing.style.order = widget.order;
+                if (isAbsoluteLayout()) {
+                    if (widget.x !== undefined) { existing.style.left = widget.x + 'px'; existing.style.top = (widget.y ?? 0) + 'px'; }
+                } else {
+                    if (widget.order != null) existing.style.order = widget.order;
+                }
                 return;
             }
 
@@ -1628,6 +2413,10 @@ let layoutDirty = false;
             box.dataset.blockKey = blockKey;
             if (widget.width)  box.style.width  = widget.width  + 'px';
             if (widget.height) box.style.height = widget.height + 'px';
+            if (widget.x !== undefined) {
+                box.style.left = widget.x + 'px';
+                box.style.top  = (widget.y ?? 0) + 'px';
+            }
             if (widget.enabled === false) box.style.display = 'none';
 
             // ── Título ────────────────────────────────────────────────────────
@@ -1726,8 +2515,9 @@ let layoutDirty = false;
             }
 
             // ── Resize bidireccional (ancho + alto) y drag ────────────────────
-            setupResizeHandleBoth(box, () => saveBlockOrder());
+            setupResizeHandleBoth(box, () => markLayoutDirty());
             setupBlockDrag(box, blocksRow);
+            setupVisibilityBtn(box, blocksRow);
 
             blocksRow.appendChild(box);
         }
@@ -1739,10 +2529,15 @@ let layoutDirty = false;
         catBox.className = 'links-cat-box';
         catBox.dataset.blockKey = `category:${cat.category}`;
         if (cat.width) catBox.style.width = cat.width + 'px';
+        if (cat.x !== undefined) {
+            catBox.style.left = cat.x + 'px';
+            catBox.style.top  = cat.y + 'px';
+        }
 
         setupResizeHandle(catBox, (newWidth) => {
-            saveBlockOrder();
-        });
+            catBox.style.width = newWidth + 'px'; // ya viene snapeado del onMove
+            markLayoutDirty();
+        }, snapCategoryWidth);
 
         const catTitle = document.createElement('div');
         catTitle.className = 'links-cat-box-title';
@@ -1841,6 +2636,7 @@ let layoutDirty = false;
 
         blocksRow.appendChild(catBox);
         setupBlockDrag(catBox, blocksRow);
+        setupVisibilityBtn(catBox, blocksRow);
     }
 
     // ==================== EVENT HANDLERS ====================
@@ -2796,7 +3592,7 @@ let layoutDirty = false;
             document.removeEventListener('mouseup', mouseUp);
             document.removeEventListener('touchmove', touchMove);
             document.removeEventListener('touchend', touchEnd);
-            saveBlockOrder();
+            markLayoutDirty();
         };
 
         const mouseMove = e => onMove(e.clientX);
@@ -4728,23 +5524,21 @@ let layoutDirty = false;
 
     function activateLogsMode() {
         document.body.classList.add('dockme-logs-mode');
-        // Cerrar modo edición si está activo
         if (typeof dockmeEditMode !== 'undefined' && dockmeEditMode) {
             dockmeEditMode = false;
             if (typeof updateEditModeToggleUI === 'function') updateEditModeToggleUI();
         }
-        // Cerrar modo organizar si está activo
         const row = document.querySelector('#dockme-blocks-row');
         if (row?.classList.contains('organizing')) {
             row.classList.remove('organizing');
+            recalcLayout();
             document.body.classList.remove('dockme-organizing');
             row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => { el.draggable = false; });
             document.querySelector('#dockme-profile-bar')?.remove();
         }
-        const blocksRow = document.querySelector('#dockme-blocks-row');
-        const dashboard = document.querySelector('#dockme-dashboard');
-        if (blocksRow) blocksRow.style.display = 'none';
+        if (row) row.style.display = 'none';
         MetricsManager.stop();
+        const dashboard = document.querySelector('#dockme-dashboard');
         if (!document.querySelector('#dockme-logs-panel')) {
             const panel = document.createElement('div');
             panel.id = 'dockme-logs-panel';
@@ -4776,7 +5570,13 @@ let layoutDirty = false;
         const panel = document.querySelector('#dockme-logs-panel');
         if (panel) panel.style.display = 'none';
         const blocksRow = document.querySelector('#dockme-blocks-row');
-        if (blocksRow) blocksRow.style.display = '';
+        if (blocksRow) {
+            blocksRow.style.display = '';
+            // En modo flex la altura es automática; en absoluto se recalcula tras loadAndDisplay
+            if (!blocksRow.classList.contains('absolute-layout')) {
+                blocksRow.style.height = '';
+            }
+        }
         MetricsManager.start();
         Promise.all([loadStacksConfig(), loadLinksConfig()]).then(() => DataLoader.loadAndDisplay());
         // Focus en el buscador al volver al dashboard
@@ -4811,6 +5611,7 @@ let layoutDirty = false;
             const row = document.querySelector('#dockme-blocks-row');
             if (row?.classList.contains('organizing')) {
                 row.classList.remove('organizing');
+                recalcLayout();
                 document.body.classList.remove('dockme-organizing');
                 organizeIcon.classList.remove('active');
                 row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => { el.draggable = false; });
@@ -4843,6 +5644,7 @@ let layoutDirty = false;
                     const row = document.querySelector('#dockme-blocks-row');
                     if (!row) return;
                     row.classList.add('organizing');
+                    recalcLayout();
                     document.body.classList.add('dockme-organizing');
                     organizeIcon.classList.add('active');
                     row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => { el.draggable = true; });
@@ -4857,6 +5659,19 @@ let layoutDirty = false;
                 const isOrganizing = row.classList.toggle('organizing');
                 document.body.classList.toggle('dockme-organizing', isOrganizing);
                 organizeIcon.classList.toggle('active', isOrganizing);
+                recalcLayout();
+                // Mostrar/ocultar bloques hidden según modo
+                row.querySelectorAll('[data-dm-hidden="1"]').forEach(el => {
+                    if (isOrganizing) {
+                        el.style.display = '';
+                        el.style.opacity = '0.45';
+                        el.style.outline = '2px dashed #4f84c8';
+                    } else {
+                        el.style.display  = 'none';
+                        el.style.opacity  = '';
+                        el.style.outline  = '';
+                    }
+                });
                 row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
                     el.draggable = isOrganizing;
                 });
@@ -4866,11 +5681,15 @@ let layoutDirty = false;
                 } else {
                     document.querySelector('#dockme-profile-bar')?.remove();
                     if (layoutDirty) {
-                        // Recargar perfil guardado descartando cambios
                         layoutDirty = false;
-                        const blocks = LayoutManager.getActiveBlocks();
-                        LayoutManager.applyToLinksConfig(blocks);
-                        DataLoader.loadAndDisplay();
+                        const profileExists = LayoutManager.layouts[currentLayoutProfile];
+                        if (!profileExists && previousProfile && LayoutManager.layouts[previousProfile]) {
+                            LayoutManager.switchTo(previousProfile).then(() => DataLoader.loadAndDisplay());
+                        } else {
+                            const blocks = LayoutManager.getActiveBlocks();
+                            LayoutManager.applyToLinksConfig(blocks);
+                            DataLoader.loadAndDisplay();
+                        }
                     }
                 }
             }
@@ -6008,6 +6827,10 @@ let layoutDirty = false;
                 const metricsBlock = linksConfig.find(c => c.type === 'metrics');
                 if (metricsBlock?.width) metricsBox.style.width = metricsBlock.width + 'px';
                 metricsBox.style.minHeight = (metricsBlock?.height ?? 282) + 'px';
+                if (metricsBlock?.x !== undefined) {
+                    metricsBox.style.left = metricsBlock.x + 'px';
+                    metricsBox.style.top  = metricsBlock.y + 'px';
+                }
 
                 setupResizeHandle(metricsBox, (newWidth) => {
                     let block = linksConfig.find(c => c.type === 'metrics');
@@ -6019,11 +6842,12 @@ let layoutDirty = false;
                         block.width = newWidth;
                         block.height = newHeight;
                     }
-                    saveBlockOrder();
-                });
+                    markLayoutDirty();
+                }, snapMetricWidth);
 
                 blocksRow.appendChild(metricsBox);
                 setupBlockDrag(metricsBox, blocksRow);
+                // Sin botón de visibilidad — métricas es un bloque básico
             }
 
             this.container = document.createElement('div');
@@ -6174,6 +6998,8 @@ let layoutDirty = false;
                 () => this.fetchAndUpdate(),
                 2000
             );
+            // Reanudar widgets con autoRefresh y refrescar inmediatamente
+            IframeManager.startAll();
         },
 
         stop() {
@@ -6181,6 +7007,8 @@ let layoutDirty = false;
                 clearInterval(this.intervalId);
                 this.intervalId = null;
             }
+            // Pausar todos los timers de widgets
+            IframeManager.stopAll();
         }
     };
     // ==================== ALERTA TEMPORAL EN MÉTRICAS ====================
@@ -7139,6 +7967,10 @@ function renderWidgetList(container, saveWidgets, rerender, isImageUrl, fitOptio
             el.querySelectorAll('.widget-refresh-chip').forEach(c => {
                 c.classList.toggle('active', parseInt(c.dataset.val) === val);
             });
+            // Reiniciar intervalo inmediatamente sin esperar F5
+            const box = document.querySelector(`[data-block-key="iframe:${widget.iframeId}"]`);
+            const iframeEl = box?.querySelector('iframe');
+            IframeManager.setAutoRefresh(widget.iframeId, val, iframeEl);
             saveWidgets();
         };
         refreshInput.addEventListener('change', () => setRefresh(refreshInput.value));

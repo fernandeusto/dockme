@@ -484,9 +484,9 @@ header {
     padding: 15px;
     cursor: default;
     transition: all 0.2s;
-    min-width: 435px;
-    max-width: 435px;
-    height: 210px;
+    min-width: 430px;
+    max-width: 430px;
+    height: 207px;
     flex: 1;
 }
 
@@ -690,13 +690,23 @@ header {
 
 /* Grid de actualizaciones (tarjetas mas anchas) */
 .dashboard-grid-updates {
-    grid-template-columns: repeat(auto-fit, minmax(min(435px, 100%), 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr));
     margin-bottom: 15px;
 }
 
 /* Grid de recientes (tarjetas mas compactas) */
 .dashboard-grid-recientes {
     grid-template-columns: repeat(auto-fill, minmax(285px, 1fr));
+    align-content: start;
+}
+
+/* En modo absoluto, quitamos el margin-right:-15px para usar fórmula limpia */
+#dockme-blocks-row.absolute-layout .links-items-grid {
+    margin-right: 0;
+}
+#dockme-blocks-row.absolute-layout #favoritos-row {
+    align-content: start !important; /* espacio extra va siempre abajo */
+    align-items: start  !important; /* tarjetas no se estiran verticalmente */
 }
 
 /* Móvil: tarjetas fluidas que ocupan todo el ancho */
@@ -1556,6 +1566,33 @@ button.btn.btn-danger:hover {
     align-items: stretch;
 }
 
+/* ── Modo absoluto v3.3 ──────────────────────────────────────────────────── */
+#dockme-blocks-row.absolute-layout {
+    display: block;
+    position: relative;
+    /* La altura se calcula dinámicamente por JS (recalcContainerHeight) */
+}
+
+#dockme-blocks-row.absolute-layout > .links-cat-box {
+    position: absolute;
+    margin: 0;        /* elimina el margin-right:-15px del flex */
+    max-width: none;  /* en absoluto el ancho lo fija el usuario */
+    box-sizing: border-box;
+}
+
+/* Favoritos en modo absoluto: scroll interno si el contenido no cabe */
+#dockme-blocks-row.absolute-layout > #favoritos-wrapper {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+#dockme-blocks-row.absolute-layout > #favoritos-wrapper #favoritos-row {
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+
 #dockme-blocks-row > .links-cat-box {
     background: transparent;
     border-color: transparent;
@@ -1599,6 +1636,7 @@ button.btn.btn-danger:hover {
 #metrics-box .links-cat-box{
     min-width: 300px;
     height: 280px;
+    overflow: hidden;
 }
 
 /* ── Barra de perfiles en modo organizar ─────────────────────────────────── */
@@ -1612,6 +1650,43 @@ button.btn.btn-danger:hover {
     border: 1px solid #2a3441;
     border-radius: 8px;
     justify-content: flex-end;
+}
+
+.profile-type-select {
+    position: relative;
+}
+
+.profile-type-select .profile-bar-dropdown-menu {
+    min-width: 200px;
+}
+
+/* ── Botón de visibilidad de bloque ─────────────────────────────────────── */
+.dockme-visibility-btn {
+    display: none;
+    position: absolute;
+    top: 10px;
+    right: 20px;
+    left: auto;
+    z-index: 10;
+    background: #1c2431;
+    border: 1px solid #4f84c8;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 0.82em;
+    cursor: pointer;
+    line-height: 1.4;
+    color: #ccc;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+
+/* Visible al hover del bloque en modo organizar */
+#dockme-blocks-row.organizing .links-cat-box:hover .dockme-visibility-btn {
+    display: block;
+}
+
+/* Siempre visible en bloques ocultos (para poder restaurarlos) */
+#dockme-blocks-row.organizing .links-cat-box[data-dm-hidden="1"] .dockme-visibility-btn {
+    display: block;
 }
 
 .profile-bar-name {
@@ -2668,6 +2743,18 @@ body.dockme-edit-mode #dm-col2 { display: block !important; }
 /* Eliminar margin-top heredado de Bootstrap en dashboard */
 #dockme-dashboard.mt-4 { margin-top: 0 !important; }
 
+/* Scroll horizontal cuando el contenido absoluto no cabe en la ventana */
+#dockme-dashboard { overflow-x: auto; }
+
+body.dockme-organizing #dockme-profile-bar {
+    position: sticky;
+    top: 0;
+    z-index: 1050;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    margin-bottom: 12px;
+    border-radius: 8px;
+}
+
 /* ===== Flip icon en lista de stacks ===== */
 .dm-icon-flip {
     perspective: 300px;
@@ -2832,12 +2919,6 @@ body.dockme-organizing .dockme-resize-handle-corner {
 }
 
 /* ── Profile bar sticky en modo layout ───────────────────────────────────── */
-body.dockme-organizing #dockme-profile-bar {
-    position: sticky;
-    top: 0;
-    z-index: 1050;
-}
-
 /* ── Espacio extra al final en modo layout para redimensionar con comodidad ── */
 body.dockme-organizing #dockme-blocks-row::after {
     content: '';

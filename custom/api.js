@@ -1100,7 +1100,7 @@ app.get('/api/get-layouts', (req, res) => {
 // ============================
 app.post('/api/set-layout', (req, res) => {
   try {
-    const { profileName, deviceId, blocks, sidebarWidth } = req.body;
+    const { profileName, deviceId, blocks, sidebarWidth, minWidth } = req.body;
     if (!profileName || !deviceId || !Array.isArray(blocks)) {
       return res.status(400).json({ error: 'Faltan parámetros' });
     }
@@ -1110,6 +1110,7 @@ app.post('/api/set-layout', (req, res) => {
     }
     const layout = { name: profileName, deviceId, blocks };
     if (sidebarWidth != null) layout.sidebarWidth = sidebarWidth;
+    if (minWidth != null)     layout.minWidth      = minWidth;
     layouts[profileName] = layout;
     writeLayoutsFile(layouts);
     res.json({ success: true });
