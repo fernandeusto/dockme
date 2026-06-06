@@ -1649,7 +1649,16 @@ button.btn.btn-danger:hover {
     background: #1c2431;
     border: 1px solid #2a3441;
     border-radius: 8px;
-    justify-content: flex-end;
+    justify-content: space-between;
+    position: relative;
+    z-index: 700;
+}
+
+.profile-bar-left,
+.profile-bar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .profile-type-select {
@@ -1732,6 +1741,20 @@ button.btn.btn-danger:hover {
     z-index: 500;
     padding: 4px 0;
     box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+.header-icons {
+    position: relative;
+    z-index: 900;
+}
+
+.organize-icon.profile-bar-dropdown .profile-bar-dropdown-menu {
+    z-index: 1200;
+}
+
+.header-profiles-dropdown {
+    position: absolute;
+    z-index: 3000;
 }
 
 .profile-bar-dropdown-item {

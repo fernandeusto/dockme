@@ -70,6 +70,38 @@
     let linksConfig = [];
     let currentLayoutProfile = 'default';
     let currentDeviceId = localStorage.getItem('dockme-device-id') || 'default';
+    const LAYOUT_SELECTION_KEY = 'dockme-layout-selection';
+
+    const LayoutSelection = {
+        get() {
+            return localStorage.getItem(LAYOUT_SELECTION_KEY) || '';
+        },
+
+        setAuto() {
+            localStorage.setItem(LAYOUT_SELECTION_KEY, 'auto');
+        },
+
+        setProfile(name) {
+            if (!name || name === 'default') {
+                localStorage.removeItem(LAYOUT_SELECTION_KEY);
+                return;
+            }
+            localStorage.setItem(LAYOUT_SELECTION_KEY, `profile:${name}`);
+        },
+
+        clear() {
+            localStorage.removeItem(LAYOUT_SELECTION_KEY);
+        },
+
+        isAuto() {
+            return this.get() === 'auto';
+        },
+
+        profileName() {
+            const value = this.get();
+            return value.startsWith('profile:') ? value.slice('profile:'.length) : null;
+        }
+    };
 
     // ==================== CONSTANTES v3.3 ====================
     const GRID_UNIT     = 113;  // px — unidad de snap del canvas (CARD_SIZE + CARD_GAP)
@@ -179,22 +211,50 @@
             return candidates.length ? candidates[0][0] : null;
         },
 
+        getAutoProfiles() {
+            return Object.entries(this.layouts)
+                .filter(([name, p]) => name !== 'default' && p.minWidth !== undefined);
+        },
+
+        isAutoSelectionAvailable() {
+            return this.getAutoProfiles().length >= 2;
+        },
+
         async load() {
             const r = await fetch('/api/get-layouts');
             const data = await r.json();
             this.layouts = data.layouts || {};
 
-            // Solo auto-seleccionar si no hay override manual activo
-            if (!manualProfileOverride) {
+            const selection = LayoutSelection.get();
+            const selectedProfile = LayoutSelection.profileName();
+            const autoAvailable = this.isAutoSelectionAvailable();
+
+            if (selection === 'auto' && autoAvailable) {
                 const autoProfile = this.getAutoProfile(window.innerWidth);
                 if (autoProfile) {
                     currentLayoutProfile = autoProfile;
                     currentDeviceId = this.layouts[autoProfile]?.deviceId || currentDeviceId;
-                } else if (currentLayoutProfile === 'default') {
-                    // Fallback: buscar por deviceId solo si no hay perfil activo
-                    const match = Object.entries(this.layouts).find(([, v]) => v.deviceId === currentDeviceId);
-                    currentLayoutProfile = match ? match[0] : 'default';
                 }
+            } else if (selectedProfile && this.layouts[selectedProfile]) {
+                currentLayoutProfile = selectedProfile;
+                currentDeviceId = this.layouts[selectedProfile]?.deviceId || currentDeviceId;
+            } else if (selection === 'auto' && !autoAvailable) {
+                LayoutSelection.clear();
+            } else if (selectedProfile && !this.layouts[selectedProfile]) {
+                LayoutSelection.clear();
+            }
+
+            if (!LayoutSelection.get() && autoAvailable) {
+                LayoutSelection.setAuto();
+                const autoProfile = this.getAutoProfile(window.innerWidth);
+                if (autoProfile) {
+                    currentLayoutProfile = autoProfile;
+                    currentDeviceId = this.layouts[autoProfile]?.deviceId || currentDeviceId;
+                }
+            } else if (currentLayoutProfile === 'default') {
+                // Fallback: buscar por deviceId solo si no hay perfil activo
+                const match = Object.entries(this.layouts).find(([, v]) => v.deviceId === currentDeviceId);
+                currentLayoutProfile = match ? match[0] : 'default';
             }
 
             // Aplicar ancho del sidebar inmediatamente
@@ -456,6 +516,7 @@
         async deleteProfile(name) {
             // Buscar el deviceId del perfil antes de borrarlo
             const profileToDelete = this.layouts[name];
+            const deletedSelectedProfile = LayoutSelection.profileName() === name;
             await fetch(`/api/delete-layout/${encodeURIComponent(name)}`, { method: 'DELETE' });
             // Limpiar localStorage del dispositivo de ese perfil
             if (profileToDelete?.deviceId) {
@@ -469,6 +530,10 @@
             const r = await fetch('/api/get-layouts');
             const data = await r.json();
             this.layouts = data.layouts || {};
+            if (deletedSelectedProfile) {
+                if (this.isAutoSelectionAvailable()) LayoutSelection.setAuto();
+                else LayoutSelection.clear();
+            }
             // Mantener modo organizar activo
             const row = document.querySelector('#dockme-blocks-row');
             if (row) { row.classList.add('organizing'); recalcLayout(); }
@@ -1499,7 +1564,7 @@ async switchTo(profileName) {
     // ── Barra de perfiles en modo organizar ───────────────────────────────────
 let layoutDirty = false;
 let previousProfile = null; // perfil anterior al crear nuevo, para restaurar si se cancela
-let manualProfileOverride = false; // true cuando el usuario eligió perfil manualmente — el resize lo resetea
+let previousLayoutSelection = null; // selección anterior al crear nuevo, para restaurar si se cancela
 
 // TODO v3.4 — Eliminar deviceId y limpiar localStorage:
 // Con minWidth como criterio de selección, deviceId ha quedado como fallback legacy.
@@ -1515,8 +1580,7 @@ window.addEventListener('resize', () => {
         // No cambiar si estamos en modo organizar
         const row = document.querySelector('#dockme-blocks-row');
         if (row?.classList.contains('organizing')) return;
-        // Al redimensionar, el override manual se cancela
-        manualProfileOverride = false;
+        if (!LayoutSelection.isAuto() || !LayoutManager.isAutoSelectionAvailable()) return;
         const best = LayoutManager.getAutoProfile(window.innerWidth);
         if (best && best !== currentLayoutProfile) {
             // Asegurar que salimos del modo organizar antes de cambiar
@@ -1535,6 +1599,145 @@ window.addEventListener('resize', () => {
         if (bar) renderProfileBar();
     }
 
+    function setOrganizingMode(isOrganizing, { renderBar = true, resetDirty = false } = {}) {
+        const row = document.querySelector('#dockme-blocks-row');
+        if (!row) return;
+
+        row.classList.toggle('organizing', isOrganizing);
+        document.body.classList.toggle('dockme-organizing', isOrganizing);
+        document.querySelector('.organize-icon')?.classList.toggle('active', isOrganizing);
+        recalcLayout();
+
+        row.querySelectorAll('[data-dm-hidden="1"]').forEach(el => {
+            if (isOrganizing) {
+                el.style.display = '';
+                el.style.opacity = '0.45';
+                el.style.outline = '2px dashed #4f84c8';
+            } else {
+                el.style.display  = 'none';
+                el.style.opacity  = '';
+                el.style.outline  = '';
+            }
+        });
+
+        row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
+            el.draggable = isOrganizing;
+        });
+
+        if (isOrganizing) {
+            if (resetDirty) layoutDirty = false;
+            if (renderBar) renderProfileBar();
+            return;
+        }
+
+        document.querySelector('#dockme-profile-bar')?.remove();
+        if (!layoutDirty) return;
+
+        layoutDirty = false;
+        const profileExists = LayoutManager.layouts[currentLayoutProfile];
+        if (!profileExists && previousProfile && LayoutManager.layouts[previousProfile]) {
+            if (previousLayoutSelection) localStorage.setItem(LAYOUT_SELECTION_KEY, previousLayoutSelection);
+            else LayoutSelection.clear();
+            LayoutManager.switchTo(previousProfile).then(() => DataLoader.loadAndDisplay());
+        } else {
+            const blocks = LayoutManager.getActiveBlocks();
+            LayoutManager.applyToLinksConfig(blocks);
+            DataLoader.loadAndDisplay();
+        }
+    }
+
+    async function editLayoutProfile(profileName) {
+        if (document.body.classList.contains('dockme-logs-mode')) {
+            deactivateLogsMode();
+        }
+        if (dockmeEditMode) {
+            dockmeEditMode = false;
+            updateEditModeToggleUI();
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        if (profileName && profileName !== currentLayoutProfile) {
+            await LayoutManager.switchTo(profileName);
+        }
+        setOrganizingMode(true, { resetDirty: true });
+    }
+
+    function createProfilesDropdown() {
+        const dropdown = document.createElement('div');
+        dropdown.className = 'profile-bar-dropdown-menu';
+        dropdown.style.display = 'none';
+
+        const appendAutoItem = () => {
+            const item = document.createElement('div');
+            item.className = 'profile-bar-dropdown-item' + (LayoutSelection.isAuto() ? ' active' : '');
+            item.style.cursor = 'pointer';
+
+            const typeIcon = document.createElement('span');
+            typeIcon.textContent = 'A';
+            typeIcon.title = 'Selección automática';
+            typeIcon.style.cssText = 'margin-right:6px;opacity:0.6;font-size:1em;flex-shrink:0;font-weight:700;';
+
+            const itemName = document.createElement('span');
+            itemName.textContent = LayoutSelection.isAuto() && currentLayoutProfile !== 'default'
+                ? `Auto · ${currentLayoutProfile}`
+                : 'Auto';
+            itemName.style.flex = '1';
+
+            item.addEventListener('click', async () => {
+                dropdown.style.display = 'none';
+                LayoutSelection.setAuto();
+                const best = LayoutManager.getAutoProfile(window.innerWidth);
+                if (best) await LayoutManager.switchTo(best);
+            });
+
+            item.appendChild(typeIcon);
+            item.appendChild(itemName);
+            dropdown.appendChild(item);
+        };
+
+        const appendProfileItem = (name, profile, { isCurrent = false } = {}) => {
+            const item = document.createElement('div');
+            item.className = 'profile-bar-dropdown-item' + (!LayoutSelection.isAuto() && isCurrent ? ' active' : '');
+            item.style.cursor = 'pointer';
+
+            const isAbs = profile.blocks?.some(b => b.x !== undefined);
+            const typeIcon = document.createElement('span');
+            typeIcon.textContent = isAbs ? '⊞' : '≡';
+            typeIcon.title = isAbs ? 'Layout absoluto' : 'Layout flex';
+            typeIcon.style.cssText = 'margin-right:6px;opacity:0.6;font-size:1em;flex-shrink:0;';
+
+            const itemName = document.createElement('span');
+            itemName.textContent = name;
+            itemName.style.flex = '1';
+
+            item.addEventListener('click', async (e) => {
+                if (isCurrent) return;
+                dropdown.style.display = 'none';
+                layoutDirty = false;
+                LayoutSelection.setProfile(name);
+                await LayoutManager.switchTo(name);
+            });
+
+            item.appendChild(typeIcon);
+            item.appendChild(itemName);
+            dropdown.appendChild(item);
+        };
+
+        const profiles = Object.entries(LayoutManager.layouts)
+            .filter(([name]) => name !== 'default');
+        if (LayoutManager.isAutoSelectionAvailable()) {
+            appendAutoItem();
+        }
+        if (!profiles.length) {
+            appendProfileItem('Mi layout', { blocks: linksConfig }, { isCurrent: true });
+        }
+
+        profiles.forEach(([name, profile]) => {
+            appendProfileItem(name, profile, { isCurrent: name === currentLayoutProfile });
+        });
+
+        return dropdown;
+    }
+
     // ── Barra de perfiles en modo organizar ───────────────────────────────────
     function renderProfileBar() {
         const existing = document.querySelector('#dockme-profile-bar');
@@ -1543,9 +1746,15 @@ window.addEventListener('resize', () => {
         const bar = document.createElement('div');
         bar.id = 'dockme-profile-bar';
 
+        const profileBarLeft = document.createElement('div');
+        profileBarLeft.className = 'profile-bar-left';
+        const profileBarRight = document.createElement('div');
+        profileBarRight.className = 'profile-bar-right';
+
         // ── Input nombre + botón guardar — siempre visibles en modo organizar ──
         const nameInput = document.createElement('input');
         nameInput.className = 'profile-bar-input';
+        nameInput.style.width = '140px';
         nameInput.value = currentLayoutProfile === 'default' ? 'Mi layout' : currentLayoutProfile;
         nameInput.placeholder = 'Nombre del perfil';
         nameInput.addEventListener('keydown', async e => {
@@ -1570,32 +1779,18 @@ window.addEventListener('resize', () => {
                 currentLayoutProfile = capitalized;
                 currentDeviceId = 'device-' + Math.random().toString(36).slice(2, 10);
                 localStorage.setItem('dockme-device-id', currentDeviceId);
+                LayoutSelection.setProfile(capitalized);
             } else if (capitalized !== currentLayoutProfile) {
                 await LayoutManager.rename(currentLayoutProfile, capitalized);
+                if (!LayoutSelection.isAuto()) LayoutSelection.setProfile(capitalized);
             }
             await LayoutManager.save();
             layoutDirty = false;
-            // Cerrar modo organizar
-            const row = document.querySelector('#dockme-blocks-row');
-            if (row) {
-                row.classList.remove('organizing');
-                recalcLayout();
-                row.querySelectorAll('[data-dm-hidden="1"]').forEach(el => {
-                    el.style.display  = 'none';
-                    el.style.opacity  = '';
-                    el.style.outline  = '';
-                });
-                row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
-                    el.draggable = false;
-                });
-            }
-            document.querySelector('.organize-icon')?.classList.remove('active');
-            document.body.classList.remove('dockme-organizing');
-            document.querySelector('#dockme-profile-bar')?.remove();
+            setOrganizingMode(false);
         });
 
-        bar.appendChild(nameInput);
-        bar.appendChild(btnSave);
+        profileBarLeft.appendChild(nameInput);
+        profileBarLeft.appendChild(btnSave);
         // ── Select de tipo de layout (a la izquierda de + Nuevo) ──────────────
         const currentIsAbs = isAbsoluteLayout();
 
@@ -1607,8 +1802,8 @@ window.addEventListener('resize', () => {
         typeBtn.className = 'btn btn-normal';
         typeBtn.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:110px;';
         typeBtn.innerHTML = currentIsAbs
-            ? '<span>⊞</span><span>Tipo Absoluto</span><span style="opacity:0.5;font-size:0.8em;">▾</span>'
-            : '<span>≡</span><span>Tipo Flex</span><span style="opacity:0.5;font-size:0.8em;">▾</span>';
+            ? '<span>⊞</span><span>Absoluto</span><span style="opacity:0.5;font-size:0.8em;">▾</span>'
+            : '<span>≡</span><span>Flex</span><span style="opacity:0.5;font-size:0.8em;">▾</span>';
 
         const typeMenu = document.createElement('div');
         typeMenu.className = 'profile-bar-dropdown-menu';
@@ -1691,7 +1886,7 @@ window.addEventListener('resize', () => {
         // ── Botón nuevo perfil ─────────────────────────────────────────────────
         const btnNew = document.createElement('button');
         btnNew.className = 'btn btn-normal';
-        btnNew.textContent = '+ Nuevo';
+        btnNew.textContent = '+';
         btnNew.addEventListener('click', async () => {
             // Siempre se crea en modo absoluto (flex deprecado en v3.3)
             const layoutType = 'absolute';
@@ -1706,16 +1901,17 @@ window.addEventListener('resize', () => {
 
             // Guardar perfil anterior para poder restaurarlo si se cancela
             previousProfile = currentLayoutProfile;
+            previousLayoutSelection = LayoutSelection.get();
 
             // Nuevo deviceId y limpiar localStorage
             currentLayoutProfile = newName;
             currentDeviceId = 'device-' + Math.random().toString(36).slice(2, 10);
             localStorage.setItem('dockme-device-id', currentDeviceId);
             localStorage.removeItem(`dockme-widths-${currentDeviceId}`);
+            LayoutSelection.setProfile(newName);
 
             // Redibujar en modo flex primero (loadLinksConfig sobrescribiría x,y si lo asignamos antes)
             layoutDirty = true;
-            manualProfileOverride = true; // evitar que load() sobreescriba el nuevo perfil con el automático
             await DataLoader.loadAndDisplay();
 
             // AHORA asignar x,y sobre el linksConfig ya cargado desde servidor y aplicar al DOM
@@ -1824,82 +2020,26 @@ window.addEventListener('resize', () => {
             renderProfileBar();
         });
 
-        // ── Dropdown perfiles (a la derecha del todo) ─────────────────────────
-        const btnList = document.createElement('div');
-        btnList.className = 'profile-bar-dropdown';
-
-        const btnListToggle = document.createElement('button');
-        btnListToggle.className = 'btn btn-normal';
-        btnListToggle.textContent = '⋯ Perfiles';
-
-        const dropdown = document.createElement('div');
-        dropdown.className = 'profile-bar-dropdown-menu';
-        dropdown.style.display = 'none';
-
-        Object.entries(LayoutManager.layouts)
-            .filter(([name]) => name !== 'default')
-            .forEach(([name, profile]) => {
-                const item = document.createElement('div');
-                item.className = 'profile-bar-dropdown-item' + (name === currentLayoutProfile ? ' active' : '');
-                item.style.cursor = 'pointer';
-
-                // Icono de tipo: ⊞ absoluto / ≡ flex
-                const isAbs = profile.blocks?.some(b => b.x !== undefined);
-                const typeIcon = document.createElement('span');
-                typeIcon.textContent = isAbs ? '⊞' : '≡';
-                typeIcon.title = isAbs ? 'Layout absoluto' : 'Layout flex';
-                typeIcon.style.cssText = 'margin-right:6px;opacity:0.6;font-size:1em;flex-shrink:0;';
-
-                const itemName = document.createElement('span');
-                itemName.textContent = name;
-                itemName.style.flex = '1';
-
-                item.addEventListener('click', async (e) => {
-                    if (e.target.closest('.profile-bar-btn-del')) return;
-                    dropdown.style.display = 'none';
-                    layoutDirty = false;
-                    manualProfileOverride = true; // el resize no cambiará hasta que el usuario redimensione
-                    await LayoutManager.switchTo(name);
-                    renderProfileBar();
-                });
-
-                const btnDel = document.createElement('button');
-                btnDel.className = 'btn btn-danger profile-bar-btn-del';
-                btnDel.textContent = '🗑';
-                btnDel.addEventListener('click', async (e) => {
-                    e.stopPropagation();
-                    if (!confirm(`¿Eliminar perfil "${name}"?`)) return;
-                    await LayoutManager.deleteProfile(name);
-                    layoutDirty = false;
-                    localStorage.removeItem('dockme-widths-default');
-                    window.location.reload();
-                });
-
-                item.appendChild(typeIcon);
-                item.appendChild(itemName);
-                item.appendChild(btnDel);
-                dropdown.appendChild(item);
-            });
-
-        let hideTimer = null;
-        btnList.addEventListener('mouseenter', () => {
-            clearTimeout(hideTimer);
-            dropdown.style.display = 'block';
-        });
-        btnList.addEventListener('mouseleave', () => {
-            hideTimer = setTimeout(() => { dropdown.style.display = 'none'; }, 1500);
-        });
-        dropdown.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-        dropdown.addEventListener('mouseleave', () => {
-            hideTimer = setTimeout(() => { dropdown.style.display = 'none'; }, 1500);
+        // ── Borrar perfil en edición ─────────────────────────────────────────
+        const btnDeleteCurrent = document.createElement('button');
+        btnDeleteCurrent.className = 'btn btn-danger';
+        btnDeleteCurrent.textContent = '🗑';
+        btnDeleteCurrent.title = 'Eliminar perfil en edición';
+        btnDeleteCurrent.disabled = currentLayoutProfile === 'default';
+        btnDeleteCurrent.addEventListener('click', async () => {
+            if (currentLayoutProfile === 'default') return;
+            if (!confirm(`¿Eliminar perfil "${currentLayoutProfile}"?`)) return;
+            await LayoutManager.deleteProfile(currentLayoutProfile);
+            layoutDirty = false;
+            localStorage.removeItem('dockme-widths-default');
+            window.location.reload();
         });
 
-        btnList.appendChild(btnListToggle);
-        btnList.appendChild(dropdown);
-
-        bar.appendChild(typeSelect);
-        bar.appendChild(btnNew);
-        bar.appendChild(btnList);
+        profileBarRight.appendChild(typeSelect);
+        profileBarRight.appendChild(btnNew);
+        profileBarRight.appendChild(btnDeleteCurrent);
+        bar.appendChild(profileBarLeft);
+        bar.appendChild(profileBarRight);
 
         const dashboard = document.querySelector('#dockme-dashboard');
         if (dashboard) dashboard.parentNode.insertBefore(bar, dashboard);
@@ -5634,73 +5774,61 @@ window.addEventListener('resize', () => {
 
         // Icono reordenar — organizar dashboard
         const organizeIcon = document.createElement('div');
-        organizeIcon.className = 'organize-icon';
-        organizeIcon.title = 'Organizar dashboard';
+        organizeIcon.className = 'organize-icon profile-bar-dropdown';
+        organizeIcon.title = 'Cambiar o editar perfil';
         organizeIcon.innerHTML = '<img src="/system-icons/reordenar.svg" style="width:24px;height:24px;vertical-align:middle;">';
-        organizeIcon.addEventListener('click', () => {
-            // Cerrar modo logs si está activo
-            if (document.body.classList.contains('dockme-logs-mode')) {
-                deactivateLogsMode();
-            }
-            // Cerrar modo edición si está activo y activar organizar
-            if (dockmeEditMode) {
-                dockmeEditMode = false;
-                updateEditModeToggleUI();
-                // Activar modo organizar tras cerrar edición
-                setTimeout(() => {
-                    const row = document.querySelector('#dockme-blocks-row');
-                    if (!row) return;
-                    row.classList.add('organizing');
-                    recalcLayout();
-                    document.body.classList.add('dockme-organizing');
-                    organizeIcon.classList.add('active');
-                    row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => { el.draggable = true; });
-                    layoutDirty = false;
-                    renderProfileBar();
-                }, 300);
+        let headerProfilesDropdown = createProfilesDropdown();
+        headerProfilesDropdown.classList.add('header-profiles-dropdown');
+        document.body.appendChild(headerProfilesDropdown);
+        let headerProfilesHideTimer = null;
+        const positionHeaderProfilesDropdown = () => {
+            const rect = organizeIcon.getBoundingClientRect();
+            headerProfilesDropdown.style.top = `${rect.bottom + window.scrollY + 4}px`;
+            headerProfilesDropdown.style.left = `${rect.right + window.scrollX - headerProfilesDropdown.offsetWidth}px`;
+            headerProfilesDropdown.style.right = 'auto';
+        };
+        const bindHeaderProfilesDropdown = () => {
+            headerProfilesDropdown.addEventListener('mouseenter', () => clearTimeout(headerProfilesHideTimer));
+            headerProfilesDropdown.addEventListener('mouseleave', () => {
+                headerProfilesHideTimer = setTimeout(() => {
+                    headerProfilesDropdown.style.display = 'none';
+                }, 350);
+            });
+        };
+        bindHeaderProfilesDropdown();
+        const refreshHeaderProfilesDropdown = () => {
+            headerProfilesDropdown.remove();
+            headerProfilesDropdown = createProfilesDropdown();
+            headerProfilesDropdown.classList.add('header-profiles-dropdown');
+            document.body.appendChild(headerProfilesDropdown);
+            bindHeaderProfilesDropdown();
+        };
+        organizeIcon.addEventListener('click', async (e) => {
+            headerProfilesDropdown.style.display = 'none';
+            const row = document.querySelector('#dockme-blocks-row');
+            if (row?.classList.contains('organizing')) {
+                setOrganizingMode(false);
                 return;
             }
-            {
-                const row = document.querySelector('#dockme-blocks-row');
-                if (!row) return;
-                const isOrganizing = row.classList.toggle('organizing');
-                document.body.classList.toggle('dockme-organizing', isOrganizing);
-                organizeIcon.classList.toggle('active', isOrganizing);
-                recalcLayout();
-                // Mostrar/ocultar bloques hidden según modo
-                row.querySelectorAll('[data-dm-hidden="1"]').forEach(el => {
-                    if (isOrganizing) {
-                        el.style.display = '';
-                        el.style.opacity = '0.45';
-                        el.style.outline = '2px dashed #4f84c8';
-                    } else {
-                        el.style.display  = 'none';
-                        el.style.opacity  = '';
-                        el.style.outline  = '';
-                    }
-                });
-                row.querySelectorAll('.links-item-card, .stack-card-link[data-fav-nombre]').forEach(el => {
-                    el.draggable = isOrganizing;
-                });
-                if (isOrganizing) {
-                    layoutDirty = false;
-                    renderProfileBar();
-                } else {
-                    document.querySelector('#dockme-profile-bar')?.remove();
-                    if (layoutDirty) {
-                        layoutDirty = false;
-                        const profileExists = LayoutManager.layouts[currentLayoutProfile];
-                        if (!profileExists && previousProfile && LayoutManager.layouts[previousProfile]) {
-                            LayoutManager.switchTo(previousProfile).then(() => DataLoader.loadAndDisplay());
-                        } else {
-                            const blocks = LayoutManager.getActiveBlocks();
-                            LayoutManager.applyToLinksConfig(blocks);
-                            DataLoader.loadAndDisplay();
-                        }
-                    }
-                }
-            }
+            await editLayoutProfile(currentLayoutProfile);
         });
+
+        organizeIcon.addEventListener('mouseenter', () => {
+            clearTimeout(headerProfilesHideTimer);
+            refreshHeaderProfilesDropdown();
+            headerProfilesDropdown.style.display = 'block';
+            positionHeaderProfilesDropdown();
+        });
+        organizeIcon.addEventListener('mouseleave', () => {
+            headerProfilesHideTimer = setTimeout(() => {
+                headerProfilesDropdown.style.display = 'none';
+            }, 350);
+        });
+        document.addEventListener('click', e => {
+            if (!organizeIcon.contains(e.target) && !headerProfilesDropdown.contains(e.target)) {
+                headerProfilesDropdown.style.display = 'none';
+            }
+        }, { capture: true });
 
         // Botón Novedades en header
         const mostrarNovedades = (currentVersion) => {
