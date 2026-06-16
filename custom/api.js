@@ -173,6 +173,43 @@ app.post('/api/set-server', async (req, res) => {
 });
 
 // ============================
+// POST /api/reorder-servers
+// ============================
+app.post('/api/reorder-servers', (req, res) => {
+  try {
+    const { endpoints } = req.body;
+    if (!Array.isArray(endpoints) || endpoints.some(endpoint => typeof endpoint !== 'string')) {
+      return res.status(400).json({ error: "El campo 'endpoints' debe ser un array de texto" });
+    }
+
+    const normalizedEndpoints = endpoints.map(endpoint => endpoint.toLowerCase());
+    if (new Set(normalizedEndpoints).size !== normalizedEndpoints.length) {
+      return res.status(400).json({ error: 'La lista contiene servidores duplicados' });
+    }
+
+    const currentData = readUpdatesFile();
+    const entriesByEndpoint = new Map(
+      currentData.map(entry => [(entry.endpoint || 'Actual').toLowerCase(), entry])
+    );
+    const missingEndpoint = normalizedEndpoints.find(endpoint => !entriesByEndpoint.has(endpoint));
+    if (missingEndpoint) {
+      return res.status(404).json({ error: `Servidor no encontrado: ${missingEndpoint}` });
+    }
+
+    const requested = new Set(normalizedEndpoints);
+    const reorderedData = [
+      ...normalizedEndpoints.map(endpoint => entriesByEndpoint.get(endpoint)),
+      ...currentData.filter(entry => !requested.has((entry.endpoint || 'Actual').toLowerCase()))
+    ];
+
+    writeUpdatesFile(reorderedData);
+    res.json({ success: true, data: reorderedData });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================
 // GET /api/fetch-all-metrics
 // ============================
 app.get('/api/fetch-all-metrics', async (req, res) => {

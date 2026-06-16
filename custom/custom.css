@@ -662,8 +662,9 @@ header {
 /* Titulo de seccion */
 #metrics-section .section-header {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    align-items: center;
+    gap: 16px;
     margin-bottom: 12px;
     padding-bottom: 8px;
     border-bottom: 1px solid #2a3441;
@@ -973,6 +974,35 @@ header {
     background: #252d3a;
 }
 
+.agents-table .agent-sortable-row {
+    cursor: grab;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.agents-table .agent-sortable-row:active {
+    cursor: grabbing;
+}
+
+.agents-table .agent-sortable-row input {
+    cursor: text;
+}
+
+.agents-table .agent-sortable-row button,
+.agents-table .agent-sortable-row a,
+.agents-table .agent-sortable-row img {
+    cursor: pointer;
+}
+
+.agents-table .agent-sortable-row.is-dragging {
+    opacity: 0.4;
+    background: #31415a;
+}
+
+.agents-table tbody.is-saving-order {
+    pointer-events: none;
+    opacity: 0.7;
+}
+
 .agents-table code,
 .detected-server-endpoint code {
     padding: 3px 8px;
@@ -1152,23 +1182,22 @@ header {
     }
 }
 
-/* Alerta simple de servidores detectados */
-.detected-alert-simple {
+/* Estado junto al título de servidores */
+.metrics-header-alert {
     display: none;
     color: #f39c12;
-    font-size: 1em;
+    font-size: 1.1em;
     font-weight: 500;
-    margin: 10px 0 15px 0;
+    line-height: 1.2;
     padding: 0;
+    white-space: nowrap;
 }
-/* Alerta temporal de actualizacion */
-.updating-alert {
-    font-size: 1em;
-    font-weight: 500;
-    color: #f39c12;
-    margin: 15px 0 15px 10px;
-    padding: 0;
-    display: none;
+.metrics-header-alert.is-clickable {
+    cursor: pointer;
+}
+.metrics-header-alert.is-clickable:hover {
+    color: #ffb84d;
+    text-decoration: underline;
 }
 /* Boton eliminar agente */
 .btn-delete-agent {

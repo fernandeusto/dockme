@@ -2890,6 +2890,7 @@ window.addEventListener('resize', () => {
                     body: JSON.stringify({ endpoint })
                 };
 
+            showMetricsAlert('Reiniciando Dockme...', 20000);
             fetch(fetchUrl, fetchOptions)
                 .then(res => (res.ok ? res.json() : null))
                 .then(() => {
@@ -2897,10 +2898,6 @@ window.addEventListener('resize', () => {
                     if (document.body.classList.contains('dockme-logs-mode')) {
                         deactivateLogsMode();
                     }
-                    const serverName = isLocalDockme ? 'este servidor' : 'Dockme remoto';
-                    setTimeout(() => {
-                        showMetricsAlert(`⏳ Actualizando y reconectando ${serverName}...`, 20000);
-                    }, 1000);
                 })
                 .catch(() => { window.dockmeUpdateInProgress = false; });
         }
@@ -4132,36 +4129,20 @@ window.addEventListener('resize', () => {
 
             // Navegar a logs del nuevo stack y desplegar
             logsActiveTab = 'logs';
+            _fromDashboard = false;
+            window._dockme_new_deploy_in_progress = true;
+            window._dockme_force_badge = 'deploying';
             openLogsForStack(stackName, endpoint);
             // Dar tiempo a que el panel se inicialice y lanzar deploy
-            setTimeout(async () => {
-                const logsArea = document.querySelector('#logs-area');
-                if (!logsArea) return;
-                if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
-                logsArea.innerHTML = '';
-                const epDeploy = endpoint !== 'Actual' ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
-
+            setTimeout(() => {
                 // Registrar en stacks.json e intentar icono siempre, antes del deploy
                 autoAssignServiceUrl(stackName, endpoint || 'Actual', composeVal);
-
-                const deploySource = new EventSource(`/api/deploy/${encodeURIComponent(stackName)}${epDeploy}`);
-                deploySource.onmessage = (e) => {
-                    const line = document.createElement('div');
-                    line.className = 'logs-line';
-                    line.dataset.raw = e.data;
-                    const lower = e.data.toLowerCase();
-                    let color = '#888';
-                    if (lower.includes('started') || lower.includes('✅')) color = '#4caf50';
-                    else if (lower.includes('starting') || lower.includes('pulling') || lower.includes('pulled')) color = '#4f84c8';
-                    else if (lower.includes('error') || lower.includes('❌')) color = '#ef5350';
-                    line.innerHTML = `<span class="logs-msg" style="color:${color};">${e.data.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
-                    logsArea.appendChild(line);
-                    logsArea.scrollTop = logsArea.scrollHeight;
-                    if (e.data.includes('✅') || e.data.includes('❌')) {
-                        deploySource.close();
-                    }
-                };
-                deploySource.onerror = () => { deploySource.close(); };
+                const logsPanel = document.querySelector('#dockme-logs-panel');
+                if (typeof logsPanel?._dockmeStartDeploy === 'function') {
+                    logsPanel._dockmeStartDeploy();
+                } else {
+                    window._dockme_new_deploy_in_progress = false;
+                }
             }, 800);
         });
     }
@@ -4394,28 +4375,69 @@ window.addEventListener('resize', () => {
 
         const svgRestartBtn = `<svg class="svg-inline--fa fa-rotate-right" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M463.5 224H472c13.3 0 24-10.7 24-24V72c0-9.7-5.8-18.5-14.8-22.2s-19.3-1.7-26.2 5.2L413.4 96.6c-87.6-86.5-228.7-86.2-315.8 1c-87.5 87.5-87.5 229.3 0 316.8s229.3 87.5 316.8 0c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0c-62.5 62.5-163.8 62.5-226.3 0s-62.5-163.8 0-226.3c62.2-62.2 162.7-62.5 225.3-1L327 183c-6.9 6.9-8.9 17.2-5.2 26.2s12.5 14.8 22.2 14.8H463.5z"/></svg> Reiniciar`;
 
+        const connectLogs = (tail = 50) => {
+            if (logsActiveTab !== 'logs') return;
+            if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+            const sseEpParam = ep ? `&endpoint=${encodeURIComponent(endpoint)}` : '';
+            logsEventSource = new EventSource(`/api/logs/${encodeURIComponent(stackName)}?tail=${tail}${sseEpParam}`);
+            logsEventSource.onmessage = (e) => {
+                const line = buildLine(e.data, filterInput.value);
+                logsArea.appendChild(line);
+                if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+            };
+            logsEventSource.onerror = () => {
+                logsEventSource?.close();
+                logsEventSource = null;
+                const errLine = document.createElement('div');
+                errLine.className = 'logs-error-line';
+                errLine.dataset.raw = '';
+                errLine.textContent = '\u26A0\uFE0F Conexi\u00F3n perdida con el servidor de logs';
+                logsArea.appendChild(errLine);
+                if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+            };
+        };
+
         const waitForStateChange = (targetRunning) => {
             const socket = window.dockmeSocket;
             if (!socket) return;
+            let finished = false;
+            let timeout = null;
+            const finish = (services) => {
+                if (finished) return;
+                finished = true;
+                clearInterval(check);
+                clearTimeout(timeout);
+                actionInProgress = false;
+                window._dockme_new_deploy_in_progress = false;
+                setButtonsDisabled(false);
+                renderBadges(services);
+                if (btnRestart) btnRestart.innerHTML = svgRestartBtn;
+            };
             const check = setInterval(() => {
                 socket.emit('agent', ep, 'serviceStatusList', stackName, (res) => {
                     if (!res?.ok || !res.serviceStatusList) return;
                     const services = Object.entries(res.serviceStatusList);
-                    const anyRunning = services.some(([, s]) =>
-                        s.state === 'running' || s.state === 'healthy'
+                    const allStable = services.length > 0 && services.every(([, s]) =>
+                        s.state === 'running' || s.state === 'healthy' || s.state === 'unhealthy' ||
+                        s.state === 'exited' || s.state === 'stopped'
                     );
                     const allStopped = services.length === 0 || services.every(([, s]) =>
                         s.state === 'exited' || s.state === 'stopped'
                     );
-                    // Si el estado ya coincide con lo esperado, reanudar
-                    if ((targetRunning && anyRunning) || (!targetRunning && allStopped)) {
-                        clearInterval(check);
-                        actionInProgress = false;
-                        setButtonsDisabled(false);
-                        if (btnRestart) btnRestart.innerHTML = svgRestartBtn;
+                    if (targetRunning && services.length > 0) {
                         renderBadges(services);
+                        setButtonsDisabled(true);
+                        btnStartStop.innerHTML = svgSpin;
+                    }
+                    // Si el estado ya coincide con lo esperado, reanudar
+                    if ((targetRunning && allStable) || (!targetRunning && allStopped)) {
+                        finish(services);
+                        if (!targetRunning) {
+                            if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+                            panel.querySelector('.logs-tab[data-tab="compose"]')?.click();
+                        }
                         // Si vuelve a running, mostrar btnPause y reanudar polling si estaba parado
-                        if (targetRunning && anyRunning) {
+                        if (targetRunning && allStable) {
                             
                             if (!logsStatusInterval) startStatusPolling();
                             // Forzar rerender lista stacks
@@ -4449,50 +4471,27 @@ window.addEventListener('resize', () => {
                                         renderBadges(lastKnownServices);
                                     }
                                 }).catch(() => {});
-                            // Reconectar logs si el tab activo es logs
-                            if (logsActiveTab === 'logs') {
-                                if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
-                                const sseEpParam = ep ? `&endpoint=${encodeURIComponent(endpoint)}` : '';
-                                logsEventSource = new EventSource(`/api/logs/${encodeURIComponent(stackName)}?tail=50${sseEpParam}`);
-                                logsEventSource.onmessage = (e) => {
-                                    const line = buildLine(e.data, filterInput.value);
-                                    logsArea.appendChild(line);
-                                    if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
-                                };
-                                logsEventSource.onerror = () => {
-                                    const errLine = document.createElement('div');
-                                    errLine.className = 'logs-error-line';
-                                    errLine.dataset.raw = '';
-                                    errLine.textContent = '\u26A0\uFE0F Conexi\u00F3n perdida con el servidor de logs';
-                                    logsArea.appendChild(errLine);
-                                    if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
-                                };
-                            }
                         }
                     }
                 });
             }, 2000);
             // Timeout de seguridad: 2 minutos
-            setTimeout(() => {
-                clearInterval(check);
-                actionInProgress = false;
-                setButtonsDisabled(false);
-                if (btnRestart) btnRestart.innerHTML = svgRestartBtn;
-            }, 2 * 60 * 1000);
+            timeout = setTimeout(() => finish(lastKnownServices), 2 * 60 * 1000);
         };
 
         btnStartStop.addEventListener('click', () => {
             const socket = window.dockmeSocket;
             if (!socket) return;
-            const action = stackIsRunning ? 'stopStack' : 'startStack';
-            const forceState = stackIsRunning ? 'stopping' : 'starting';
-            const targetRunning = !stackIsRunning;
+            if (!stackIsRunning) {
+                startDeploy();
+                return;
+            }
             actionInProgress = true;
             setButtonsDisabled(true);
             btnStartStop.innerHTML = svgSpin;
-            renderBadges(lastKnownServices, forceState);
-            socket.emit('agent', ep, action, stackName, () => {});
-            waitForStateChange(targetRunning);
+            renderBadges(lastKnownServices, 'stopping');
+            socket.emit('agent', ep, 'stopStack', stackName, () => {});
+            waitForStateChange(false);
         });
 
         btnRestart.addEventListener('click', () => {
@@ -4528,6 +4527,7 @@ window.addEventListener('resize', () => {
         fetch(`/api/stack-containers/${encodeURIComponent(stackName)}${epParam}`)
             .then(r => r.json())
             .then(d => {
+                if (window._dockme_new_deploy_in_progress) return;
                 multiContainer = (d.containers?.length || 0) > 1;
                 if (d.containers?.length > 0) {
                     lastKnownServices = d.containers.map(c => [c.service || c.name, { state: c.state || 'exited' }]);
@@ -4547,11 +4547,10 @@ window.addEventListener('resize', () => {
                     // Distinguir inactivo (gris) de parado (rojo)
                     const color = getDockgeStackColor();
                     if (color === 'gray') {
-                        badgesEl.innerHTML = `<span class="badge bg-secondary" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Inactivo</span>`;
+                        renderStackBadge('inactive');
                         
                     } else {
-                        // Stack parado (rojo) — mostrar badge exited
-                        badgesEl.innerHTML = `<span class="badge bg-danger" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Stack detenido</span>`;
+                        renderStackBadge('exited');
                     }
                 }
             })
@@ -5137,6 +5136,87 @@ window.addEventListener('resize', () => {
 
         termContainerSel.addEventListener('change', () => { if (xtermInstance) startXterm(); });
 
+        let deployEventSource = null;
+        const startDeploy = ({ onSuccess, onFailure } = {}) => {
+            if (actionInProgress) return;
+
+            actionInProgress = true;
+            window._dockme_new_deploy_in_progress = true;
+            setButtonsDisabled(true);
+            btnStartStop.innerHTML = svgSpin;
+            if (lastKnownServices.length > 0) {
+                renderBadges(lastKnownServices, 'deploying');
+            } else {
+                renderStackBadge('deploying');
+            }
+
+            logsActiveTab = 'logs';
+            panel.querySelectorAll('.logs-tab').forEach(t => t.classList.remove('active'));
+            panel.querySelector('.logs-tab[data-tab="logs"]')?.classList.add('active');
+            logsArea.style.display       = '';
+            composeArea.style.display    = 'none';
+            terminalArea.style.display   = 'none';
+            logsFooter.style.display     = '';
+            composeFooter.style.display  = 'none';
+
+            if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
+            if (deployEventSource) deployEventSource.close();
+            logsArea.innerHTML = '';
+
+            const deployUrl = `/api/deploy/${encodeURIComponent(stackName)}${ep ? `?endpoint=${encodeURIComponent(endpoint)}` : ''}`;
+            deployEventSource = new EventSource(deployUrl);
+            let completed = false;
+
+            const finishDeploy = (success) => {
+                if (completed) return;
+                completed = true;
+                deployEventSource?.close();
+                deployEventSource = null;
+                window._dockme_new_deploy_in_progress = false;
+
+                if (success) {
+                    if (lastKnownServices.length > 0) {
+                        renderBadges(lastKnownServices, 'starting');
+                    } else {
+                        renderStackBadge('starting');
+                    }
+                    onSuccess?.();
+                    connectLogs(50);
+                    waitForStateChange(true);
+                    return;
+                }
+
+                actionInProgress = false;
+                renderBadges(lastKnownServices);
+                setButtonsDisabled(false);
+                btnStartStop.innerHTML = stackIsRunning ? svgStop : svgPlay;
+                onFailure?.();
+                if (!logsStatusInterval) startStatusPolling();
+            };
+
+            deployEventSource.onmessage = (e) => {
+                const raw = e.data;
+                const line = document.createElement('div');
+                line.className = 'logs-line';
+                line.dataset.raw = raw;
+                const lower = raw.toLowerCase();
+                let color = '#888';
+                if (lower.includes('started') || lower.includes('running') || lower.includes('✅')) color = '#4caf50';
+                else if (lower.includes('starting') || lower.includes('recreat') || lower.includes('pulling') || lower.includes('pulled')) color = '#4f84c8';
+                else if (lower.includes('stopping') || lower.includes('stopped') || lower.includes('warning')) color = '#ffa726';
+                else if (lower.includes('error') || lower.includes('❌')) color = '#ef5350';
+                line.innerHTML = `<span class="logs-msg" style="color:${color};">${raw.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+                logsArea.appendChild(line);
+                if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
+
+                if (raw.includes('✅') || raw.includes('❌')) {
+                    finishDeploy(raw.includes('✅'));
+                }
+            };
+            deployEventSource.onerror = () => finishDeploy(false);
+        };
+        panel._dockmeStartDeploy = startDeploy;
+
         cmpBtnEdit.addEventListener('click', () => setEditMode(true));
 
         btnCancel.addEventListener('click', () => {
@@ -5190,73 +5270,23 @@ window.addEventListener('resize', () => {
                 return;
             }
 
-            // Mostrar badge "Desplegando" mientras dura el deploy
-            actionInProgress = true;
-            setButtonsDisabled(true);
-            renderBadges(lastKnownServices, 'deploying');
-
-            // Cambiar al tab de logs
-            logsActiveTab = 'logs';
-            panel.querySelectorAll('.logs-tab').forEach(t => t.classList.remove('active'));
-            panel.querySelector('.logs-tab[data-tab="logs"]')?.classList.add('active');
-            logsArea.style.display     = '';
-            composeArea.style.display  = 'none';
-            logsFooter.style.display   = '';
-            composeFooter.style.display = 'none';
-
-            if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
-            logsArea.innerHTML = '';
-
-            const deployUrl = `/api/deploy/${encodeURIComponent(stackName)}${epParam2 ? `?endpoint=${encodeURIComponent(endpoint)}` : ''}`;
-            const deploySource = new EventSource(deployUrl);
-            deploySource.onmessage = (e) => {
-                const raw = e.data;
-                const line = document.createElement('div');
-                line.className = 'logs-line';
-                line.dataset.raw = raw;
-                const lower = raw.toLowerCase();
-                let color = '#888';
-                if (lower.includes('started') || lower.includes('running') || lower.includes('✅')) color = '#4caf50';
-                else if (lower.includes('starting') || lower.includes('recreat') || lower.includes('pulling') || lower.includes('pulled')) color = '#4f84c8';
-                else if (lower.includes('stopping') || lower.includes('stopped') || lower.includes('warning')) color = '#ffa726';
-                else if (lower.includes('error') || lower.includes('❌')) color = '#ef5350';
-                line.innerHTML = `<span class="logs-msg" style="color:${color};">${raw.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
-                logsArea.appendChild(line);
-                if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
-
-                if (raw.includes('✅') || raw.includes('❌')) {
-                    deploySource.close();
-                    actionInProgress = false;
-                    setButtonsDisabled(false);
-                    if (raw.includes('❌')) {
-                        // Deploy fallido — restaurar compose anterior en disco
-                        fetch(`/api/compose/${encodeURIComponent(stackName)}${epParam2}`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ content: prevCompose, env: prevEnv })
-                        }).catch(() => {});
-                        // Restaurar editores
-                        composeContent = prevCompose;
-                        envContent = prevEnv;
-                        // No reconectar logs — el stack sigue con su estado anterior
-                        renderBadges(lastKnownServices);
-                        if (!logsStatusInterval) startStatusPolling();
-                    } else {
-                        // Deploy exitoso — actualizar contenido guardado y salir del modo edición
-                        composeContent = newCompose;
-                        envContent = newEnv;
-                        setEditMode(false);
-                        waitForStateChange(true);
-                    }
+            startDeploy({
+                onSuccess: () => {
+                    composeContent = newCompose;
+                    envContent = newEnv;
+                    setEditMode(false);
+                },
+                onFailure: () => {
+                    // Restaurar el compose anterior si el despliegue falla.
+                    fetch(`/api/compose/${encodeURIComponent(stackName)}${epParam2}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ content: prevCompose, env: prevEnv })
+                    }).catch(() => {});
+                    composeContent = prevCompose;
+                    envContent = prevEnv;
                 }
-            };
-            deploySource.onerror = () => {
-                deploySource.close();
-                actionInProgress = false;
-                setButtonsDisabled(false);
-                renderBadges(lastKnownServices);
-                if (!logsStatusInterval) startStatusPolling();
-            };
+            });
         });
 
         btnPause.addEventListener('click', () => {
@@ -5324,15 +5354,7 @@ window.addEventListener('resize', () => {
                 composeFooter.style.display = isCompose ? '' : 'none';
                 if (isLogs && logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
                 if (isLogs && (!logsEventSource || logsEventSource.readyState === 2)) {
-                    // EventSource cerrado — reconectar
-                    const sseEpParam = ep ? `&endpoint=${encodeURIComponent(endpoint)}` : '';
-                    logsEventSource = new EventSource(`/api/logs/${encodeURIComponent(stackName)}?tail=50${sseEpParam}`);
-                    logsEventSource.onmessage = (e) => {
-                        const line = buildLine(e.data, filterInput.value);
-                        logsArea.appendChild(line);
-                        if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
-                    };
-                    logsEventSource.onerror = () => { logsEventSource?.close(); logsEventSource = null; };
+                    connectLogs(50);
                 }
                 if (isCompose && !composeContent) loadCompose();
                 else if (isCompose) setTimeout(applySplit, 50);
@@ -5386,6 +5408,27 @@ window.addEventListener('resize', () => {
             });
         };
 
+        const badgeStateMeta = {
+            running:    { label: 'running', cls: 'bg-success' },
+            healthy:    { label: 'healthy', cls: 'bg-success' },
+            starting:   { label: 'starting', cls: 'bg-warning' },
+            stopping:   { label: 'stopping', cls: 'bg-warning' },
+            restarting: { label: 'restarting', cls: 'bg-warning' },
+            deploying:  { label: 'deploying', cls: 'bg-warning' },
+            unhealthy:  { label: 'unhealthy', cls: 'bg-danger' },
+            exited:     { label: 'exited', cls: 'bg-danger' },
+            stopped:    { label: 'exited', cls: 'bg-danger' },
+            created:    { label: 'created', cls: 'bg-secondary' },
+            unknown:    { label: 'unknown', cls: 'bg-secondary' },
+            inactive:   { label: 'inactive', cls: 'bg-secondary' },
+        };
+        const getBadgeStateMeta = (state) =>
+            badgeStateMeta[(state || 'unknown').toLowerCase()] || badgeStateMeta.unknown;
+        const renderStackBadge = (state) => {
+            const meta = getBadgeStateMeta(state);
+            badgesEl.innerHTML = `<span class="badge ${meta.cls}" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Stack <b style="font-weight:700;">${meta.label}</b></span>`;
+        };
+
         const renderBadges = (services, forceState) => {
             const svgPlayBtn = svgPlay;
             const svgStopBtn = svgStop;
@@ -5397,21 +5440,18 @@ window.addEventListener('resize', () => {
                 lastKnownServices.map(([name]) => [name, { state: 'exited' }]);
 
             const anyRunning = services.some(([, s]) =>
-                s.state === 'running' || s.state === 'healthy' || s.state === 'starting'
+                s.state === 'running' || s.state === 'healthy' || s.state === 'starting' || s.state === 'unhealthy'
             );
             stackIsRunning = anyRunning;
-            if (!anyRunning) { actionInProgress = false; setButtonsDisabled(false); }
+            if (!anyRunning && !actionInProgress) setButtonsDisabled(false);
             if (btnStartStop && !btnStartStop.disabled) {
                 btnStartStop.innerHTML = anyRunning ? svgStopBtn : svgPlayBtn;
             }
 
             badgesEl.innerHTML = displayServices.map(([name, status]) => {
                 const state = forceState || (status.state || 'unknown').toLowerCase();
-                let cls = 'bg-secondary';
-                if (state === 'running' || state === 'healthy') cls = 'bg-success';
-                else if (state === 'starting' || state === 'stopping' || state === 'restarting' || state === 'deploying') cls = 'bg-warning';
-                else if (state === 'unhealthy' || state === 'exited') cls = 'bg-danger';
-                return `<span class="badge ${cls} logs-service-badge" data-service="${name}" style="font-size:0.82em;font-weight:400;padding:4px 8px;cursor:pointer;">${name} <b style="font-weight:700;">${state}</b></span>`;
+                const meta = getBadgeStateMeta(state);
+                return `<span class="badge ${meta.cls} logs-service-badge" data-service="${name}" style="font-size:0.82em;font-weight:400;padding:4px 8px;cursor:pointer;">${name} <b style="font-weight:700;">${meta.label}</b></span>`;
             }).join('');
 
             // Click en badge → popover
@@ -5554,16 +5594,30 @@ window.addEventListener('resize', () => {
 
             // Si venimos del BulkPanel con deploy en curso, mostrar deploying inmediatamente
             if (window._dockme_force_badge) {
-                renderBadges(lastKnownServices, window._dockme_force_badge);
+                if (lastKnownServices.length > 0) {
+                    renderBadges(lastKnownServices, window._dockme_force_badge);
+                } else {
+                    renderStackBadge(window._dockme_force_badge);
+                }
                 window._dockme_force_badge = null;
+            }
+            if (window._dockme_new_deploy_in_progress) {
+                setButtonsDisabled(true);
+                btnStartStop.innerHTML = svgSpin;
+                if (lastKnownServices.length > 0) {
+                    renderBadges(lastKnownServices, 'deploying');
+                } else {
+                    renderStackBadge('deploying');
+                }
             }
             const poll = () => {
                 if (actionInProgress) return;
+                if (window._dockme_new_deploy_in_progress) return;
 
                 // Leer color del cp-circle de la lista — fuente de verdad para inactivo
                 const color = getDockgeStackColor();
                 if (color === 'gray') {
-                    badgesEl.innerHTML = `<span class="badge bg-secondary" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Inactivo</span>`;
+                    renderStackBadge('inactive');
                     stackIsRunning = false;
                     actionInProgress = false;
                     setButtonsDisabled(false);
@@ -5581,7 +5635,11 @@ window.addEventListener('resize', () => {
                     if (services.length === 0) {
                         const col = getDockgeStackColor();
                         if (col === 'red') {
-                            badgesEl.innerHTML = `<span class="badge bg-danger" style="font-size:0.82em;font-weight:400;padding:4px 8px;">Stack detenido</span>`;
+                            if (lastKnownServices.length > 0) {
+                                renderBadges([], 'exited');
+                            } else {
+                                renderStackBadge('exited');
+                            }
                             stackIsRunning = false;
                             actionInProgress = false;
                             setButtonsDisabled(false);
@@ -5641,27 +5699,7 @@ window.addEventListener('resize', () => {
         startStatusPolling();
         window._logsStatusInterval = logsStatusInterval;
 
-        // SSE
-        const sseEpParam = (endpoint && endpoint.toLowerCase() !== 'actual')
-            ? `&endpoint=${encodeURIComponent(endpoint)}` : '';
-        const url = `/api/logs/${encodeURIComponent(stackName)}?tail=200${sseEpParam}`;
-
-        logsEventSource = new EventSource(url);
-
-        logsEventSource.onmessage = (e) => {
-            const line = buildLine(e.data, filterInput.value);
-            logsArea.appendChild(line);
-            if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
-        };
-
-        logsEventSource.onerror = () => {
-            const errLine = document.createElement('div');
-            errLine.className = 'logs-error-line';
-            errLine.dataset.raw = '';
-            errLine.textContent = '\u26A0\uFE0F Conexi\u00F3n perdida con el servidor de logs';
-            logsArea.appendChild(errLine);
-            if (logsAutoScroll) logsArea.scrollTop = logsArea.scrollHeight;
-        };
+        connectLogs(200);
 
         // Mostrar el panel solo cuando todo está construido
         requestAnimationFrame(() => {
@@ -6910,27 +6948,12 @@ window.addEventListener('resize', () => {
             const manageBtn = header.querySelector('.manage-btn');
             if (manageBtn) manageBtn.remove();
             
-            // ALERTA DE DETECTADOS — se crea oculta y solo se muestra tras recibir métricas
-            let alert = this.container.querySelector('.detected-alert-simple');
-            if (!alert) {
-                alert = document.createElement('div');
-                alert.className = 'detected-alert-simple';
-                alert.style.cssText = 'display:none;cursor:pointer;font-size:0.82em;color:#f0a500;margin-top:4px;';
-                alert.addEventListener('click', () => {
-                    dockmeEditMode = true;
-                    updateEditModeToggleUI();
-                    setTimeout(() => switchConfigTab('servidores'), 50);
-                });
-                const cardsContainer = this.container.querySelector('.metrics-container');
-                cardsContainer.insertAdjacentElement('afterend', alert);
-            }
             const cardsContainer2 = this.container.querySelector('.metrics-container');
             const hasCards = cardsContainer2 && cardsContainer2.children.length > 0;
             if (detected.length > 0 && hasCards) {
-                alert.innerHTML = `⚠️ Hay ${detected.length} servidor${detected.length > 1 ? 'es' : ''} detectado${detected.length > 1 ? 's' : ''} sin conectar`;
-                alert.style.display = 'block';
+                setMetricsDetectedAlert(`${detected.length} servidor${detected.length > 1 ? 'es' : ''} sin conectar`);
             } else {
-                alert.style.display = '';
+                setMetricsDetectedAlert('');
             }
         },
 
@@ -6948,7 +6971,10 @@ window.addEventListener('resize', () => {
             }
 
             this.container = document.querySelector('#metrics-section');
-            if (this.container) return;
+            if (this.container) {
+                renderMetricsHeaderAlert();
+                return;
+            }
 
             // Box redimensionable
             let metricsBox = document.querySelector('#metrics-box');
@@ -6998,6 +7024,7 @@ window.addEventListener('resize', () => {
             cardsContainer.className = 'metrics-container';
             this.container.appendChild(cardsContainer);
             metricsBox.appendChild(this.container);
+            renderMetricsHeaderAlert();
         },
 
         applyHostFilter(hostname) {
@@ -7146,24 +7173,74 @@ window.addEventListener('resize', () => {
             IframeManager.stopAll();
         }
     };
-    // ==================== ALERTA TEMPORAL EN MÉTRICAS ====================
-    function showMetricsAlert(message, duration = 10000) {
-        const metricsSection = document.querySelector('#metrics-section');
-        if (!metricsSection) return;
-        
-        let alert = metricsSection.querySelector('.updating-alert');
-        if (!alert) {
-            alert = document.createElement('div');
-            alert.className = 'updating-alert';
-            alert.style.cssText = 'font-size:0.82em;color:#f0a500;margin-bottom:8px;';
-            const cardsContainer = metricsSection.querySelector('.metrics-container');
-            cardsContainer.insertAdjacentElement('afterend', alert);
+    // ==================== ESTADO EN CABECERA DE MÉTRICAS ====================
+    const METRICS_ALERT_STORAGE_KEY = 'dockme-metrics-header-alert';
+    const METRICS_DETECTED_ALERT_DELAY = 10000;
+    const metricsDetectedAlertEnabledAt = Date.now() + METRICS_DETECTED_ALERT_DELAY;
+    let metricsAlertTimer = null;
+
+    function getMetricsTemporaryMessage() {
+        try {
+            const savedAlert = JSON.parse(sessionStorage.getItem(METRICS_ALERT_STORAGE_KEY) || 'null');
+            if (savedAlert?.message && savedAlert.expiresAt > Date.now()) {
+                return savedAlert.message;
+            }
+            sessionStorage.removeItem(METRICS_ALERT_STORAGE_KEY);
+        } catch (error) {
+            sessionStorage.removeItem(METRICS_ALERT_STORAGE_KEY);
         }
-        
+        return '';
+    }
+
+    function getMetricsHeaderAlert() {
+        const header = document.querySelector('#metrics-section .section-header');
+        if (!header) return null;
+        let alert = header.querySelector('.metrics-header-alert');
+        if (!alert) {
+            alert = document.createElement('span');
+            alert.id = 'dockme-metrics-header-alert';
+            alert.className = 'metrics-header-alert';
+            header.appendChild(alert);
+            alert.addEventListener('click', () => {
+                if (!alert.dataset.detectedMessage || alert.dataset.temporary === '1') return;
+                dockmeEditMode = true;
+                updateEditModeToggleUI();
+                setTimeout(() => switchConfigTab('servidores'), 50);
+            });
+        }
+        return alert;
+    }
+
+    function renderMetricsHeaderAlert() {
+        const alert = getMetricsHeaderAlert();
+        if (!alert) return;
+        const metricsTemporaryMessage = getMetricsTemporaryMessage();
+        const detectedMessage = alert.dataset.detectedMessage || '';
+        const message = metricsTemporaryMessage || detectedMessage;
         alert.textContent = message;
-        alert.style.display = 'block';
-        setTimeout(() => {
-            alert.style.display = 'none';
+        alert.dataset.temporary = metricsTemporaryMessage ? '1' : '';
+        alert.classList.toggle('is-clickable', !metricsTemporaryMessage && !!detectedMessage);
+        alert.style.display = message ? 'inline-block' : 'none';
+    }
+
+    function setMetricsDetectedAlert(message) {
+        const alert = getMetricsHeaderAlert();
+        if (!alert) return;
+        alert.dataset.detectedMessage =
+            Date.now() >= metricsDetectedAlertEnabledAt ? message : '';
+        renderMetricsHeaderAlert();
+    }
+
+    function showMetricsAlert(message, duration = 10000) {
+        clearTimeout(metricsAlertTimer);
+        sessionStorage.setItem(METRICS_ALERT_STORAGE_KEY, JSON.stringify({
+            message,
+            expiresAt: Date.now() + duration
+        }));
+        renderMetricsHeaderAlert();
+        metricsAlertTimer = setTimeout(() => {
+            sessionStorage.removeItem(METRICS_ALERT_STORAGE_KEY);
+            renderMetricsHeaderAlert();
         }, duration);
     }
 
@@ -7279,7 +7356,7 @@ function createAgentsTable() {
                     style="width:20px;height:20px;cursor:pointer;opacity:0.6;flex-shrink:0;">
             </div>` : '';
         return `
-            <tr>
+            <tr class="agent-sortable-row" data-endpoint="${agent.endpoint}" draggable="true">
                 <td class="text-center">
                     <img src="${iconUrl}" class="agent-server-icon" alt="${agent.hostname}"
                         onerror="this.src='/system-icons/no-icon.svg'"
@@ -7475,6 +7552,99 @@ function renderServidoresTab(container) {
         ${createAgentsTable()}
         ${createDetectedServersSection()}
     `;
+
+    const agentsTableBody = container.querySelector('.agents-table tbody');
+    if (agentsTableBody) {
+        let draggedRow = null;
+        let initialOrder = [];
+
+        const getOrder = () =>
+            [...agentsTableBody.querySelectorAll('.agent-sortable-row')]
+                .map(row => row.dataset.endpoint);
+
+        const syncServerOrder = (endpoints, updatesData) => {
+            if (Array.isArray(updatesData)) {
+                State.setUpdatesData(updatesData);
+            }
+            if (!window._dmAgentsState) return;
+            const agentsByEndpoint = new Map(
+                window._dmAgentsState.getAgents()
+                    .map(agent => [agent.endpoint.toLowerCase(), agent])
+            );
+            const orderedAgents = endpoints
+                .map(endpoint => agentsByEndpoint.get(endpoint.toLowerCase()))
+                .filter(Boolean);
+            agentsByEndpoint.forEach((agent, endpoint) => {
+                if (!endpoints.some(item => item.toLowerCase() === endpoint)) {
+                    orderedAgents.push(agent);
+                }
+            });
+            window._dmAgentsState.setAgents(orderedAgents);
+        };
+
+        agentsTableBody.querySelectorAll('.agent-sortable-row').forEach(row => {
+            let dragAllowed = false;
+            row.addEventListener('mousedown', event => {
+                dragAllowed = !event.target.closest('input, button, a, img');
+            });
+
+            row.addEventListener('dragstart', event => {
+                if (!dragAllowed || agentsTableBody.classList.contains('is-saving-order')) {
+                    event.preventDefault();
+                    return;
+                }
+                draggedRow = row;
+                initialOrder = getOrder();
+                row.classList.add('is-dragging');
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData('text/plain', row.dataset.endpoint);
+            });
+
+            row.addEventListener('dragover', event => {
+                if (!draggedRow || draggedRow === row) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                const rect = row.getBoundingClientRect();
+                const insertBefore = event.clientY < rect.top + rect.height / 2;
+                agentsTableBody.insertBefore(draggedRow, insertBefore ? row : row.nextSibling);
+            });
+
+            row.addEventListener('dragend', () => {
+                if (!draggedRow) return;
+                draggedRow.classList.remove('is-dragging');
+                draggedRow = null;
+                dragAllowed = false;
+
+                const endpoints = getOrder();
+                if (endpoints.every((endpoint, index) => endpoint === initialOrder[index])) return;
+
+                agentsTableBody.classList.add('is-saving-order');
+                fetch('/api/reorder-servers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ endpoints })
+                })
+                .then(response => response.json().then(data => ({ ok: response.ok, data })))
+                .then(({ ok, data }) => {
+                    if (!ok || !data.success) throw new Error(data.error || 'No se pudo guardar el orden');
+                    syncServerOrder(endpoints, data.data);
+                    MetricsManager.fetchAndUpdate();
+                })
+                .catch(error => {
+                    const rowsByEndpoint = new Map(
+                        [...agentsTableBody.querySelectorAll('.agent-sortable-row')]
+                            .map(item => [item.dataset.endpoint, item])
+                    );
+                    initialOrder.forEach(endpoint => {
+                        const item = rowsByEndpoint.get(endpoint);
+                        if (item) agentsTableBody.appendChild(item);
+                    });
+                    console.error('[Dockme] Error guardando orden de servidores:', error);
+                })
+                .finally(() => agentsTableBody.classList.remove('is-saving-order'));
+            });
+        });
+    }
 
     // Cargar uiUrl actuales desde updates.json y primaryHost desde settings.json
     fetch('/config/updates.json?t=' + Date.now())
@@ -9160,6 +9330,7 @@ function init() {
                 (epLabel ? `<div class="dm-endpoint">${epLabel}</div>` : '') +
                 `</div></a>`;
         }).join('');
+        dmApplyCurrentFilters();
     }
 
     // ---- Insertar CSS ----
@@ -9192,7 +9363,10 @@ function init() {
                 const cfg  = (window._dmStacksCfgRef?.() || dmState.stacksCfg);
                 const entry = cfg.find(s => s.name.toLowerCase() === name.toLowerCase() && (s.endpoint || 'Actual').toLowerCase() === ep.toLowerCase())
                            || cfg.find(s => s.name.toLowerCase() === name.toLowerCase());
-                if (entry?.url) window.open(entry.url, '_blank');
+                if (entry?.url) {
+                    window.open(entry.url, '_blank');
+                    dmClearTextFilter();
+                }
                 return;
             }
             const item = e.target.closest('.dm-item');
@@ -9200,6 +9374,7 @@ function init() {
                 e.preventDefault();
                 const name = item.dataset.dmName;
                 const ep   = item.dataset.dmEp || 'Actual';
+                dmClearTextFilter();
                 if (window._dmIsEditMode?.()) {
                     window._dmShowStackEditor?.(name, ep);
                 } else {
@@ -9210,54 +9385,55 @@ function init() {
     }
 
     // ---- Buscador ----
+    function dmUpdateSearchIcon(query) {
+        const icon = document.querySelector('.search-icon');
+        if (!icon) return;
+        icon.innerHTML = query
+            ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" style="width:14px;height:14px;"><path fill="currentColor" d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3l105.4 105.3c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256l105.3-105.4z"/></svg>'
+            : '<svg class="svg-inline--fa fa-magnifying-glass" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="currentColor" d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352a144 144 0 1 0 0-288 144 144 0 1 0 0 288z"/></svg>';
+    }
+
+    function dmApplyCurrentFilters() {
+        const list = document.getElementById('dm-stack-list');
+        if (!list) return;
+        const q = (document.getElementById('dm-flt-input')?.value || '').trim().toLowerCase();
+        const metrics = window.MetricsManager;
+        const hostname = metrics?.filterActive ? metrics.currentFilter : null;
+
+        list.querySelectorAll('.dm-item').forEach(item => {
+            const ep = item.dataset.dmEp || 'Actual';
+            const itemHostname = dmHostname(ep === '' ? 'Actual' : ep);
+            const matchServer = !hostname || itemHostname === hostname;
+            const matchText = !q || (item.dataset.dmName || '').toLowerCase().includes(q);
+            item.dataset.dmServerHidden = matchServer ? '' : '1';
+            item.style.display = matchServer && matchText ? '' : 'none';
+        });
+        dmUpdateSearchIcon(q);
+    }
+
+    function dmClearTextFilter() {
+        const input = document.getElementById('dm-flt-input');
+        if (input) input.value = '';
+        dmApplyCurrentFilters();
+    }
+
     function dmBindSearch() {
         const input = document.querySelector('#dm-flt-input');
         const icon  = document.querySelector('.search-icon');
         if (!input || input._dmBound) return;
         input._dmBound = true;
 
-        const applySearch = () => {
-            const q = input.value.trim().toLowerCase();
-            const list = document.getElementById('dm-stack-list');
-            if (!list) return;
-            list.querySelectorAll('.dm-item').forEach(item => {
-                if (item.dataset.dmServerHidden === '1') return;
-                const name = (item.dataset.dmName || '').toLowerCase();
-                item.style.display = (!q || name.includes(q)) ? '' : 'none';
-            });
-            if (icon) icon.innerHTML = q
-                ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512" style="width:14px;height:14px;"><path fill="currentColor" d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3l105.4 105.3c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256l105.3-105.4z"/></svg>'
-                : '<svg class="svg-inline--fa fa-magnifying-glass" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path fill="currentColor" d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352a144 144 0 1 0 0-288 144 144 0 1 0 0 288z"/></svg>';
-        };
-
-        input.addEventListener('input', applySearch);
-        if (icon) icon.addEventListener('click', () => { input.value = ''; applySearch(); input.focus(); });
+        input.addEventListener('input', dmApplyCurrentFilters);
+        if (icon) icon.addEventListener('click', () => { dmClearTextFilter(); input.focus(); });
     }
 
     // ---- Filtro por servidor ----
-    function dmApplyFilter(hostname) {
-        const list = document.getElementById('dm-stack-list');
-        if (!list) return;
-        const q = (document.getElementById('dm-flt-input')?.value || '').toLowerCase();
-        list.querySelectorAll('.dm-item').forEach(item => {
-            const ep = item.dataset.dmEp || 'Actual';
-            const hn = dmHostname(ep === '' ? 'Actual' : ep);
-            const matchServer = hn === hostname;
-            const matchText   = !q || (item.dataset.dmName || '').toLowerCase().includes(q);
-            item.dataset.dmServerHidden = matchServer ? '' : '1';
-            item.style.display = (matchServer && matchText) ? '' : 'none';
-        });
+    function dmApplyFilter() {
+        dmApplyCurrentFilters();
     }
 
     function dmClearFilter() {
-        const list = document.getElementById('dm-stack-list');
-        if (!list) return;
-        const q = (document.getElementById('dm-flt-input')?.value || '').toLowerCase();
-        list.querySelectorAll('.dm-item').forEach(item => {
-            delete item.dataset.dmServerHidden;
-            const matchText = !q || (item.dataset.dmName || '').toLowerCase().includes(q);
-            item.style.display = matchText ? '' : 'none';
-        });
+        dmApplyCurrentFilters();
     }
 
     function dmBindHeader() {
