@@ -8,6 +8,11 @@
     let logsCurrentStack = null;
     let logsCurrentEndpoint = null;
     let logsActiveTab = 'logs'; // recordar el tab activo entre stacks
+    let dockerNotificationSuppressionTimer = null;
+    let dockerNotificationSuppressionCurrent = null;
+    const dockerBulkNotificationSuppressionTimers = new Map();
+    const STACK_VIEW_INACTIVITY_MS = 5 * 60 * 1000;
+    const STACK_VIEW_EXCLUSION_REFRESH_MS = 4.5 * 60 * 1000;
     let dockmeUpdateInProgress = false;
     let dockmeIconVersion = localStorage.getItem('dockmeIconVersion') || Date.now();
     window.dockmeIconVersion = dockmeIconVersion;
@@ -38,6 +43,89 @@
     })();
     let primaryHostLocal = null;
     let stacksConfig = [];
+    function sendDockerNotificationSuppression(action, current) {
+        if (!current) return;
+        fetch('/api/suppress-docker-notification', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action,
+                endpoint: current.endpoint || 'Actual',
+                stack: current.stack,
+                source: current.source || 'active-stack'
+            })
+        }).catch(() => {});
+    }
+
+    function stopDockerNotificationSuppression() {
+        if (dockerNotificationSuppressionTimer) {
+            clearInterval(dockerNotificationSuppressionTimer);
+            dockerNotificationSuppressionTimer = null;
+        }
+        sendDockerNotificationSuppression('remove', dockerNotificationSuppressionCurrent);
+        dockerNotificationSuppressionCurrent = null;
+    }
+
+    function startDockerNotificationSuppression(stackName, endpoint) {
+        stopDockerNotificationSuppression();
+        const normalizedEndpoint = endpoint || 'Actual';
+        if (!stackName) return;
+        dockerNotificationSuppressionCurrent = {
+            endpoint: normalizedEndpoint,
+            stack: stackName,
+            source: `active-stack:${currentDeviceId}`
+        };
+
+        const refreshSuppression = () => {
+            sendDockerNotificationSuppression('add', dockerNotificationSuppressionCurrent);
+        };
+
+        refreshSuppression();
+        dockerNotificationSuppressionTimer = setInterval(refreshSuppression, STACK_VIEW_EXCLUSION_REFRESH_MS);
+    }
+
+    function bulkSuppressionKey(stack) {
+        const endpoint = stack.endpoint || 'Actual';
+        return `${endpoint.toLowerCase()}|${stack.name.toLowerCase()}`;
+    }
+
+    function startBulkDockerNotificationSuppression(stack) {
+        const endpoint = stack.endpoint || 'Actual';
+
+        const key = bulkSuppressionKey(stack);
+        stopBulkDockerNotificationSuppression(stack);
+
+        const current = {
+            endpoint,
+            stack: stack.name,
+            source: `bulk-update:${currentDeviceId}:${key}`
+        };
+        const refreshSuppression = () => sendDockerNotificationSuppression('add', current);
+
+        refreshSuppression();
+        dockerBulkNotificationSuppressionTimers.set(key, {
+            current,
+            timer: setInterval(refreshSuppression, STACK_VIEW_EXCLUSION_REFRESH_MS)
+        });
+    }
+
+    function stopBulkDockerNotificationSuppression(stack) {
+        const key = bulkSuppressionKey(stack);
+        const entry = dockerBulkNotificationSuppressionTimers.get(key);
+        if (!entry) return;
+        clearInterval(entry.timer);
+        sendDockerNotificationSuppression('remove', entry.current);
+        dockerBulkNotificationSuppressionTimers.delete(key);
+    }
+
+    function stopAllBulkDockerNotificationSuppressions() {
+        for (const entry of dockerBulkNotificationSuppressionTimers.values()) {
+            clearInterval(entry.timer);
+            sendDockerNotificationSuppression('remove', entry.current);
+        }
+        dockerBulkNotificationSuppressionTimers.clear();
+    }
+
     const loadStacksConfig = () => {
         return fetch('/config/stacks.json')
             .then(r => r.json())
@@ -3236,6 +3324,8 @@ window.addEventListener('resize', () => {
                 const row = this.panel.querySelector(`[data-stack="${stack.name}"][data-endpoint="${stack.endpoint}"]`);
                 if (!row) return resolve();
                 
+                startBulkDockerNotificationSuppression(stack);
+
                 const statusEl = row.querySelector('.stack-update-status');
                 
                 // Iniciar contador
@@ -3257,6 +3347,7 @@ window.addEventListener('resize', () => {
                         row.dataset.needsPolling = 'true'; 
                         this.removeUpdatedStack(stack); 
                     } else {
+                        stopBulkDockerNotificationSuppression(stack);
                         statusEl.textContent = '❌ Error';
                         this.hasErrors = true;
                         this.panel?.classList.add('error');
@@ -3270,8 +3361,8 @@ window.addEventListener('resize', () => {
             const socket = window.dockmeSocket;
             
             // Escuchar actualizaciones de stackList
-                socket.on("agent", (event, data) => {
-                    if (event === "stackList" && data.stackList && (this.isActive || this.isCancelling)) {
+            socket.on("agent", (event, data) => {
+                if (event === "stackList" && data.stackList && (this.isActive || this.isCancelling)) {
                     // Actualizar status de nuestros stacks
                     this.stacks.forEach(stack => {
                         const stackData = data.stackList[stack.name];
@@ -3291,6 +3382,7 @@ window.addEventListener('resize', () => {
                                 } else if (stackData.status === 4) { // EXITED
                                     statusEl.textContent = '⚠️ Exited';
                                     row.removeAttribute('data-needs-polling');
+                                    stopBulkDockerNotificationSuppression(stack);
                                     this.hasErrors = true;
                                     this.panel?.classList.add('error');    
                                 }
@@ -3321,6 +3413,7 @@ window.addEventListener('resize', () => {
                         clearInterval(checkInterval);
                         statusEl.textContent = '❌ Error';
                         row.removeAttribute('data-checking-services');
+                        stopBulkDockerNotificationSuppression(stack);
                         this.hasErrors = true;
                         this.panel?.classList.add('error');
                         this.checkIfAllDone();
@@ -3341,6 +3434,7 @@ window.addEventListener('resize', () => {
                         clearInterval(checkInterval);
                         statusEl.textContent = `✅ Running (${healthy}/${total})`;
                         row.removeAttribute('data-checking-services');
+                        stopBulkDockerNotificationSuppression(stack);
                         this.checkIfAllDone();
                     }
                     // Alguno unhealthy
@@ -3348,6 +3442,7 @@ window.addEventListener('resize', () => {
                         clearInterval(checkInterval);
                         statusEl.textContent = `⚠️ Running (${healthy}/${total})`;
                         row.removeAttribute('data-checking-services');
+                        stopBulkDockerNotificationSuppression(stack);
                         this.hasErrors = true;
                         this.panel?.classList.add('error');
                         this.checkIfAllDone();
@@ -3406,6 +3501,7 @@ window.addEventListener('resize', () => {
             if (allDone && startedRows && startedRows.length > 0) {
                 this.isCompleted = true;
                 this.isActive = false;
+                stopAllBulkDockerNotificationSuppressions();
                 clearInterval(this.totalTimer);
                 // Cambiar título a completado
                 const header = this.panel?.querySelector('.panel-header h3, .panel-header .panel-title');
@@ -3452,6 +3548,7 @@ window.addEventListener('resize', () => {
         close() {
             if (!this.panel) return;
             this.isActive = false;
+            stopAllBulkDockerNotificationSuppressions();
             
             // Desmarcar checkboxes de stacks cancelados o pendientes
             this.stacks.forEach(stack => {
@@ -4153,9 +4250,9 @@ window.addEventListener('resize', () => {
         logsCurrentStack    = stackName;
         logsCurrentEndpoint = endpoint;
         RecentManager.add(stackName, endpoint);
+        startDockerNotificationSuppression(stackName, endpoint);
 
-        // Timer de inactividad — volver al dashboard tras 10s sin actividad
-        const INACTIVITY_MS = 5 * 60 * 1000;
+        // Timer de inactividad — volver al dashboard tras 5 min sin actividad
         let inactivityTimer = null;
         const resetInactivity = () => {
             clearTimeout(inactivityTimer);
@@ -4163,7 +4260,7 @@ window.addEventListener('resize', () => {
                 if (document.body.classList.contains('dockme-logs-mode')) {
                     deactivateLogsMode();
                 }
-            }, INACTIVITY_MS);
+            }, STACK_VIEW_INACTIVITY_MS);
         };
         const activityEvents = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
         activityEvents.forEach(ev => document.addEventListener(ev, resetInactivity, { passive: true }));
@@ -5737,6 +5834,7 @@ window.addEventListener('resize', () => {
 
     function deactivateLogsMode() {
         _fromDashboard = true;
+        stopDockerNotificationSuppression();
         document.dispatchEvent(new Event('dockme-logs-deactivated'));
         document.body.classList.remove('dockme-logs-mode');
         // Restaurar handle móvil y botón expand si estaban ocultos
@@ -8303,7 +8401,9 @@ function renderGeneralTab(container) {
         .then(r => r.json())
         .then(settings => {
             const notif        = settings.notifications || {};
-            const notifEnabled = !!notif.enabled;
+            const notifUpdates = notif.updates !== false;
+            const notifDockerEvents = notif.dockerEvents !== false;
+            const notifExcludeActiveStack = notif.excludeActiveStack !== false;
             const notifUrl     = (Array.isArray(notif.urls) ? notif.urls[0] : '') || '';
             const pruneMode    = settings.pruneMode || 'disabled';
             const checkTime    = settings.checkTime || '09:00';
@@ -8314,17 +8414,6 @@ function renderGeneralTab(container) {
                     <!-- NOTIFICACIONES -->
                     <div class="general-section">
                         <div class="general-section-title">🔔 Notificaciones</div>
-
-                        <div class="general-field">
-                            <div class="general-input-row" style="align-items:center;gap:10px;">
-                                <label class="general-toggle">
-                                    <input type="checkbox" id="gen-notif-enabled" ${notifEnabled ? 'checked' : ''}>
-                                    <span class="general-toggle-slider"></span>
-                                </label>
-                                <span class="general-label" style="margin:0;">Enviar notificaciones</span>
-                                <span class="gen-field-status" id="gen-notif-enabled-status"></span>
-                            </div>
-                        </div>
 
                         <div class="general-field">
                             <label class="general-label" style="margin-bottom:4px;display:block;">Ejemplos por servicio</label>
@@ -8357,6 +8446,41 @@ function renderGeneralTab(container) {
                             <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
                                 <button class="btn btn-normal" id="gen-notif-test" style="padding:2px 10px;font-size:0.85em;">Enviar prueba</button>
                                 <span class="gen-field-status" id="gen-notif-test-status" style="font-size:0.85em;"></span>
+                            </div>
+                        </div>
+
+                        <div style="height:1px;background:#2a3441;margin:14px 0;"></div>
+
+                        <div class="general-field">
+                            <div class="general-input-row" style="align-items:center;gap:10px;">
+                                <label class="general-toggle">
+                                    <input type="checkbox" id="gen-notif-updates" ${notifUpdates ? 'checked' : ''}>
+                                    <span class="general-toggle-slider"></span>
+                                </label>
+                                <span class="general-label" style="margin:0;">Notificar actualizaciones</span>
+                                <span class="gen-field-status" id="gen-notif-updates-status"></span>
+                            </div>
+                        </div>
+
+                        <div class="general-field">
+                            <div class="general-input-row" style="align-items:center;gap:10px;">
+                                <label class="general-toggle">
+                                    <input type="checkbox" id="gen-notif-docker-events" ${notifDockerEvents ? 'checked' : ''}>
+                                    <span class="general-toggle-slider"></span>
+                                </label>
+                                <span class="general-label" style="margin:0;">Notificar iniciar/detener Docker</span>
+                                <span class="gen-field-status" id="gen-notif-docker-events-status"></span>
+                            </div>
+                        </div>
+
+                        <div class="general-field" id="gen-notif-exclude-active-stack-row" style="margin-left:36px;margin-top:-6px;${notifDockerEvents ? '' : 'display:none;'}">
+                            <div class="general-input-row" style="align-items:center;gap:10px;">
+                                <label class="general-toggle">
+                                    <input type="checkbox" id="gen-notif-exclude-active-stack" ${notifExcludeActiveStack ? 'checked' : ''}>
+                                    <span class="general-toggle-slider"></span>
+                                </label>
+                                <span class="general-label" style="margin:0;">Excluir acciones gestionadas desde Dockme</span>
+                                <span class="gen-field-status" id="gen-notif-exclude-active-stack-status"></span>
                             </div>
                         </div>
                     </div>
@@ -8462,21 +8586,39 @@ function renderGeneralTab(container) {
                 });
             };
 
-            // Toggle enabled — solo si hay URL guardada en settingsData
-            container.querySelector('#gen-notif-enabled').addEventListener('change', function () {
-                const savedUrls = State.settingsData?.notifications?.urls || [];
-                const hasUrl = savedUrls.some(u => u && u.trim());
-                if (this.checked && !hasUrl) {
-                    this.checked = false;
-                    const status = container.querySelector('#gen-notif-enabled-status');
-                    if (status) {
-                        status.textContent = '⚠ Envía una prueba primero para guardar la URL';
-                        status.className = 'icon-status error';
-                        setTimeout(() => { status.textContent = ''; status.className = 'icon-status'; }, 3000);
-                    }
-                    return;
+            const setNotificationTogglesState = (enabled) => {
+                const updatesToggle = container.querySelector('#gen-notif-updates');
+                const dockerToggle = container.querySelector('#gen-notif-docker-events');
+                const excludeToggle = container.querySelector('#gen-notif-exclude-active-stack');
+                const excludeRow = container.querySelector('#gen-notif-exclude-active-stack-row');
+
+                [updatesToggle, dockerToggle, excludeToggle].forEach(toggle => {
+                    if (!toggle) return;
+                    toggle.disabled = !enabled;
+                    if (!enabled) toggle.checked = false;
+                });
+
+                if (enabled) {
+                    if (excludeRow) excludeRow.style.display = dockerToggle?.checked ? '' : 'none';
+                } else if (excludeRow) {
+                    excludeRow.style.display = 'none';
                 }
-                saveField({ notifications: { enabled: this.checked } }, 'gen-notif-enabled-status');
+            };
+
+            setNotificationTogglesState(!!notifUrl);
+
+            container.querySelector('#gen-notif-updates')?.addEventListener('change', function () {
+                saveField({ notifications: { updates: this.checked } }, 'gen-notif-updates-status');
+            });
+
+            container.querySelector('#gen-notif-docker-events')?.addEventListener('change', function () {
+                const excludeRow = container.querySelector('#gen-notif-exclude-active-stack-row');
+                if (excludeRow) excludeRow.style.display = this.checked ? '' : 'none';
+                saveField({ notifications: { dockerEvents: this.checked } }, 'gen-notif-docker-events-status');
+            });
+
+            container.querySelector('#gen-notif-exclude-active-stack')?.addEventListener('change', function () {
+                saveField({ notifications: { excludeActiveStack: this.checked } }, 'gen-notif-exclude-active-stack-status');
             });
 
             // URL de notificación — Enter llama a Enviar prueba, blur no guarda
@@ -8556,15 +8698,23 @@ function renderGeneralTab(container) {
                 const statusEl  = container.querySelector('#gen-notif-test-status');
                 const urlInput  = container.querySelector('#gen-notif-url');
                 const urlVal    = urlInput?.value?.trim() || '';
-                const enabledEl = container.querySelector('#gen-notif-enabled');
                 // Si input vacío → desactivar y borrar URL
                 if (!urlVal) {
-                    saveField({ notifications: { urls: [], enabled: false } }, null);
+                    saveField({
+                        notifications: {
+                            urls: [],
+                            updates: false,
+                            dockerEvents: false,
+                            excludeActiveStack: false
+                        }
+                    }, null);
                     if (State.settingsData?.notifications) {
                         State.settingsData.notifications.urls = [];
-                        State.settingsData.notifications.enabled = false;
+                        State.settingsData.notifications.updates = false;
+                        State.settingsData.notifications.dockerEvents = false;
+                        State.settingsData.notifications.excludeActiveStack = false;
                     }
-                    if (enabledEl) enabledEl.checked = false;
+                    setNotificationTogglesState(false);
                     statusEl.textContent = '⚠ URL borrada, notificaciones desactivadas';
                     statusEl.style.color = '#f0a500';
                     setTimeout(() => { statusEl.textContent = ''; statusEl.style.color = ''; }, 3000);
@@ -8587,12 +8737,27 @@ function renderGeneralTab(container) {
                                 statusEl.textContent = '✅ Prueba enviada correctamente';
                                 statusEl.style.color = '#8affc1';
                                 // Solo ahora guardar URL y activar
-                                saveField({ notifications: { urls: [urlVal], enabled: true } }, null);
+                                saveField({
+                                    notifications: {
+                                        urls: [urlVal],
+                                        updates: true,
+                                        dockerEvents: true,
+                                        excludeActiveStack: true
+                                    }
+                                }, null);
                                 if (State.settingsData?.notifications) {
                                     State.settingsData.notifications.urls = [urlVal];
-                                    State.settingsData.notifications.enabled = true;
+                                    State.settingsData.notifications.updates = true;
+                                    State.settingsData.notifications.dockerEvents = true;
+                                    State.settingsData.notifications.excludeActiveStack = true;
                                 }
-                                if (enabledEl) enabledEl.checked = true;
+                                const updatesToggle = container.querySelector('#gen-notif-updates');
+                                const dockerToggle = container.querySelector('#gen-notif-docker-events');
+                                const excludeToggle = container.querySelector('#gen-notif-exclude-active-stack');
+                                if (updatesToggle) updatesToggle.checked = true;
+                                if (dockerToggle) dockerToggle.checked = true;
+                                if (excludeToggle) excludeToggle.checked = true;
+                                setNotificationTogglesState(true);
                             } else {
                                 statusEl.textContent = '❌ Configuración incorrecta, revisa la url';
                                 statusEl.style.color = '#ff8a8a';

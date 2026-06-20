@@ -55,8 +55,10 @@ const defaultSettings = {
   primaryHost:         '',
   release:             '',
   notifications: {
-    enabled: false,
-    urls:    []
+    urls:    [],
+    updates: true,
+    dockerEvents: true,
+    excludeActiveStack: true
   },
   checkTime: '09:00',
   pruneMode: 'conservative'
@@ -65,14 +67,31 @@ const defaultSettings = {
 function readSettingsFile() {
   if (!fs.existsSync(settingsPath)) return { ...defaultSettings };
   try {
-    return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const merged = {
+      ...defaultSettings,
+      ...data,
+      notifications: {
+        ...defaultSettings.notifications,
+        ...(data.notifications || {})
+      }
+    };
+    delete merged.notifications.enabled;
+    return merged;
   } catch {
     return { ...defaultSettings };
   }
 }
 
 function writeSettingsFile(data) {
-  fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2));
+  const clean = {
+    ...data,
+    notifications: {
+      ...(data.notifications || {})
+    }
+  };
+  delete clean.notifications.enabled;
+  fs.writeFileSync(settingsPath, JSON.stringify(clean, null, 2));
 }
 
 // ============================
@@ -607,7 +626,8 @@ app.post('/api/test-notification', async (req, res) => {
       }
       url = urls[0];
     }
-    const msg = '🔔 DockMe — Notificación de prueba.';
+    const customMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    const msg = customMessage || '🔔 DockMe — Notificación de prueba.';
     const tmpFile = `/tmp/shoutrrr-test-${Date.now()}.txt`;
     fs.writeFileSync(tmpFile, msg);
     exec(`shoutrrr send --url ${JSON.stringify(url)} --message - < ${tmpFile}`,
@@ -623,6 +643,45 @@ app.post('/api/test-notification', async (req, res) => {
       }
     );
   } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================
+// POST /api/suppress-docker-notification
+// Gestiona exclusiones Docker locales para stacks abiertos en Dockme.
+// ============================
+app.post('/api/suppress-docker-notification', (req, res) => {
+  try {
+    const { action = 'add', endpoint = 'Actual', stack, source = 'default' } = req.body || {};
+    if (!stack || typeof stack !== 'string') {
+      return res.status(400).json({ success: false, message: 'Falta stack' });
+    }
+
+    if (!['add', 'remove'].includes(action)) {
+      return res.status(400).json({ success: false, message: 'Acción inválida' });
+    }
+
+    const normalizedEndpoint = endpoint || 'Actual';
+    const expiresAt = action === 'add'
+      ? addDockerEventExclusion(normalizedEndpoint, stack, source)
+      : removeDockerEventExclusion(normalizedEndpoint, stack, source);
+    res.json({ success: true, action, expiresAt });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================
+// POST /api/docker-event
+// Ingesta centralizada de eventos Docker locales/remotos.
+// ============================
+app.post('/api/docker-event', async (req, res) => {
+  try {
+    const result = await processDockerEvent(req.body || {});
+    res.status(result.success ? 200 : 400).json(result);
+  } catch (err) {
+    console.error(`❌ [Docker events] Error procesando evento: ${err.message}`);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -1571,11 +1630,11 @@ function findNewUpdates(before, after) {
     for (const stackAfter of (serverAfter.updates || [])) {
       const stackBefore = stacksBefore.find(u => u.stack === stackAfter.stack);
       if (!stackBefore) {
-        results.push({ hostname: serverAfter.hostname, stack: stackAfter.stack });
+        results.push({ hostname: serverAfter.hostname, endpoint: serverAfter.endpoint || 'Actual', stack: stackAfter.stack });
       } else {
         const newDockers = stackAfter.dockers.filter(d => !(stackBefore.dockers || []).includes(d));
         if (newDockers.length > 0) {
-          results.push({ hostname: serverAfter.hostname, stack: stackAfter.stack });
+          results.push({ hostname: serverAfter.hostname, endpoint: serverAfter.endpoint || 'Actual', stack: stackAfter.stack });
         }
       }
     }
@@ -1583,19 +1642,43 @@ function findNewUpdates(before, after) {
   return results;
 }
 
+function isDockmeUpdate(update) {
+  return String(update?.stack || '').toLowerCase() === 'dockme';
+}
+
+function isCentralDockmeUpdate(update) {
+  return isDockmeUpdate(update) && String(update?.endpoint || 'Actual').toLowerCase() === 'actual';
+}
+
+function capitalizeStackName(stack) {
+  const name = String(stack || '').trim();
+  if (!name) return '';
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function formatSpanishList(items) {
+  if (items.length <= 1) return items[0] || '';
+  if (items.length === 2) return `${items[0]} y ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')} y ${items[items.length - 1]}`;
+}
+
 function buildMessage(newUpdates, timedOut = []) {
-  const byHost = {};
+  const uniqueStacks = [];
+  const seenStacks = new Set();
   for (const item of newUpdates) {
-    if (!byHost[item.hostname]) byHost[item.hostname] = [];
-    byHost[item.hostname].push(item.stack);
+    if (isDockmeUpdate(item)) continue;
+    const stack = String(item.stack || '').trim();
+    const key = stack.toLowerCase();
+    if (!stack || seenStacks.has(key)) continue;
+    seenStacks.add(key);
+    uniqueStacks.push(capitalizeStackName(stack));
   }
+
   let msg = '';
-  if (newUpdates.length > 0) {
-    msg += '🐋 Nuevas actualizaciones en Dockme\n';
-    for (const [hostname, stacks] of Object.entries(byHost)) {
-      msg += `\n🖥 ${hostname}\n`;
-      for (const stack of stacks) msg += `  • ${stack}\n`;
-    }
+  if (uniqueStacks.length > 0) {
+    const stackList = formatSpanishList(uniqueStacks);
+    const verb = uniqueStacks.length === 1 ? 'tiene' : 'tienen';
+    msg += `🐋 ${stackList} ${verb} actualización`;
   }
   if (timedOut.length > 0) {
     const updates = readUpdatesFile();
@@ -1610,14 +1693,17 @@ function buildMessage(newUpdates, timedOut = []) {
   return msg.trim();
 }
 
+function buildDockmeUpdateMessage() {
+  return [
+    '🐋 Dockme tiene actualización',
+    'https://github.com/fernandeusto/dockme/releases/latest'
+  ].join('\n');
+}
+
 async function sendNotification(message) {
   if (!message) return;
   const settings = readSettingsFile();
   const notif = settings.notifications || {};
-  if (!notif.enabled) {
-    console.log('📵 [Notif] Notificaciones desactivadas');
-    return;
-  }
   const urls = Array.isArray(notif.urls) ? notif.urls.filter(Boolean) : [];
   if (urls.length === 0) {
     console.log('📵 [Notif] Sin URLs configuradas');
@@ -1639,6 +1725,266 @@ async function sendNotification(message) {
       );
     });
   }
+}
+
+const dockerEventDedupe = new Map();
+const dockerEventSuppressions = new Map();
+const STACK_VIEW_EXCLUSION_MS = 5 * 60 * 1000;
+let dockerEventReconnectTimer = null;
+
+function dockerEventFilters() {
+  return encodeURIComponent(JSON.stringify({
+    type: ['container'],
+    event: ['start', 'stop', 'die']
+  }));
+}
+
+function dockerEventContainerName(event) {
+  const attrs = event?.Actor?.Attributes || {};
+  return attrs.name || event?.Actor?.ID?.slice(0, 12) || event?.id?.slice(0, 12) || 'desconocido';
+}
+
+function dockerEventStackName(event) {
+  const attrs = event?.Actor?.Attributes || {};
+  return attrs['com.docker.compose.project'] || attrs['com.docker.compose.service'] || attrs.name || '';
+}
+
+function dockerEventServiceName(event) {
+  const attrs = event?.Actor?.Attributes || {};
+  return attrs['com.docker.compose.service'] || '';
+}
+
+function dockerEventSuppressionKey(endpoint, stack) {
+  return `${(endpoint || 'Actual').toLowerCase()}|${(stack || '').toLowerCase()}`;
+}
+
+function addDockerEventExclusion(endpoint, stack, source = 'default') {
+  const key = dockerEventSuppressionKey(endpoint, stack);
+  const expiresAt = Date.now() + STACK_VIEW_EXCLUSION_MS;
+  const entries = dockerEventSuppressions.get(key) || new Map();
+  entries.set(source, expiresAt);
+  dockerEventSuppressions.set(key, entries);
+  return expiresAt;
+}
+
+function removeDockerEventExclusion(endpoint, stack, source = 'default') {
+  const key = dockerEventSuppressionKey(endpoint, stack);
+  const entries = dockerEventSuppressions.get(key);
+  if (!entries) return null;
+  entries.delete(source);
+  if (entries.size === 0) dockerEventSuppressions.delete(key);
+  return null;
+}
+
+function isDockerEventSuppressed(event) {
+  const settings = readSettingsFile();
+  if (settings.notifications?.excludeActiveStack === false) return false;
+
+  const now = Date.now();
+  for (const [key, entries] of dockerEventSuppressions) {
+    for (const [source, expiresAt] of entries) {
+      if (expiresAt <= now) entries.delete(source);
+    }
+    if (entries.size === 0) dockerEventSuppressions.delete(key);
+  }
+
+  const stack = event?.stack || dockerEventStackName(event);
+  const endpoint = event?.endpoint || 'Actual';
+  if (!stack) return false;
+  const entries = dockerEventSuppressions.get(dockerEventSuppressionKey(endpoint, stack));
+  return !!entries && [...entries.values()].some(expiresAt => expiresAt > now);
+}
+
+function dockerEventMessage(event) {
+  const action = event?.Action || event?.status;
+  const container = dockerEventContainerName(event);
+
+  if (action === 'start') {
+    return {
+      state: 'started',
+      text: `🟢 El contenedor ${container} se ha iniciado`
+    };
+  }
+
+  if (action === 'stop' || action === 'die') {
+    return {
+      state: 'stopped',
+      text: `🔴 El contenedor ${container} se ha detenido`
+    };
+  }
+
+  return null;
+}
+
+function dockerEventHostname(endpoint, fallback = '') {
+  const normalizedEndpoint = endpoint || 'Actual';
+  const updates = readUpdatesFile();
+  const host = updates.find(h =>
+    (h.endpoint || 'Actual').toLowerCase() === normalizedEndpoint.toLowerCase()
+  );
+  return host?.hostname || fallback || normalizedEndpoint;
+}
+
+function normalizeDockerEvent(event) {
+  const normalized = dockerEventMessage(event);
+  if (!normalized) return null;
+
+  const endpoint = process.env.ENDPOINT && process.env.ENDPOINT !== 'Actual'
+    ? process.env.ENDPOINT
+    : 'Actual';
+
+  return {
+    endpoint,
+    hostname: process.env.HOSTNAME || '',
+    stack: dockerEventStackName(event),
+    service: dockerEventServiceName(event),
+    container: dockerEventContainerName(event),
+    action: event?.Action || event?.status,
+    state: normalized.state,
+    text: normalized.text,
+    time: event?.time || Math.floor(Date.now() / 1000)
+  };
+}
+
+function centralDockerEventUrl() {
+  if (!IS_AGENT) return 'http://localhost:5002/api/docker-event';
+
+  const central = process.env.CENTRAL_URL || process.env.WEBHOOK_URL || '';
+  if (!central) return '';
+
+  // Mismo criterio que check-updates.sh:
+  // - URL legacy completa con /api/...: sustituir el endpoint final.
+  // - URL con protocolo sin path: añadir /api/docker-event.
+  // - Host:puerto sin protocolo: añadir http:// y /api/docker-event.
+  if (/^https?:\/\/[^/]+\/.+/.test(central)) {
+    const base = central.replace(/\/api\/.*$/, '').replace(/\/$/, '');
+    return `${base}/api/docker-event`;
+  }
+  if (/^https?:\/\//.test(central)) {
+    return `${central.replace(/\/$/, '')}/api/docker-event`;
+  }
+  return `http://${central.replace(/\/$/, '')}/api/docker-event`;
+}
+
+async function postDockerEventToCentral(event) {
+  const url = centralDockerEventUrl();
+  if (!url) {
+    console.warn('⚠️ [Docker events] Sin central configurado para enviar evento');
+    return;
+  }
+
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+      signal: AbortSignal.timeout(5000)
+    });
+  } catch (err) {
+    console.warn(`⚠️ [Docker events] No se pudo enviar evento al central: ${err.message}`);
+  }
+}
+
+async function handleDockerEvent(event) {
+  const normalized = normalizeDockerEvent(event);
+  if (!normalized) return;
+
+  await postDockerEventToCentral(normalized);
+}
+
+async function processDockerEvent(event) {
+  if (!event?.container || !event?.state) {
+    return { success: false, message: 'Evento Docker inválido' };
+  }
+
+  const settings = readSettingsFile();
+  if (settings.notifications?.dockerEvents === false) {
+    console.log('📵 [Docker events] Notificaciones Docker desactivadas');
+    return { success: true, ignored: true };
+  }
+
+  if (isDockerEventSuppressed(event)) {
+    const stack = event.stack;
+    const container = event.container;
+    console.log(`🔕 [Docker events] Silenciado por vista abierta: ${stack || container}`);
+    return { success: true, suppressed: true };
+  }
+
+  const endpoint = event.endpoint || 'Actual';
+  const container = event.container;
+  const dedupeKey = `${endpoint}:${container}:${event.state}`;
+  const now = Date.now();
+  const lastSeen = dockerEventDedupe.get(dedupeKey) || 0;
+
+  // Docker suele emitir die + stop para una parada normal. Evita duplicados.
+  if (now - lastSeen < 15000) {
+    console.log(`🔕 [Docker events] Duplicado ignorado: ${dedupeKey}`);
+    return { success: true, duplicate: true };
+  }
+
+  dockerEventDedupe.set(dedupeKey, now);
+  for (const [key, ts] of dockerEventDedupe) {
+    if (now - ts > 60000) dockerEventDedupe.delete(key);
+  }
+
+  const hostname = dockerEventHostname(endpoint, event.hostname);
+  const host = hostname ? ` en ${hostname}` : '';
+  const text = event.state === 'started'
+    ? `🟢 El contenedor ${container} se ha iniciado${host}`
+    : `🔴 El contenedor ${container} se ha detenido${host}`;
+
+  console.log(`🐳 [Docker events] ${text}`);
+  await sendNotification(text);
+  return { success: true };
+}
+
+function scheduleDockerEventReconnect() {
+  if (dockerEventReconnectTimer) return;
+  dockerEventReconnectTimer = setTimeout(() => {
+    dockerEventReconnectTimer = null;
+    startDockerEventWatcher();
+  }, 5000);
+}
+
+function startDockerEventWatcher() {
+  const since = Math.floor(Date.now() / 1000);
+  const eventPath = `/events?since=${since}&filters=${dockerEventFilters()}`;
+  let buffer = '';
+
+  console.log(`👂 [Docker events] Escuchando cambios locales de contenedores (${IS_AGENT ? 'agente' : 'central'})...`);
+
+  const req = http.request(
+    { socketPath: '/var/run/docker.sock', path: eventPath, method: 'GET' },
+    res => {
+      res.on('data', chunk => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            handleDockerEvent(JSON.parse(trimmed));
+          } catch (err) {
+            console.warn(`⚠️ [Docker events] Evento inválido: ${err.message}`);
+          }
+        }
+      });
+
+      res.on('end', () => {
+        console.warn('⚠️ [Docker events] Stream cerrado, reintentando...');
+        scheduleDockerEventReconnect();
+      });
+    }
+  );
+
+  req.on('error', err => {
+    console.warn(`⚠️ [Docker events] No se pudo escuchar Docker: ${err.message}`);
+    scheduleDockerEventReconnect();
+  });
+
+  req.end();
 }
 
 async function runScheduledChecks(notify = true) {
@@ -1699,6 +2045,17 @@ async function runScheduledChecks(notify = true) {
     const snapshotAfter = readUpdatesFile();
     const newUpdates = findNewUpdates(snapshotBefore, snapshotAfter);
     console.log(`📊 [Cycle] Novedades: ${newUpdates.length} | Timeouts: ${JSON.stringify(cycleResult.timedOut)}`);
+
+    if (newUpdates.some(isCentralDockmeUpdate)) {
+      console.log('📬 [Cycle] Enviando notificación de actualización de Dockme central');
+      await sendNotification(buildDockmeUpdateMessage());
+    }
+
+    if (settings.notifications?.updates === false) {
+      console.log('📵 [Cycle] Notificaciones de actualizaciones desactivadas');
+      return;
+    }
+
     const msg = buildMessage(newUpdates, cycleResult.timedOut);
     if (msg) {
       console.log(`📬 [Cycle] Enviando notificación (${newUpdates.length} novedad(es), ${cycleResult.timedOut.length} timeout(s))`);
@@ -2099,4 +2456,5 @@ app.listen(port, () => {
   console.log(`✅ API Node lista`);
   console.log(`🔗 [Connected] Endpoints activos: [ninguno — pendiente sincronización del frontend]`);
   setupScheduler();
+  startDockerEventWatcher();
 });

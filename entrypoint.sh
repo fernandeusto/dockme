@@ -178,8 +178,10 @@ else:
         "primaryHost": primary_host,
         "release":     release,
         "notifications": {
-            "enabled": bool(notification_urls),
-            "urls":    notification_urls
+            "urls":    notification_urls,
+            "updates": True,
+            "dockerEvents": True,
+            "excludeActiveStack": True
         },
         "checkTime": check_time,
         "pruneMode": os.environ.get('PRUNE_MODE', 'conservative')
