@@ -44,8 +44,8 @@
     let primaryHostLocal = null;
     let stacksConfig = [];
     function sendDockerNotificationSuppression(action, current) {
-        if (!current) return;
-        fetch('/api/suppress-docker-notification', {
+        if (!current) return Promise.resolve();
+        return fetch('/api/suppress-docker-notification', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -89,11 +89,11 @@
         return `${endpoint.toLowerCase()}|${stack.name.toLowerCase()}`;
     }
 
-    function startBulkDockerNotificationSuppression(stack) {
+    async function startBulkDockerNotificationSuppression(stack) {
         const endpoint = stack.endpoint || 'Actual';
 
         const key = bulkSuppressionKey(stack);
-        stopBulkDockerNotificationSuppression(stack);
+        await stopBulkDockerNotificationSuppression(stack);
 
         const current = {
             endpoint,
@@ -102,7 +102,7 @@
         };
         const refreshSuppression = () => sendDockerNotificationSuppression('add', current);
 
-        refreshSuppression();
+        await refreshSuppression();
         dockerBulkNotificationSuppressionTimers.set(key, {
             current,
             timer: setInterval(refreshSuppression, STACK_VIEW_EXCLUSION_REFRESH_MS)
@@ -112,10 +112,10 @@
     function stopBulkDockerNotificationSuppression(stack) {
         const key = bulkSuppressionKey(stack);
         const entry = dockerBulkNotificationSuppressionTimers.get(key);
-        if (!entry) return;
+        if (!entry) return Promise.resolve();
         clearInterval(entry.timer);
-        sendDockerNotificationSuppression('remove', entry.current);
         dockerBulkNotificationSuppressionTimers.delete(key);
+        return sendDockerNotificationSuppression('remove', entry.current);
     }
 
     function stopAllBulkDockerNotificationSuppressions() {
@@ -124,6 +124,15 @@
             sendDockerNotificationSuppression('remove', entry.current);
         }
         dockerBulkNotificationSuppressionTimers.clear();
+    }
+
+    async function suppressDockmeUpdateNotifications(endpoint) {
+        const normalizedEndpoint = endpoint || 'Actual';
+        const source = `dockme-update:${currentDeviceId}:${normalizedEndpoint}`;
+        await Promise.all([
+            sendDockerNotificationSuppression('add', { endpoint: normalizedEndpoint, stack: 'dockme', source }),
+            sendDockerNotificationSuppression('add', { endpoint: normalizedEndpoint, stack: 'dockme-auto-update', source })
+        ]);
     }
 
     const loadStacksConfig = () => {
@@ -2875,8 +2884,46 @@ window.addEventListener('resize', () => {
     }
 
     // ==================== EVENT HANDLERS ====================
+    function autoAssignStackIcon(stackName, endpoint) {
+        const normalizedEndpoint = endpoint || 'Actual';
+        let entry = stacksConfig.find(s =>
+            s.name.toLowerCase() === stackName.toLowerCase() &&
+            (s.endpoint || 'Actual').toLowerCase() === normalizedEndpoint.toLowerCase()
+        );
+        if (entry?.icon) return;
+
+        const ensureEntry = entry
+            ? Promise.resolve()
+            : fetch('/api/set-stack', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: stackName, endpoint: normalizedEndpoint })
+            }).then(() => {
+                stacksConfig.push({ name: stackName, endpoint: normalizedEndpoint, url: '', repo: '', favorite: false, order: null });
+            });
+
+        ensureEntry
+            .then(() => fetch(`/api/auto-icon?name=${encodeURIComponent(stackName)}&endpoint=${encodeURIComponent(normalizedEndpoint)}`))
+            .then(r => r.json())
+            .then(d => {
+                if (d.success && d.iconFile) {
+                    const e = stacksConfig.find(s =>
+                        s.name.toLowerCase() === stackName.toLowerCase() &&
+                        (s.endpoint || 'Actual').toLowerCase() === normalizedEndpoint.toLowerCase()
+                    );
+                    if (e) e.icon = d.iconFile;
+                    loadStacksConfig().then(() => {
+                        refreshStackIconUI(stackName, normalizedEndpoint);
+                    });
+                }
+            })
+            .catch(() => {});
+    }
+
     function autoAssignServiceUrl(stackName, endpoint, composeContent) {
         if (!stackName) return;
+        autoAssignStackIcon(stackName, endpoint);
+
         // Solo si no tiene URL asignada
         const entry = stacksConfig.find(s =>
             s.name.toLowerCase() === stackName.toLowerCase() &&
@@ -2916,22 +2963,6 @@ window.addEventListener('resize', () => {
                     if (repoFromSources) entry.repo = repoFromSources;
                 } else {
                     stacksConfig.push({ name: stackName, endpoint, url: serviceUrl, repo: '', favorite: false, order: null });
-                    // Stack nuevo — intentar descargar icono del CDN en background
-                    fetch(`/api/auto-icon?name=${encodeURIComponent(stackName)}&endpoint=${encodeURIComponent(endpoint)}`)
-                        .then(r => r.json())
-                        .then(d => {
-                            if (d.success && d.iconFile) {
-                                const e = stacksConfig.find(s =>
-                                    s.name.toLowerCase() === stackName.toLowerCase() &&
-                                    s.endpoint.toLowerCase() === endpoint.toLowerCase()
-                                );
-                                if (e) e.icon = d.iconFile;
-                                dockmeIconVersion = Date.now();
-                                localStorage.setItem('dockmeIconVersion', dockmeIconVersion);
-                                if (window._dmRenderStacks) window._dmRenderStacks();
-                            }
-                        })
-                        .catch(() => {});
                 }
                 // Recargar stacksConfig para garantizar sincronización con el servidor
                 loadStacksConfig();
@@ -2941,9 +2972,10 @@ window.addEventListener('resize', () => {
     }
 
     const EventHandlers = {
-        updateDockme(endpoint) {
+        async updateDockme(endpoint) {
             if (window.dockmeUpdateInProgress) return;
             window.dockmeUpdateInProgress = true;
+            await suppressDockmeUpdateNotifications(endpoint || 'Actual');
             // Eliminar update del updates.json Y de la variable global
             if (Array.isArray(State.updatesDataGlobal)) {
                 const hostEntry = State.updatesDataGlobal.find(
@@ -3320,11 +3352,11 @@ window.addEventListener('resize', () => {
         },
 
         async updateStack(stack) {
-            return new Promise((resolve) => {
+            return new Promise(async (resolve) => {
                 const row = this.panel.querySelector(`[data-stack="${stack.name}"][data-endpoint="${stack.endpoint}"]`);
                 if (!row) return resolve();
                 
-                startBulkDockerNotificationSuppression(stack);
+                await startBulkDockerNotificationSuppression(stack);
 
                 const statusEl = row.querySelector('.stack-update-status');
                 
@@ -4427,14 +4459,10 @@ window.addEventListener('resize', () => {
                         <svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M471.6 21.7c-21.9-21.9-57.3-21.9-79.2 0L362.3 51.7l97.9 97.9 30.1-30.1c21.9-21.9 21.9-57.3 0-79.2L471.6 21.7zm-299.2 220c-6.1 6.1-10.8 13.6-13.5 21.9l-29.6 88.8c-2.9 8.6-.6 18.1 5.8 24.6s15.9 8.7 24.6 5.8l88.8-29.6c8.2-2.7 15.7-7.4 21.9-13.5L437.7 172.3 339.7 74.3 172.4 241.7zM96 64C43 64 0 107 0 160V416c0 53 43 96 96 96H352c53 0 96-43 96-96V320c0-17.7-14.3-32-32-32s-32 14.3-32 32v96c0 17.7-14.3 32-32 32H96c-17.7 0-32-14.3-32-32V160c0-17.7 14.3-32 32-32h96c17.7 0 32-14.3 32-32s-14.3-32-32-32H96z"/></svg>
                         Editar
                     </button>
-                    <button class="btn btn-normal" id="compose-btn-cancel" style="display:none;">✕ Cancelar</button>
-                    <button class="btn btn-normal" id="compose-btn-save" style="display:none;">
-                        <svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M64 32C28.7 32 0 60.7 0 96V416c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V173.3c0-17-6.7-33.3-18.7-45.3L352 50.7C340 38.7 323.7 32 306.7 32H64zm0 96c0-17.7 14.3-32 32-32H288c17.7 0 32 14.3 32 32v64c0 17.7-14.3 32-32 32H96c-17.7 0-32-14.3-32-32V128zM224 288a64 64 0 1 1 0 128 64 64 0 1 1 0-128z"/></svg>
-                        Guardar
-                    </button>
+                    <button class="btn btn-normal" id="compose-btn-cancel" style="display:none;">✕ Deshacer cambios</button>
                     <button class="btn btn-primary" id="compose-btn-deploy" style="display:none;">
                         <svg class="svg-inline--fa" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" style="width:0.875em;height:1em;margin-right:5px;"><path fill="currentColor" d="M156.6 384.9L125.7 354c-8.5-8.5-11.5-20.8-7.7-32.2l22-63.9-44.9-44.9-9.9 7.4c-14.7 11-21.2 28.2-18.1 45.6l21.1 118.2c2.2 12.5 9.3 23.6 19.6 31.2l87.7 63.1c10.9 7.9 25.9 7.9 36.8 0l87.7-63.1c10.4-7.5 17.4-18.6 19.6-31.2l21.1-118.2c3.1-17.4-3.4-34.6-18.1-45.6l-9.9-7.4-44.9 44.9 22 63.9c3.8 11.4.8 23.7-7.7 32.2L355.4 384.9l-99.4 71.6-99.4-71.6zM416 32L32 32C14.3 32 0 46.3 0 64v128c0 17.7 14.3 32 32 32h384c17.7 0 32-14.3 32-32V64c0-17.7-14.3-32-32-32zM64 112a16 16 0 1 1 32 0 16 16 0 1 1 -32 0z"/></svg>
-                        Desplegar
+                        Desplegar y guardar
                     </button>
                     <span class="compose-running-warning" style="display:none;color:#ffa726;font-size:0.85em;align-self:center;"></span>
                 </div>
@@ -4765,7 +4793,6 @@ window.addEventListener('resize', () => {
         const logsFooter         = panel.querySelector('#logs-footer-bar');
         const composeFooter      = panel.querySelector('#compose-footer-bar');
         const btnDeploy          = panel.querySelector('#compose-btn-deploy');
-        const btnSave            = panel.querySelector('#compose-btn-save');
         const btnCancel          = panel.querySelector('#compose-btn-cancel');
         const btnPause           = panel.querySelector('#compose-btn-pause');
         const btnDelete          = panel.querySelector('#compose-btn-delete');
@@ -4856,12 +4883,10 @@ window.addEventListener('resize', () => {
                                 window.jsyaml.load(ed.getValue());
                                 container.style.borderColor = '#2a3441';
                                 if (btnDeploy) btnDeploy.disabled = false;
-                                if (btnSave) btnSave.disabled = false;
                                 if (warningEl) warningEl.style.display = 'none';
                             } catch (e) {
                                 container.style.borderColor = '#ef5350';
                                 if (btnDeploy) btnDeploy.disabled = true;
-                                if (btnSave) btnSave.disabled = true;
                                 if (warningEl) {
                                     warningEl.textContent = `⚠️ ${e.reason || e.message}`;
                                     warningEl.style.display = '';
@@ -4985,7 +5010,6 @@ window.addEventListener('resize', () => {
             composeEditing = editing;
             cmpBtnEdit.style.display  = editing ? 'none' : '';
             btnDeploy.style.display   = editing ? '' : 'none';
-            btnSave.style.display     = editing ? '' : 'none';
             btnCancel.style.display   = editing ? '' : 'none';
             btnPause.style.display    = editing ? 'none' : '';
             btnDelete.style.display   = editing ? 'none' : '';
@@ -5011,7 +5035,6 @@ window.addEventListener('resize', () => {
             } else {
                 composeEditorWrap.style.borderColor = '#2a3441';
                 if (btnDeploy) btnDeploy.disabled = false;
-                if (btnSave) btnSave.disabled = false;
                 const warningEl = composeFooter.querySelector('.compose-running-warning');
                 if (warningEl) warningEl.style.display = 'none';
                 setTimeout(applySplit, 50);
@@ -5028,25 +5051,6 @@ window.addEventListener('resize', () => {
             envEditorWrap.style.height     = envH + 'px';
             if (cmCompose?.setSize) cmCompose.setSize('100%', compH);
             if (cmEnv?.setSize)     cmEnv.setSize('100%', envH);
-        });
-
-        btnSave.addEventListener('click', async () => {
-            const newCompose = getCmValue(cmCompose);
-            const newEnv     = getCmValue(cmEnv);
-            try {
-                const r = await fetch(`/api/compose/${encodeURIComponent(stackName)}${epParam2}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ content: newCompose, env: newEnv })
-                });
-                const d = await r.json();
-                if (!d.success) throw new Error(d.message);
-                composeContent = newCompose;
-                envContent     = newEnv;
-                setEditMode(false);
-            } catch (e) {
-                alert(`Error guardando: ${e.message}`);
-            }
         });
 
         // ── Terminal ──
