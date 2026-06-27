@@ -2582,6 +2582,13 @@ window.addEventListener('resize', () => {
             Object.keys(this._intervals).forEach(id => this.clearInterval(id));
         },
 
+        cacheBustUrl(url) {
+            const raw = String(url || '');
+            const [withoutHash, hash = ''] = raw.split('#');
+            const sep = withoutHash.includes('?') ? '&' : '?';
+            return `${withoutHash}${sep}t=${Date.now()}${hash ? `#${hash}` : ''}`;
+        },
+
         startAll() {
             linksConfig.filter(b => b.iframeId && parseInt(b.autoRefresh) > 0).forEach(b => {
                 const box = document.querySelector(`[data-block-key="iframe:${b.iframeId}"]`);
@@ -2590,9 +2597,9 @@ window.addEventListener('resize', () => {
                 if (isImage) {
                     const img = box.querySelector('img');
                     if (img) {
-                        img.src = b.url.split('?')[0] + '?t=' + Date.now();
+                        img.src = this.cacheBustUrl(b.url);
                         this.setAutoRefresh(b.iframeId, b.autoRefresh, null, () => {
-                            img.src = b.url.split('?')[0] + '?t=' + Date.now();
+                            img.src = this.cacheBustUrl(b.url);
                         });
                     }
                 } else {
@@ -2693,13 +2700,13 @@ window.addEventListener('resize', () => {
                     overlay.className = 'iframe-widget-overlay';
                     overlay.title = 'Click para recargar';
                     overlay.addEventListener('click', () => {
-                        img.src = widget.url.split('?')[0] + '?t=' + Date.now();
+                        img.src = this.cacheBustUrl(widget.url);
                     });
                     wrap.appendChild(overlay);
                 }
 
                 this.setAutoRefresh(widget.iframeId, widget.autoRefresh, null, () => {
-                    img.src = widget.url.split('?')[0] + '?t=' + Date.now();
+                    img.src = this.cacheBustUrl(widget.url);
                 });
 
             } else {
@@ -6676,6 +6683,852 @@ window.addEventListener('resize', () => {
 
     // ==================== REASIGNACIÓN AUTOMÁTICA ====================
 
+    // ==================== MODAL CONTENEDORES ====================
+    const ContainerStatsModal = {
+        overlay: null,
+        endpoint: 'Actual',
+        hostname: '',
+        containers: [],
+        sortKey: null,
+        sortDir: 'desc',
+        loading: false,
+        expandedStacks: new Set(),
+        searchQuery: '',
+        portQuery: '',
+        liveTimer: null,
+        liveLoading: false,
+        inactivityTimer: null,
+        inactivityHandler: null,
+        inactivityEvents: ['mousemove', 'keydown', 'click', 'scroll', 'touchstart', 'input'],
+
+        columns: [
+            { key: 'stack', label: 'Stack', type: 'text' },
+            { key: 'name', label: '', type: 'text' },
+            { key: 'status', label: 'Estado', type: 'text' },
+            { key: 'cpuValue', label: 'CPU%', type: 'number' },
+            { key: 'ramBytes', label: 'RAM', type: 'number' },
+            { key: 'uptime', label: 'Uptime', type: 'text' },
+            { key: 'portsValue', label: 'Puertos', type: 'number' }
+        ],
+
+        escape(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[ch]));
+        },
+
+        selectorEscape(value) {
+            if (window.CSS?.escape) return CSS.escape(String(value ?? ''));
+            return String(value ?? '').replace(/["\\]/g, '\\$&');
+        },
+
+        formatBytes(bytes) {
+            const value = Number(bytes || 0);
+            if (!value) return '0MB';
+            const mb = value / (1024 ** 2);
+            if (mb < 1024) return `${Math.round(mb)}MB`;
+            return `${(mb / 1024).toFixed(2)}GB`;
+        },
+
+        formatCpu(value) {
+            const cpu = Number(value || 0);
+            return `${cpu.toFixed(cpu >= 10 ? 1 : 2)}%`;
+        },
+
+        displayStackName(stack) {
+            const text = String(stack || '');
+            return text ? text.charAt(0).toUpperCase() + text.slice(1) : '';
+        },
+
+        stackIconHtml(stack) {
+            const endpoint = this.endpoint || 'Actual';
+            const stackName = String(stack || '');
+            if (String(stack || '').toLowerCase() === 'dockme') {
+                return `<span class="stack-icon-slot"><img src="${CONFIG.BASE_URL}/system-icons/dockme.svg" alt="" onerror="this.style.visibility='hidden'"></span>`;
+            }
+            const entry = stacksConfig.find(s =>
+                s.name?.toLowerCase() === stackName.toLowerCase() &&
+                (s.endpoint || 'Actual').toLowerCase() === endpoint.toLowerCase()
+            ) || stacksConfig.find(s => s.name?.toLowerCase() === stackName.toLowerCase());
+            const iconFile = entry?.icon || `${stackName}.svg`;
+            const src = this.escape(`${CONFIG.BASE_URL}/icons/${iconFile}?v=${dockmeIconVersion}`);
+            return `<span class="stack-icon-slot"><img src="${src}" alt="" onerror="this.style.visibility='hidden'"></span>`;
+        },
+
+        normalizePorts(value) {
+            const ports = new Set();
+            String(value || '').split(',').forEach(part => {
+                const item = part.trim();
+                if (!item) return;
+                if (/^\d+$/.test(item)) {
+                    ports.add(item);
+                    return;
+                }
+                const arrowMatch = item.match(/(?:^|:)(\d+)->\d+\/\w+/);
+                if (arrowMatch) {
+                    ports.add(arrowMatch[1]);
+                    return;
+                }
+            });
+            return [...ports].sort((a, b) => Number(a) - Number(b)).join(', ') || '-';
+        },
+
+        firstPortValue(value) {
+            const normalized = this.normalizePorts(value);
+            if (normalized === '-') return Number.POSITIVE_INFINITY;
+            const first = normalized.split(',')[0]?.trim();
+            const n = Number(first);
+            return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+        },
+
+        cleanUptime(value) {
+            const text = String(value || '').replace(/\s*\([^)]*\)/g, '').trim();
+            return text || '-';
+        },
+
+        shortestUptime(rows) {
+            const values = rows.map(row => this.cleanUptime(row.uptime)).filter(value => value && value !== '-');
+            values.sort((a, b) => a.length - b.length || a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true }));
+            return values[0] || '-';
+        },
+
+        totals() {
+            return this.containers.reduce((acc, container) => {
+                acc.cpu += Number(container.cpuValue || 0);
+                acc.ram += Number(container.ramBytes || 0);
+                return acc;
+            }, { cpu: 0, ram: 0 });
+        },
+
+        summaryText() {
+            const totals = this.totals();
+            const visibleCount = this.searchedContainers().length;
+            const visibleSuffix = this.normalizedSearch() && this.searchEnabled() ? ` · ${visibleCount} visibles` : '';
+            return `${this.containers.length} contenedor${this.containers.length === 1 ? '' : 'es'} · CPU ${this.formatTotalCpu(totals.cpu)} · RAM ${this.formatTotalRam(totals.ram)}${visibleSuffix}`;
+        },
+
+        formatTotalCpu(value) {
+            return `${Math.round(Number(value || 0))}%`;
+        },
+
+        formatTotalRam(bytes) {
+            const value = Number(bytes || 0);
+            if (!value) return '0.0GB';
+            return `${(value / (1024 ** 3)).toFixed(1)}GB`;
+        },
+
+        normalizedSearch() {
+            return String(this.searchQuery || '').trim().toLowerCase();
+        },
+
+        searchEnabled() {
+            return !this.sortKey || this.sortKey === 'stack';
+        },
+
+        searchedContainers() {
+            const query = this.searchEnabled() ? this.normalizedSearch() : '';
+            if (!query) return this.containers;
+            return this.containers.filter(container => {
+                const name = String(container.name || '').toLowerCase();
+                const stack = String(container.stack || '').toLowerCase();
+                return name.includes(query) || stack.includes(query);
+            });
+        },
+
+        matchesSearch(container, query = this.normalizedSearch()) {
+            if (!query) return true;
+            const name = String(container?.name || '').toLowerCase();
+            const stack = String(container?.stack || '').toLowerCase();
+            return name.includes(query) || stack.includes(query);
+        },
+
+        portLookup() {
+            const port = String(this.portQuery || '').trim();
+            if (!/^\d+$/.test(port)) return null;
+            const matches = [];
+            this.containers.forEach(container => {
+                const ports = this.normalizePorts(container.ports)
+                    .split(',')
+                    .map(p => p.trim())
+                    .filter(Boolean);
+                if (ports.includes(port)) {
+                    matches.push(container);
+                }
+            });
+            return { port, matches };
+        },
+
+        renderPortStatus() {
+            const lookup = this.portLookup();
+            if (!lookup) return '';
+            if (lookup.matches.length === 0) {
+                return '<span class="port-check-status free">Libre</span>';
+            }
+            const owners = lookup.matches
+                .map(container => this.formatPortOwner(container))
+                .join(', ');
+            return `<span class="port-check-status used" title="${this.escape(owners)}">Ocupado por ${this.escape(owners)}</span>`;
+        },
+
+        formatPortOwner(container) {
+            const rawStack = String(container.stack || '');
+            const stack = this.displayStackName(rawStack);
+            const name = String(container.name || '');
+            if (!stack) return name;
+            if (stack.toLowerCase() === name.toLowerCase()) return stack;
+            const escapedStack = rawStack.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const shortName = escapedStack
+                ? name.replace(new RegExp(`^${escapedStack}[-_]+`, 'i'), '')
+                : name;
+            return `${stack} (${this.displayStackName(shortName)})`;
+        },
+
+        open(hostname, endpoint = 'Actual') {
+            this.hostname = hostname || endpoint || 'Actual';
+            this.endpoint = endpoint || 'Actual';
+            this.containers = [];
+            this.sortKey = null;
+            this.sortDir = 'desc';
+            this.expandedStacks = new Set();
+            this.searchQuery = '';
+            this.portQuery = '';
+            this.ensure();
+            this.startInactivityWatch();
+            this.renderShell();
+            this.fetch();
+        },
+
+        close() {
+            this.stopInactivityWatch();
+            this.stopLiveRefresh();
+            this.overlay?.remove();
+            this.overlay = null;
+            document.removeEventListener('keydown', this.handleEsc);
+        },
+
+        ensure() {
+            if (this.overlay) return;
+            this.overlay = document.createElement('div');
+            this.overlay.id = 'container-stats-overlay';
+            this.overlay.addEventListener('click', e => {
+                if (e.target === this.overlay) this.close();
+            });
+            document.body.appendChild(this.overlay);
+            document.addEventListener('keydown', this.handleEsc);
+        },
+
+        startInactivityWatch() {
+            this.stopInactivityWatch();
+            this.inactivityHandler = () => this.resetInactivityTimer();
+            this.inactivityEvents.forEach(eventName => {
+                document.addEventListener(eventName, this.inactivityHandler, { passive: true });
+            });
+            this.resetInactivityTimer();
+        },
+
+        resetInactivityTimer() {
+            clearTimeout(this.inactivityTimer);
+            this.inactivityTimer = setTimeout(() => this.close(), STACK_VIEW_INACTIVITY_MS);
+        },
+
+        stopInactivityWatch() {
+            clearTimeout(this.inactivityTimer);
+            this.inactivityTimer = null;
+            if (!this.inactivityHandler) return;
+            this.inactivityEvents.forEach(eventName => {
+                document.removeEventListener(eventName, this.inactivityHandler);
+            });
+            this.inactivityHandler = null;
+        },
+
+        handleEsc: (e) => {
+            if (e.key !== 'Escape') return;
+            const deleteDialog = ContainerStatsModal.overlay?.querySelector('.container-delete-backdrop');
+            if (deleteDialog) {
+                deleteDialog.remove();
+                return;
+            }
+            ContainerStatsModal.close();
+        },
+
+        renderShell() {
+            if (!this.overlay) return;
+            this.overlay.innerHTML = `
+                <div class="container-stats-modal" role="dialog" aria-modal="true">
+                    <div class="container-stats-header">
+                        <div>
+                            <div class="container-stats-title">Contenedores</div>
+                            <div class="container-stats-subtitle">
+                                <span>${this.escape(this.hostname)}</span>
+                                <button class="container-stats-terminal" type="button" title="Abrir terminal del servidor">&gt;_</button>
+                            </div>
+                        </div>
+                        <div class="container-stats-header-actions">
+                            <button class="container-stats-refresh" type="button" title="Actualizar">Actualizar</button>
+                            <button class="container-stats-close" type="button" title="Cerrar">×</button>
+                        </div>
+                    </div>
+                    <div class="container-stats-body"></div>
+                </div>
+            `;
+            this.overlay.querySelector('.container-stats-close')?.addEventListener('click', () => this.close());
+            this.overlay.querySelector('.container-stats-refresh')?.addEventListener('click', () => this.fetch());
+            this.overlay.querySelector('.container-stats-terminal')?.addEventListener('click', () => this.openServerTerminal());
+            this.renderBody();
+        },
+
+        async fetch() {
+            this.stopLiveRefresh();
+            this.loading = true;
+            this.renderBody();
+            const qs = this.endpoint && this.endpoint.toLowerCase() !== 'actual'
+                ? `?endpoint=${encodeURIComponent(this.endpoint)}`
+                : '';
+            try {
+                const response = await fetch(`/api/container-stats${qs}`);
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || data.error || `HTTP ${response.status}`);
+                }
+                this.containers = Array.isArray(data.containers) ? data.containers : [];
+                this.loading = false;
+                this.renderBody();
+                this.startLiveRefresh();
+            } catch (err) {
+                this.loading = false;
+                this.renderError(err.message || 'No se pudieron cargar los contenedores');
+            }
+        },
+
+        startLiveRefresh() {
+            this.stopLiveRefresh();
+            this.liveTimer = setInterval(() => this.fetchLive(), 5000);
+        },
+
+        stopLiveRefresh() {
+            if (this.liveTimer) {
+                clearInterval(this.liveTimer);
+                this.liveTimer = null;
+            }
+            this.liveLoading = false;
+        },
+
+        async fetchLive() {
+            if (!this.overlay || this.loading || this.liveLoading) return;
+            this.liveLoading = true;
+            const qs = this.endpoint && this.endpoint.toLowerCase() !== 'actual'
+                ? `?endpoint=${encodeURIComponent(this.endpoint)}`
+                : '';
+            try {
+                const response = await fetch(`/api/container-stats/live${qs}`);
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.message || data.error || `HTTP ${response.status}`);
+                }
+                this.applyLiveStats(Array.isArray(data.containers) ? data.containers : []);
+            } catch (err) {
+                console.warn('[ContainerStatsLive]', err.message || err);
+            } finally {
+                this.liveLoading = false;
+            }
+        },
+
+        applyLiveStats(rows) {
+            const liveByName = new Map(rows.map(row => [String(row.name || ''), row]));
+            let metricSortBecameStale = false;
+            this.containers.forEach(container => {
+                const live = liveByName.get(container.name);
+                if (!live) return;
+                const prevCpuValue = Number(container.cpuValue || 0);
+                const prevRamBytes = Number(container.ramBytes || 0);
+                const nextCpuValue = Number(live.cpuValue || 0);
+                const nextRamBytes = Number(live.ramBytes || 0);
+                container.prevCpuValue = prevCpuValue;
+                container.prevRamBytes = prevRamBytes;
+                container.cpuValue = Number(live.cpuValue || 0);
+                container.cpu = live.cpu || this.formatCpu(container.cpuValue);
+                container.ramBytes = Number(live.ramBytes || 0);
+                container.ram = live.ram || this.formatBytes(container.ramBytes);
+                if ((this.sortKey === 'cpuValue' && Math.abs(prevCpuValue - nextCpuValue) >= 0.01) ||
+                    (this.sortKey === 'ramBytes' && prevRamBytes !== nextRamBytes)) {
+                    metricSortBecameStale = true;
+                }
+            });
+            if (metricSortBecameStale) {
+                this.sortKey = null;
+                this.updateSortIndicators();
+            }
+            this.updateLiveDom();
+        },
+
+        updateLiveDom() {
+            const body = this.overlay?.querySelector('.container-stats-body');
+            if (!body) return;
+            const summary = body.querySelector('.container-stats-summary');
+            if (summary) summary.textContent = this.summaryText();
+
+            this.containers.forEach(container => {
+                const row = body.querySelector(`tr[data-container-name="${this.selectorEscape(container.name)}"]`);
+                if (!row) return;
+                const cpuCell = row.querySelector('.live-cpu');
+                const ramCell = row.querySelector('.live-ram');
+                if (cpuCell) {
+                    cpuCell.textContent = this.formatCpu(container.cpuValue);
+                    this.flashMetricCell(cpuCell, container.prevCpuValue, container.cpuValue);
+                }
+                if (ramCell) {
+                    ramCell.textContent = this.formatBytes(container.ramBytes);
+                    this.flashMetricCell(ramCell, container.prevRamBytes, container.ramBytes);
+                }
+            });
+
+            const byStack = new Map();
+            this.containers.filter(c => !c.unmanaged).forEach(container => {
+                const stack = container.stack || 'Sin stack';
+                if (!byStack.has(stack)) byStack.set(stack, []);
+                byStack.get(stack).push(container);
+            });
+            byStack.forEach((rows, stack) => {
+                const row = body.querySelector(`tr[data-stack-name="${this.selectorEscape(stack)}"]`);
+                if (!row || row.classList.contains('expanded')) return;
+                const cpu = rows.reduce((sum, c) => sum + Number(c.cpuValue || 0), 0);
+                const ram = rows.reduce((sum, c) => sum + Number(c.ramBytes || 0), 0);
+                const prevCpu = rows.reduce((sum, c) => sum + Number(c.prevCpuValue ?? c.cpuValue ?? 0), 0);
+                const prevRam = rows.reduce((sum, c) => sum + Number(c.prevRamBytes ?? c.ramBytes ?? 0), 0);
+                const cpuCell = row.querySelector('.live-cpu');
+                const ramCell = row.querySelector('.live-ram');
+                if (cpuCell) {
+                    cpuCell.textContent = this.formatCpu(cpu);
+                    this.flashMetricCell(cpuCell, prevCpu, cpu);
+                }
+                if (ramCell) {
+                    ramCell.textContent = this.formatBytes(ram);
+                    this.flashMetricCell(ramCell, prevRam, ram);
+                }
+            });
+        },
+
+        flashMetricCell(cell, previous, current) {
+            const prev = Number(previous || 0);
+            const next = Number(current || 0);
+            if (!Number.isFinite(prev) || !Number.isFinite(next) || prev === next) return;
+            const direction = next > prev ? 'metric-up' : 'metric-down';
+            cell.classList.remove('metric-up', 'metric-down');
+            void cell.offsetWidth;
+            cell.classList.add(direction);
+            clearTimeout(cell._metricFlashTimer);
+            cell._metricFlashTimer = setTimeout(() => {
+                cell.classList.remove(direction);
+            }, 2000);
+        },
+
+        updateSortIndicators() {
+            const head = this.overlay?.querySelector('.container-stats-table thead');
+            if (!head) return;
+            this.columns.forEach(col => {
+                const th = head.querySelector(`th[data-sort-key="${col.key}"]`);
+                if (!th) return;
+                const active = this.sortKey === col.key;
+                th.classList.toggle('active', active);
+                th.textContent = `${col.label}${active ? (this.sortDir === 'asc' ? ' ↑' : ' ↓') : ''}`;
+            });
+        },
+
+        renderBody(preserveScroll = false) {
+            const body = this.overlay?.querySelector('.container-stats-body');
+            if (!body) return;
+            const previousScrollTop = preserveScroll
+                ? body.querySelector('.container-stats-table-wrap')?.scrollTop || 0
+                : 0;
+            if (this.loading) {
+                body.innerHTML = `
+                    <div class="container-stats-loading">
+                        <span class="container-stats-spinner"></span>
+                        <span>Cargando contenedores...</span>
+                    </div>
+                `;
+                return;
+            }
+            const searchDisabled = !this.searchEnabled();
+            body.innerHTML = `
+                <div class="container-stats-toolbar">
+                    <div class="container-stats-tools">
+                        <label class="container-search">
+                            <span>Buscar</span>
+                            <span class="container-search-input-wrap">
+                                <input type="search" value="${this.escape(this.searchQuery)}" ${searchDisabled ? 'disabled' : ''} placeholder="nombre o stack">
+                                <button type="button" class="container-search-clear" title="Borrar búsqueda" style="display:${this.searchQuery ? '' : 'none'}">×</button>
+                            </span>
+                        </label>
+                        <label class="port-check">
+                            <span>Buscar Puertos</span>
+                            <input type="text" inputmode="numeric" value="${this.escape(this.portQuery)}">
+                            ${this.renderPortStatus()}
+                        </label>
+                    </div>
+                    <span class="container-stats-summary">${this.summaryText()}</span>
+                </div>
+                <div class="container-stats-table-wrap">
+                    <table class="container-stats-table">
+                        ${this.renderHead()}
+                        <tbody>${this.renderRows()}</tbody>
+                    </table>
+                </div>
+            `;
+            body.querySelectorAll('th[data-sort-key]').forEach(th => {
+                th.addEventListener('click', () => this.setSort(th.dataset.sortKey));
+            });
+            body.querySelector('.container-search input')?.addEventListener('input', e => {
+                const cursor = e.target.selectionStart || 0;
+                this.searchQuery = e.target.value;
+                this.expandedStacks.clear();
+                this.renderBody(true);
+                const input = body.querySelector('.container-search input');
+                input?.focus();
+                input?.setSelectionRange(cursor, cursor);
+            });
+            body.querySelector('.container-search-clear')?.addEventListener('click', () => {
+                this.searchQuery = '';
+                this.expandedStacks.clear();
+                this.renderBody(true);
+                body.querySelector('.container-search input')?.focus();
+            });
+            body.querySelector('.port-check input')?.addEventListener('input', e => {
+                const cursor = e.target.selectionStart || 0;
+                this.portQuery = e.target.value.replace(/[^\d]/g, '');
+                this.renderBody(true);
+                const input = body.querySelector('.port-check input');
+                input?.focus();
+                input?.setSelectionRange(cursor, cursor);
+            });
+            body.querySelectorAll('button[data-container-action]').forEach(btn => {
+                btn.addEventListener('click', () => this.runAction(btn));
+            });
+            body.querySelectorAll('button[data-stack-toggle]').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    this.toggleStack(btn.dataset.stackToggle);
+                });
+            });
+            body.querySelectorAll('button[data-stack-open]').forEach(btn => {
+                btn.addEventListener('click', e => {
+                    e.stopPropagation();
+                    this.openStack(btn.dataset.stackOpen);
+                });
+            });
+            body.querySelectorAll('tr[data-stack-toggle-row]').forEach(row => {
+                row.addEventListener('click', () => this.toggleStack(row.dataset.stackToggleRow));
+            });
+            if (preserveScroll) {
+                const tableWrap = body.querySelector('.container-stats-table-wrap');
+                if (tableWrap) tableWrap.scrollTop = previousScrollTop;
+            }
+        },
+
+        renderError(message) {
+            const body = this.overlay?.querySelector('.container-stats-body');
+            if (!body) return;
+            body.innerHTML = `
+                <div class="container-stats-error">
+                    <strong>No se pudo cargar la tabla.</strong>
+                    <span>${this.escape(message)}</span>
+                </div>
+            `;
+        },
+
+        renderHead() {
+            const cells = this.columns.map(col => {
+                const active = this.sortKey === col.key;
+                const arrow = active ? (this.sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+                return `<th data-sort-key="${col.key}" class="col-${col.key} ${active ? 'active' : ''}">${col.label}${arrow}</th>`;
+            }).join('');
+            return `<thead><tr>${cells}</tr></thead>`;
+        },
+
+        buildMainRows() {
+            const query = this.searchEnabled() ? this.normalizedSearch() : '';
+            const unmanagedRows = this.containers
+                .filter(c => c.unmanaged && (!query || this.matchesSearch(c, query)))
+                .map(container => ({
+                    kind: 'unmanaged',
+                    stack: '',
+                    container,
+                    ...container,
+                    portsValue: this.firstPortValue(container.ports)
+                }));
+            const byStack = new Map();
+            this.containers.filter(c => !c.unmanaged).forEach(container => {
+                const stack = container.stack || 'Sin stack';
+                if (!byStack.has(stack)) byStack.set(stack, []);
+                byStack.get(stack).push(container);
+            });
+            const stackRows = [...byStack.entries()].map(([stack, rows]) => {
+                const stackMatches = query && String(stack || '').toLowerCase().includes(query);
+                const matchingRows = query
+                    ? rows.filter(container => this.matchesSearch(container, query))
+                    : rows;
+                if (query && !stackMatches && matchingRows.length === 0) return null;
+                const visibleRows = stackMatches ? rows : matchingRows;
+                if (rows.length === 1) {
+                    return { kind: 'container', stack, container: rows[0], ...rows[0], name: '', portsValue: this.firstPortValue(rows[0].ports) };
+                }
+                const running = rows.filter(c => this.isRunning(c)).length;
+                const status = running === rows.length ? 'running' : running > 0 ? `${running}/${rows.length} running` : 'stopped';
+                const name = query && visibleRows.length !== rows.length
+                    ? `${visibleRows.length}/${rows.length} contenedores`
+                    : `${rows.length} contenedores`;
+                return {
+                    kind: 'stack',
+                    stack,
+                    name,
+                    status,
+                    cpuValue: rows.reduce((sum, c) => sum + Number(c.cpuValue || 0), 0),
+                    ramBytes: rows.reduce((sum, c) => sum + Number(c.ramBytes || 0), 0),
+                    uptime: this.shortestUptime(rows),
+                    ports: this.mergePorts(rows),
+                    portsValue: this.firstPortValue(this.mergePorts(rows)),
+                    rows: this.sortRows(visibleRows, 'name', 'asc'),
+                    forceExpanded: !!query && !stackMatches && matchingRows.length > 0
+                };
+            }).filter(Boolean);
+            if (!this.sortKey) {
+                return [
+                    ...unmanagedRows.sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base', numeric: true })),
+                    ...stackRows.sort((a, b) => String(a.stack).localeCompare(String(b.stack), undefined, { sensitivity: 'base', numeric: true }))
+                ];
+            }
+            return this.sortRows([...unmanagedRows, ...stackRows], this.sortKey, this.sortDir);
+        },
+
+        renderRows() {
+            const rows = this.buildMainRows();
+            if (!rows.length) {
+                return `<tr><td colspan="${this.columns.length}" class="container-stats-empty">No hay contenedores en este servidor.</td></tr>`;
+            }
+            return rows.map(row => {
+                if (row.kind === 'stack') return this.renderStackRow(row);
+                if (row.kind === 'container') return this.renderContainerRow({ ...row.container, name: '' }, false, false);
+                return this.renderContainerRow(row.container || row, row.kind === 'unmanaged', false);
+            }).join('');
+        },
+
+        renderStackRow(row) {
+            const expanded = row.forceExpanded || this.expandedStacks.has(row.stack);
+            return `
+                <tr class="is-stack-summary ${expanded ? 'expanded' : ''}" data-stack-toggle-row="${this.escape(row.stack)}" data-stack-name="${this.escape(row.stack)}">
+                    <td class="stack-cell">
+                        <button class="stack-open-link" type="button" data-stack-open="${this.escape(row.stack)}">${this.stackIconHtml(row.stack)}<span>${this.escape(this.displayStackName(row.stack))}</span></button>
+                    </td>
+                    <td class="container-name stack-count">
+                        <div class="stack-count-inner">
+                            <button class="stack-toggle-btn" type="button" data-stack-toggle="${this.escape(row.stack)}" title="${expanded ? 'Contraer stack' : 'Desplegar stack'}">${expanded ? '▾' : '▸'}</button>
+                            <span>${this.escape(row.name)}</span>
+                        </div>
+                    </td>
+                    ${expanded ? `
+                        <td class="status-cell stack-summary-empty"></td>
+                        <td class="numeric metric-number stack-summary-empty"></td>
+                        <td class="numeric metric-number stack-summary-empty"></td>
+                        <td class="uptime-cell stack-summary-empty"></td>
+                        <td class="ports stack-summary-empty"></td>
+                    ` : `
+                        <td class="status-cell"><span class="container-status ${this.statusClass(row.status)}">${this.escape(row.status || '-')}</span></td>
+                        <td class="numeric metric-number live-cpu">${this.formatCpu(row.cpuValue)}</td>
+                        <td class="numeric metric-number live-ram">${this.formatBytes(row.ramBytes)}</td>
+                        <td class="uptime-cell">${this.escape(row.uptime || '-')}</td>
+                        <td class="ports">${this.escape(row.ports || '-')}</td>
+                    `}
+                </tr>
+                ${expanded ? row.rows.map((container, index) => this.renderContainerRow(container, false, true, index === row.rows.length - 1)).join('') : ''}
+            `;
+        },
+
+        renderContainerRow(container, unmanaged = false, child = false, lastChild = false) {
+            const isRunning = this.isRunning(container);
+            return `
+                <tr class="${unmanaged ? 'is-unmanaged' : ''}${child ? ' is-stack-child' : ''}${lastChild ? ' is-last-child' : ''}" data-container-name="${this.escape(container.name)}">
+                    <td class="stack-cell">${unmanaged ? this.renderUnmanagedCell(container, isRunning) : (child ? '' : this.renderStackLink(container.stack))}</td>
+                    <td class="container-name">${child ? this.escape(container.name) : this.escape(container.name || '')}</td>
+                    <td class="status-cell"><span class="container-status ${isRunning ? 'running' : 'stopped'}">${this.escape(container.status || '-')}</span></td>
+                    <td class="numeric metric-number live-cpu">${this.formatCpu(container.cpuValue)}</td>
+                    <td class="numeric metric-number live-ram">${this.formatBytes(container.ramBytes)}</td>
+                    <td class="uptime-cell">${this.escape(this.cleanUptime(container.uptime))}</td>
+                    <td class="ports">${this.escape(this.normalizePorts(container.ports))}</td>
+                </tr>
+            `;
+        },
+
+        renderStackLink(stack) {
+            if (!stack) return '-';
+            return `<button class="stack-open-link" type="button" data-stack-open="${this.escape(stack)}">${this.stackIconHtml(stack)}<span>${this.escape(this.displayStackName(stack))}</span></button>`;
+        },
+
+        renderActions(container, isRunning) {
+            const name = this.escape(container.name);
+            return `
+                <div class="container-row-actions">
+                    <button type="button" data-container-action="${isRunning ? 'stop' : 'start'}" data-container="${name}" title="${isRunning ? 'Detener' : 'Iniciar'}">${isRunning ? '■' : '▶'}</button>
+                    <button type="button" data-container-action="restart" data-container="${name}" title="Reiniciar">↻</button>
+                    <button type="button" data-container-action="remove" data-container="${name}" class="danger" title="Eliminar">×</button>
+                </div>
+            `;
+        },
+
+        renderUnmanagedCell(container, isRunning) {
+            return `
+                <div class="unmanaged-cell">
+                    <span class="unmanaged-label">Sin stack</span>
+                    ${this.renderActions(container, isRunning)}
+                </div>
+            `;
+        },
+
+        isRunning(container) {
+            const status = String(container?.status || '').toLowerCase();
+            return status === 'running' || status.includes('up') || status.includes('running');
+        },
+
+        statusClass(status) {
+            const text = String(status || '').toLowerCase();
+            if (/^\d+\/\d+\s+running$/.test(text)) return 'mixed';
+            return text === 'running' || text.includes('up') ? 'running' : 'stopped';
+        },
+
+        mergePorts(rows) {
+            const ports = new Set();
+            rows.forEach(row => {
+                this.normalizePorts(row.ports).split(',').map(p => p.trim()).filter(p => p && p !== '-').forEach(p => ports.add(p));
+            });
+            return [...ports].sort((a, b) => Number(a) - Number(b)).join(', ') || '-';
+        },
+
+        sortRows(rows, key, dir) {
+            const col = this.columns.find(c => c.key === key);
+            const factor = dir === 'asc' ? 1 : -1;
+            return [...rows].sort((a, b) => {
+                if (col?.type === 'number') {
+                    const av = Number(a[key] ?? 0);
+                    const bv = Number(b[key] ?? 0);
+                    const aFinite = Number.isFinite(av);
+                    const bFinite = Number.isFinite(bv);
+                    if (!aFinite && !bFinite) return 0;
+                    if (!aFinite) return 1;
+                    if (!bFinite) return -1;
+                    return (av - bv) * factor;
+                }
+                return String(a[key] || '').localeCompare(String(b[key] || ''), undefined, { sensitivity: 'base', numeric: true }) * factor;
+            });
+        },
+
+        setSort(key) {
+            if (this.sortKey === key) {
+                this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+            } else {
+                this.sortKey = key;
+                this.sortDir = key === 'cpuValue' || key === 'ramBytes' ? 'desc' : 'asc';
+            }
+            this.expandedStacks.clear();
+            if (key !== 'stack') this.searchQuery = '';
+            this.renderBody();
+        },
+
+        toggleStack(stack) {
+            if (!stack) return;
+            if (this.expandedStacks.has(stack)) this.expandedStacks.delete(stack);
+            else this.expandedStacks.add(stack);
+            this.renderBody(true);
+        },
+
+        openStack(stack) {
+            if (!stack) return;
+            const endpoint = this.endpoint || 'Actual';
+            this.close();
+            window._dmOpenLogs?.(stack, endpoint);
+        },
+
+        openServerTerminal() {
+            const endpoint = this.endpoint || 'Actual';
+            this.close();
+            _fromDashboard = false;
+            logsActiveTab = 'terminal';
+            window._dmOpenLogs?.('dockme', endpoint);
+            let attempts = 0;
+            const activateTerminal = () => {
+                logsActiveTab = 'terminal';
+                const tab = document.querySelector('#dockme-logs-panel .logs-tab[data-tab="terminal"]');
+                if (tab) {
+                    tab.click();
+                    return;
+                }
+                attempts += 1;
+                if (attempts < 10) setTimeout(activateTerminal, 120);
+            };
+            setTimeout(activateTerminal, 120);
+        },
+
+        async runAction(btn) {
+            const action = btn.dataset.containerAction;
+            const container = btn.dataset.container;
+            if (!container || !action) return;
+            if (action === 'remove') {
+                this.showDeleteDialog(container, btn);
+                return;
+            }
+            await this.executeAction(action, container, btn);
+        },
+
+        showDeleteDialog(container, sourceBtn) {
+            this.overlay?.querySelector('.container-delete-backdrop')?.remove();
+            const dialog = document.createElement('div');
+            dialog.className = 'container-delete-backdrop';
+            dialog.innerHTML = `
+                <div class="container-delete-dialog" role="dialog" aria-modal="true">
+                    <div class="container-delete-title">Eliminar contenedor</div>
+                    <div class="container-delete-name">${this.escape(container)}</div>
+                    <div class="container-delete-actions">
+                        <button type="button" class="container-delete-cancel">Cancelar</button>
+                        <button type="button" class="container-delete-confirm">Eliminar</button>
+                    </div>
+                </div>
+            `;
+            this.overlay?.appendChild(dialog);
+            dialog.querySelector('.container-delete-cancel')?.addEventListener('click', () => dialog.remove());
+            dialog.addEventListener('click', e => {
+                if (e.target === dialog) dialog.remove();
+            });
+            dialog.querySelector('.container-delete-confirm')?.addEventListener('click', async () => {
+                dialog.remove();
+                await this.executeAction('remove', container, sourceBtn);
+            });
+        },
+
+        async executeAction(action, container, btn) {
+            btn.disabled = true;
+            const qs = this.endpoint && this.endpoint.toLowerCase() !== 'actual'
+                ? `?endpoint=${encodeURIComponent(this.endpoint)}`
+                : '';
+            try {
+                const response = await fetch(`/api/container-action${qs}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ container, action })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || data.success === false) {
+                    throw new Error(data.message || data.error || `HTTP ${response.status}`);
+                }
+                await this.fetch();
+            } catch (err) {
+                alert(err.message || 'No se pudo ejecutar la acción');
+                btn.disabled = false;
+            }
+        }
+    };
+
     // ==================== MÉTRICAS ====================
     const MetricsManager = {
         container: null,
@@ -6853,7 +7706,7 @@ window.addEventListener('resize', () => {
                             <span class="metric-hostname">${hostname}${versionDisplay}</span>
                         </span>
                         <button class="btn-update-dockme" data-endpoint="${endpoint}" style="display:${showUpdateBtn ? '' : 'none'}">Actualizar <img src="/system-icons/dockme.svg" style="width:20px;height:20px;vertical-align:text-top;"></button>
-                        <span style="display:flex;align-items:center;gap:5px;white-space:nowrap;">
+                        <span class="metric-docker-counter" data-endpoint="${endpoint}" data-hostname="${hostname}" title="Ver contenedores" style="display:flex;align-items:center;gap:5px;white-space:nowrap;">
                             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.5;flex-shrink:0"><polygon points="5,3 19,12 5,21"/></svg>
                             <span class="metric-docker">${metrics.docker_running}</span>
                             ${metrics.docker_stopped > 0 ? `/
@@ -6930,6 +7783,14 @@ window.addEventListener('resize', () => {
                 btnUpdate.addEventListener('mouseenter', (e) => {
                     e.stopPropagation();
                     btnUpdate.title = 'Actualizar Dockme en este servidor';
+                });
+            }
+            const dockerCounter = card.querySelector('.metric-docker-counter');
+            if (dockerCounter) {
+                dockerCounter.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    ContainerStatsModal.open(hostname, endpoint);
                 });
             }
             // Listener del botón comprobar actualizaciones ahora

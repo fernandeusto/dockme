@@ -1646,8 +1646,15 @@ function isDockmeUpdate(update) {
   return String(update?.stack || '').toLowerCase() === 'dockme';
 }
 
-function isCentralDockmeUpdate(update) {
-  return isDockmeUpdate(update) && String(update?.endpoint || 'Actual').toLowerCase() === 'actual';
+function getCentralDockmeUpdateEntry(updates = []) {
+  const central = updates.find(h => String(h.endpoint || 'Actual').toLowerCase() === 'actual');
+  return central?.updates?.find(update => isDockmeUpdate(update)) || null;
+}
+
+function dockmeUpdateNotificationKey(update) {
+  if (!update) return '';
+  const dockers = Array.isArray(update.dockers) ? [...update.dockers].sort().join(',') : '';
+  return `dockme|${dockers || 'update'}`;
 }
 
 function capitalizeStackName(stack) {
@@ -1700,15 +1707,44 @@ function buildDockmeUpdateMessage() {
   ].join('\n');
 }
 
+async function maybeNotifyCentralDockmeUpdate(snapshotAfter) {
+  const settings = readSettingsFile();
+  const dockmeUpdate = getCentralDockmeUpdateEntry(snapshotAfter);
+
+  if (!dockmeUpdate) {
+    if (settings.dockmeUpdateNotifiedKey) {
+      delete settings.dockmeUpdateNotifiedKey;
+      writeSettingsFile(settings);
+    }
+    return;
+  }
+
+  const key = dockmeUpdateNotificationKey(dockmeUpdate);
+  if (settings.dockmeUpdateNotifiedKey === key) {
+    console.log('📭 [Cycle] Actualización de Dockme central ya notificada');
+    return;
+  }
+
+  console.log('📬 [Cycle] Enviando notificación de actualización de Dockme central');
+  const sent = await sendNotification(buildDockmeUpdateMessage());
+  if (!sent) {
+    console.log('📭 [Cycle] No se marca Dockme como notificado porque no se pudo enviar');
+    return;
+  }
+  settings.dockmeUpdateNotifiedKey = key;
+  writeSettingsFile(settings);
+}
+
 async function sendNotification(message) {
-  if (!message) return;
+  if (!message) return false;
   const settings = readSettingsFile();
   const notif = settings.notifications || {};
   const urls = Array.isArray(notif.urls) ? notif.urls.filter(Boolean) : [];
   if (urls.length === 0) {
     console.log('📵 [Notif] Sin URLs configuradas');
-    return;
+    return false;
   }
+  let sent = false;
   for (const url of urls) {
     await new Promise((resolve) => {
       // Escribir mensaje a fichero temporal para preservar saltos de línea
@@ -1719,12 +1755,16 @@ async function sendNotification(message) {
         (err, stdout, stderr) => {
           fs.unlink(tmpFile, () => {});
           if (err) console.error(`❌ [Notif] Error enviando a ${url.split('://')[0]}: ${err.message}`);
-          else     console.log(`✅ [Notif] Enviado a ${url.split('://')[0]}`);
+          else {
+            sent = true;
+            console.log(`✅ [Notif] Enviado a ${url.split('://')[0]}`);
+          }
           resolve();
         }
       );
     });
   }
+  return sent;
 }
 
 const dockerEventDedupe = new Map();
@@ -1756,6 +1796,19 @@ function dockerEventServiceName(event) {
 
 function dockerEventSuppressionKey(endpoint, stack) {
   return `${(endpoint || 'Actual').toLowerCase()}|${(stack || '').toLowerCase()}`;
+}
+
+function isDockmeInternalDockerEvent(event) {
+  const names = [
+    event?.stack,
+    event?.service,
+    event?.container,
+    dockerEventStackName(event),
+    dockerEventServiceName(event),
+    dockerEventContainerName(event)
+  ].filter(Boolean).map(value => String(value).toLowerCase());
+
+  return names.some(name => name === 'dockme' || name === 'dockme-auto-update');
 }
 
 function addDockerEventExclusion(endpoint, stack, source = 'default') {
@@ -1903,6 +1956,11 @@ async function processDockerEvent(event) {
     return { success: true, ignored: true };
   }
 
+  if (isDockmeInternalDockerEvent(event)) {
+    console.log('🔕 [Docker events] Evento interno de Dockme ignorado');
+    return { success: true, ignored: true, internal: true };
+  }
+
   if (isDockerEventSuppressed(event)) {
     const stack = event.stack;
     const container = event.container;
@@ -2046,10 +2104,9 @@ async function runScheduledChecks(notify = true) {
     const newUpdates = findNewUpdates(snapshotBefore, snapshotAfter);
     console.log(`📊 [Cycle] Novedades: ${newUpdates.length} | Timeouts: ${JSON.stringify(cycleResult.timedOut)}`);
 
-    if (newUpdates.some(isCentralDockmeUpdate)) {
-      console.log('📬 [Cycle] Enviando notificación de actualización de Dockme central');
-      await sendNotification(buildDockmeUpdateMessage());
-    }
+    // Dockme central se notifica como excepción de mantenimiento aunque
+    // el usuario haya desactivado las notificaciones generales de updates.
+    await maybeNotifyCentralDockmeUpdate(snapshotAfter);
 
     if (settings.notifications?.updates === false) {
       console.log('📵 [Cycle] Notificaciones de actualizaciones desactivadas');
@@ -2365,14 +2422,210 @@ app.get('/api/deploy/:stack', (req, res) => {
   req.on('close', () => proc.kill());
 });
 
+function runDockerJsonLines(args) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('docker', args);
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    proc.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    proc.on('error', reject);
+    proc.on('close', code => {
+      if (code !== 0) return reject(new Error(stderr.trim() || `docker ${args.join(' ')} finalizó con código ${code}`));
+      try {
+        const rows = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        resolve(rows);
+      } catch (err) {
+        reject(new Error(`No se pudo interpretar la salida de Docker: ${err.message}`));
+      }
+    });
+  });
+}
+
+function runCommandText(command, args = []) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args);
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    proc.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    proc.on('error', reject);
+    proc.on('close', code => {
+      if (code !== 0) return reject(new Error(stderr.trim() || `${command} finalizó con código ${code}`));
+      resolve(stdout.trim());
+    });
+  });
+}
+
+let cpuNormalizationFactorCache = null;
+
+async function getCpuNormalizationFactor() {
+  if (cpuNormalizationFactorCache) return cpuNormalizationFactorCache;
+  try {
+    const output = await runCommandText('nproc');
+    const count = parseInt(output, 10);
+    cpuNormalizationFactorCache = Number.isFinite(count) && count > 0 ? count : 1;
+    return cpuNormalizationFactorCache;
+  } catch (err) {
+    console.warn(`⚠️ [ContainerStats] nproc falló: ${err.message}`);
+    return 1;
+  }
+}
+
+function parseCpuPercent(value) {
+  const n = parseFloat(String(value || '0').replace('%', '').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function parseDockerSizeToBytes(value) {
+  const match = String(value || '').trim().match(/^([\d.,]+)\s*([KMGTPE]?i?B|B)?/i);
+  if (!match) return 0;
+  const amount = parseFloat(match[1].replace(',', '.'));
+  if (!Number.isFinite(amount)) return 0;
+  const unit = (match[2] || 'B').toUpperCase();
+  const multipliers = {
+    B: 1,
+    KB: 1000, MB: 1000 ** 2, GB: 1000 ** 3, TB: 1000 ** 4, PB: 1000 ** 5,
+    KIB: 1024, MIB: 1024 ** 2, GIB: 1024 ** 3, TIB: 1024 ** 4, PIB: 1024 ** 5
+  };
+  return Math.round(amount * (multipliers[unit] || 1));
+}
+
+function parseDockerLabels(labels) {
+  if (!labels) return {};
+  if (typeof labels === 'object') return labels;
+  return String(labels).split(',').reduce((acc, item) => {
+    const idx = item.indexOf('=');
+    if (idx > 0) acc[item.slice(0, idx)] = item.slice(idx + 1);
+    return acc;
+  }, {});
+}
+
+function normalizeContainerName(value) {
+  return String(value || '').replace(/^\//, '');
+}
+
 // ============================
-// POST /api/container-action — start/stop/restart de un contenedor individual
+// GET /api/container-stats — lista contenedores Docker con CPU/RAM y stack
+// ============================
+app.get('/api/container-stats', async (req, res) => {
+  const { endpoint } = req.query;
+
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    try {
+      const response = await fetch(`http://${endpoint}/api/container-stats`, {
+        signal: AbortSignal.timeout(8000)
+      });
+      const data = await response.json();
+      return res.status(response.status).json(data);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: err.message });
+    }
+  }
+
+  try {
+    const [statsRows, psRows, cpuNormalizationFactor] = await Promise.all([
+      runDockerJsonLines(['stats', '--no-stream', '--format', 'json']).catch(err => {
+        console.warn(`⚠️ [ContainerStats] docker stats falló: ${err.message}`);
+        return [];
+      }),
+      runDockerJsonLines(['ps', '-a', '--format', 'json']),
+      getCpuNormalizationFactor()
+    ]);
+
+    const statsByName = new Map();
+    statsRows.forEach(row => {
+      const name = normalizeContainerName(row.Name || row.Container || row.NameRaw);
+      if (!name) return;
+      statsByName.set(name, row);
+    });
+
+    const containers = psRows.map(row => {
+      const name = normalizeContainerName(row.Names || row.Name);
+      const labels = parseDockerLabels(row.Labels);
+      const stack = labels['com.docker.compose.project'] || '';
+      const stats = statsByName.get(name) || {};
+      const cpuValue = parseCpuPercent(stats.CPUPerc) / cpuNormalizationFactor;
+      const ram = stats.MemUsage ? String(stats.MemUsage).split('/')[0].trim() : '';
+      const ramBytes = parseDockerSizeToBytes(ram);
+      const status = row.State || row.Status || '';
+
+      return {
+        name,
+        stack,
+        status,
+        cpu: cpuValue ? `${cpuValue.toFixed(cpuValue >= 10 ? 1 : 2)}%` : '0%',
+        cpuValue,
+        ram: ram || '-',
+        ramBytes,
+        uptime: row.Status || '',
+        image: row.Image || '',
+        ports: row.Ports || '',
+        unmanaged: !stack
+      };
+    }).filter(c => c.name);
+
+    res.json({ success: true, containers });
+  } catch (err) {
+    console.error(`❌ [ContainerStats] ${err.message}`);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================
+// GET /api/container-stats/live — refresco ligero de CPU/RAM
+// ============================
+app.get('/api/container-stats/live', async (req, res) => {
+  const { endpoint } = req.query;
+
+  if (endpoint && endpoint.toLowerCase() !== 'actual') {
+    try {
+      const response = await fetch(`http://${endpoint}/api/container-stats/live`, {
+        signal: AbortSignal.timeout(8000)
+      });
+      const data = await response.json();
+      return res.status(response.status).json(data);
+    } catch (err) {
+      return res.status(502).json({ success: false, message: err.message });
+    }
+  }
+
+  try {
+    const [statsRows, cpuNormalizationFactor] = await Promise.all([
+      runDockerJsonLines(['stats', '--no-stream', '--format', 'json']),
+      getCpuNormalizationFactor()
+    ]);
+
+    const containers = statsRows.map(row => {
+      const name = normalizeContainerName(row.Name || row.Container || row.NameRaw);
+      const cpuValue = parseCpuPercent(row.CPUPerc) / cpuNormalizationFactor;
+      const ram = row.MemUsage ? String(row.MemUsage).split('/')[0].trim() : '';
+      const ramBytes = parseDockerSizeToBytes(ram);
+
+      return {
+        name,
+        cpu: cpuValue ? `${cpuValue.toFixed(cpuValue >= 10 ? 1 : 2)}%` : '0%',
+        cpuValue,
+        ram: ram || '-',
+        ramBytes
+      };
+    }).filter(c => c.name);
+
+    res.json({ success: true, containers });
+  } catch (err) {
+    console.error(`❌ [ContainerStatsLive] ${err.message}`);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ============================
+// POST /api/container-action — start/stop/restart/remove de un contenedor individual
 // ============================
 app.post('/api/container-action', async (req, res) => {
   const { container, action } = req.body;
   const { endpoint } = req.query;
 
-  if (!container || !['start', 'stop', 'restart'].includes(action)) {
+  if (!container || !['start', 'stop', 'restart', 'remove'].includes(action)) {
     return res.status(400).json({ success: false, message: 'Parámetros inválidos' });
   }
 
@@ -2393,8 +2646,15 @@ app.post('/api/container-action', async (req, res) => {
   }
 
   // Local
-  exec(`docker ${action} ${container}`, (err, stdout, stderr) => {
-    if (err) return res.status(500).json({ success: false, message: stderr || err.message });
+  const dockerArgs = action === 'remove'
+    ? ['rm', '-f', container]
+    : [action, container];
+  const proc = spawn('docker', dockerArgs);
+  let stderr = '';
+  proc.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  proc.on('error', err => res.status(500).json({ success: false, message: err.message }));
+  proc.on('close', code => {
+    if (code !== 0) return res.status(500).json({ success: false, message: stderr.trim() || `docker ${dockerArgs.join(' ')} finalizó con código ${code}` });
     console.log(`🐳 [Container] ${action} ${container}`);
     res.json({ success: true });
   });

@@ -5,7 +5,11 @@
 (function () {
 
     // 1. Conectar socket.io
-    const socket = io();
+    const socket = io({
+        reconnectionDelay: 250,
+        reconnectionDelayMax: 1000,
+        timeout: 5000
+    });
 
     // 2. Shim del proxy de Vue
     const appEl = document.getElementById('app');
@@ -218,7 +222,7 @@
         if (wasDisconnected) {
             banner.style.background = '#27ae60';
             banner.querySelector('span').textContent = '✓ Conexión restaurada. Recargando...';
-            setTimeout(() => window.location.reload(), 1500);
+            setTimeout(() => window.location.reload(), 300);
         }
     });
 
