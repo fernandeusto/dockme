@@ -14,3 +14,4 @@ Private/
 # =========================
 release.sh
 apply-latest.sh
+build.sh

@@ -261,16 +261,13 @@ XTERM_FIT="/custom/xterm-fit-addon.js"
 XTERM_FIT_URL="https://unpkg.com/@xterm/addon-fit@0.10.0/lib/addon-fit.js"
 
 if [ ! -f "$XTERM_JS" ] || [ $(wc -c < "$XTERM_JS") -lt 10000 ]; then
-    echo "📥 Descargando xterm.js..."
-    curl -sL -o "$XTERM_JS" "${XTERM_URL}/lib/xterm.js" && echo "  ✅ xterm.js descargado" || echo "  ⚠️ No se pudo descargar xterm.js"
+    curl -sL -o "$XTERM_JS" "${XTERM_URL}/lib/xterm.js" || echo "⚠️ No se pudo descargar xterm.js"
 fi
 if [ ! -f "$XTERM_CSS" ] || [ $(wc -c < "$XTERM_CSS") -lt 1000 ]; then
-    echo "📥 Descargando xterm.css..."
-    curl -sL -o "$XTERM_CSS" "${XTERM_URL}/css/xterm.css" && echo "  ✅ xterm.css descargado" || echo "  ⚠️ No se pudo descargar xterm.css"
+    curl -sL -o "$XTERM_CSS" "${XTERM_URL}/css/xterm.css" || echo "⚠️ No se pudo descargar xterm.css"
 fi
 if [ ! -f "$XTERM_FIT" ] || [ $(wc -c < "$XTERM_FIT") -lt 1000 ]; then
-    echo "📥 Descargando xterm fit-addon..."
-    curl -sL -o "$XTERM_FIT" "${XTERM_FIT_URL}" && echo "  ✅ xterm fit-addon descargado" || echo "  ⚠️ No se pudo descargar xterm fit-addon"
+    curl -sL -o "$XTERM_FIT" "${XTERM_FIT_URL}" || echo "⚠️ No se pudo descargar xterm fit-addon"
 fi
 
 # ========================================

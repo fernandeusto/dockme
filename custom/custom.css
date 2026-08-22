@@ -2664,6 +2664,16 @@ body.dockme-organizing #dockme-sidebar-handle {
     transform: translateX(20px);
 }
 
+.telegram-detected-hint {
+    padding: 9px 11px;
+    border: 1px solid rgba(79, 132, 200, 0.45);
+    border-radius: 7px;
+    background: rgba(79, 132, 200, 0.1);
+    color: #8fb4df;
+    font-size: 0.82em;
+    line-height: 1.45;
+}
+
 /* Prune section two-column layout */
 .general-prune-row {
     display: flex;

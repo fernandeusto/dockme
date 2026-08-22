@@ -4611,7 +4611,7 @@ window.addEventListener('resize', () => {
             timeout = setTimeout(() => finish(lastKnownServices), 2 * 60 * 1000);
         };
 
-        btnStartStop.addEventListener('click', () => {
+        btnStartStop.addEventListener('click', async () => {
             const socket = window.dockmeSocket;
             if (!socket) return;
             if (!stackIsRunning) {
@@ -4622,17 +4622,19 @@ window.addEventListener('resize', () => {
             setButtonsDisabled(true);
             btnStartStop.innerHTML = svgSpin;
             renderBadges(lastKnownServices, 'stopping');
+            await suppressComposeActionNotification();
             socket.emit('agent', ep, 'stopStack', stackName, () => {});
             waitForStateChange(false);
         });
 
-        btnRestart.addEventListener('click', () => {
+        btnRestart.addEventListener('click', async () => {
             const socket = window.dockmeSocket;
             if (!socket) return;
             actionInProgress = true;
             setButtonsDisabled(true);
             btnRestart.innerHTML = svgSpin;
             renderBadges(lastKnownServices, 'restarting');
+            await suppressComposeActionNotification();
             socket.emit('agent', ep, 'restartStack', stackName, () => {});
             waitForStateChange(true);
         });
@@ -5245,7 +5247,13 @@ window.addEventListener('resize', () => {
         termContainerSel.addEventListener('change', () => { if (xtermInstance) startXterm(); });
 
         let deployEventSource = null;
-        const startDeploy = ({ onSuccess, onFailure } = {}) => {
+        const suppressComposeActionNotification = () => sendDockerNotificationSuppression('add', {
+            endpoint: endpoint || 'Actual',
+            stack: stackName,
+            source: `compose-action:${currentDeviceId}`
+        });
+
+        const startDeploy = async ({ onSuccess, onFailure } = {}) => {
             if (actionInProgress) return;
 
             actionInProgress = true;
@@ -5266,6 +5274,8 @@ window.addEventListener('resize', () => {
             terminalArea.style.display   = 'none';
             logsFooter.style.display     = '';
             composeFooter.style.display  = 'none';
+
+            await suppressComposeActionNotification();
 
             if (logsEventSource) { logsEventSource.close(); logsEventSource = null; }
             if (deployEventSource) deployEventSource.close();
@@ -9272,6 +9282,35 @@ function renderGeneralTab(container) {
             const notifUrl     = (Array.isArray(notif.urls) ? notif.urls[0] : '') || '';
             const pruneMode    = settings.pruneMode || 'disabled';
             const checkTime    = settings.checkTime || '09:00';
+            const telegramBot  = settings.telegramBot || {};
+            let telegramToken  = String(telegramBot.token || '').trim();
+            let telegramChatIds = Array.isArray(telegramBot.authorizedChatIds)
+                ? telegramBot.authorizedChatIds.map(String).map(v => v.trim()).filter(Boolean)
+                : String(telegramBot.authorizedChatIds || '').split(/[\s,;]+/).filter(Boolean);
+            let telegramDetected = false;
+            if ((!telegramToken || telegramChatIds.length === 0) && /^telegram:\/\//i.test(notifUrl)) {
+                try {
+                    const parsedTelegramUrl = new URL(notifUrl);
+                    const detectedToken = [parsedTelegramUrl.username, parsedTelegramUrl.password]
+                        .filter(Boolean)
+                        .map(value => decodeURIComponent(value))
+                        .join(':')
+                        .trim();
+                    const detectedChats = parsedTelegramUrl.searchParams.getAll('chats')
+                        .flatMap(value => value.split(/[\s,;]+/))
+                        .map(value => value.trim())
+                        .filter(Boolean);
+                    if (!telegramToken && detectedToken) {
+                        telegramToken = detectedToken;
+                        telegramDetected = true;
+                    }
+                    if (telegramChatIds.length === 0 && detectedChats.length > 0) {
+                        telegramChatIds = detectedChats;
+                        telegramDetected = true;
+                    }
+                } catch {}
+            }
+            const telegramEnabled = telegramBot.enabled === true;
 
             container.innerHTML = `
                 <div class="general-tab-form">
@@ -9346,6 +9385,50 @@ function renderGeneralTab(container) {
                                 </label>
                                 <span class="general-label" style="margin:0;">Excluir acciones gestionadas desde Dockme</span>
                                 <span class="gen-field-status" id="gen-notif-exclude-active-stack-status"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- BOT DE TELEGRAM -->
+                    <div class="general-section">
+                        <div class="general-section-title">🤖 Bot de Telegram</div>
+
+                        <div class="general-field">
+                            <div class="general-input-row" style="align-items:center;gap:10px;">
+                                <label class="general-toggle">
+                                    <input type="checkbox" id="gen-telegram-enabled" ${telegramEnabled ? 'checked' : ''}>
+                                    <span class="general-toggle-slider"></span>
+                                </label>
+                                <span class="general-label" style="margin:0;">Activar bot Telegram</span>
+                                <span class="gen-field-status" id="gen-telegram-enabled-status"></span>
+                            </div>
+                        </div>
+
+                        <div class="general-field">
+                            <label class="general-label">Bot token</label>
+                            <div class="general-input-row">
+                                <input type="text" id="gen-telegram-token" class="editor-input"
+                                    autocomplete="off" placeholder="123456789:AA...">
+                                <span class="gen-field-status" id="gen-telegram-token-status"></span>
+                            </div>
+                        </div>
+
+                        <div class="general-field">
+                            <label class="general-label">Chat IDs autorizados</label>
+                            <div class="general-input-row">
+                                <input type="text" id="gen-telegram-chat-ids" class="editor-input"
+                                    autocomplete="off" placeholder="123456789, -1001234567890">
+                                <span class="gen-field-status" id="gen-telegram-chat-ids-status"></span>
+                            </div>
+                            <span class="general-field-hint">Separa varios chat IDs con comas. Los mensajes de cualquier otro chat serán ignorados.</span>
+                        </div>
+
+                        ${telegramDetected ? '<div class="telegram-detected-hint">💡 Token o chat ID precargados desde la URL Telegram de Notificaciones. Pulsa «Probar bot» para verificarlos y guardarlos.</div>' : ''}
+
+                        <div class="general-field">
+                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                <button class="btn btn-normal" id="gen-telegram-test">Probar bot</button>
+                                <span id="gen-telegram-test-status" class="general-field-hint" style="min-height:0;"></span>
                             </div>
                         </div>
                     </div>
@@ -9450,6 +9533,103 @@ function renderGeneralTab(container) {
                     if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
                 });
             };
+
+            const telegramTokenInput = container.querySelector('#gen-telegram-token');
+            const telegramChatIdsInput = container.querySelector('#gen-telegram-chat-ids');
+            const telegramEnabledInput = container.querySelector('#gen-telegram-enabled');
+            if (telegramTokenInput) telegramTokenInput.value = telegramToken;
+            if (telegramChatIdsInput) telegramChatIdsInput.value = telegramChatIds.join(', ');
+
+            const readTelegramChatIds = () => String(telegramChatIdsInput?.value || '')
+                .split(/[\s,;]+/)
+                .map(value => value.trim())
+                .filter(Boolean);
+
+            bindTextInput('gen-telegram-token', 'gen-telegram-token-status', val => {
+                if (!val && telegramEnabledInput) telegramEnabledInput.checked = false;
+                return { telegramBot: { token: val, ...(!val ? { enabled: false } : {}) } };
+            });
+            bindTextInput('gen-telegram-chat-ids', 'gen-telegram-chat-ids-status', () => {
+                const authorizedChatIds = readTelegramChatIds();
+                if (authorizedChatIds.length === 0 && telegramEnabledInput) telegramEnabledInput.checked = false;
+                return {
+                    telegramBot: {
+                        authorizedChatIds,
+                        ...(authorizedChatIds.length === 0 ? { enabled: false } : {})
+                    }
+                };
+            });
+
+            telegramEnabledInput?.addEventListener('change', function () {
+                if (this.checked && (!telegramTokenInput?.value.trim() || readTelegramChatIds().length === 0)) {
+                    this.checked = false;
+                    const status = container.querySelector('#gen-telegram-test-status');
+                    if (status) {
+                        status.textContent = 'Completa el token y al menos un chat ID antes de activar el bot.';
+                        status.style.color = '#ff8a8a';
+                    }
+                    return;
+                }
+                saveField({ telegramBot: { enabled: this.checked } }, 'gen-telegram-enabled-status');
+            });
+
+            container.querySelector('#gen-telegram-test')?.addEventListener('click', async function () {
+                const status = container.querySelector('#gen-telegram-test-status');
+                const token = telegramTokenInput?.value.trim() || '';
+                const authorizedChatIds = readTelegramChatIds();
+                const dockgeToken = localStorage.getItem('token') || sessionStorage.getItem('token') || '';
+                if (!token || authorizedChatIds.length === 0) {
+                    status.textContent = 'Completa el token y al menos un chat ID.';
+                    status.style.color = '#ff8a8a';
+                    return;
+                }
+
+                this.disabled = true;
+                status.textContent = '⏳ Conectando con Telegram…';
+                status.style.color = '';
+                try {
+                    const response = await fetch('/api/test-telegram-bot', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ token, authorizedChatIds })
+                    });
+                    const result = await response.json();
+                    if (!result.success) throw new Error(result.message || 'No se pudo conectar con el bot');
+
+                    const saveResponse = await fetch('/api/save-settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            telegramBot: {
+                                enabled: true,
+                                token,
+                                authorizedChatIds
+                            }
+                        })
+                    });
+                    const saved = await saveResponse.json();
+                    if (!saved.success) throw new Error(saved.error || 'La prueba funcionó, pero no se pudo guardar');
+                    if (!dockgeToken) throw new Error('No se encontró la sesión de Dockme');
+                    const sessionResponse = await fetch('/api/telegram-dockge-session', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ botToken: token, dockgeToken })
+                    });
+                    const sessionResult = await sessionResponse.json();
+                    if (!sessionResult.success) {
+                        throw new Error(sessionResult.message || 'No se pudo vincular la sesión de Dockme');
+                    }
+                    if (telegramEnabledInput) telegramEnabledInput.checked = true;
+                    if (State.settingsData) State.settingsData.telegramBot = saved.settings.telegramBot;
+                    status.textContent = `✅ ${result.message}`;
+                    status.style.color = '#8affc1';
+                } catch (error) {
+                    status.textContent = `❌ ${error.message}`;
+                    status.style.color = '#ff8a8a';
+                } finally {
+                    this.disabled = false;
+                }
+            });
 
             const setNotificationTogglesState = (enabled) => {
                 const updatesToggle = container.querySelector('#gen-notif-updates');
