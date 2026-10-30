@@ -1,4 +1,4 @@
-FROM alpine:3.20
+FROM alpine:3
 
 # Docker CLI + docker compose plugin
 RUN apk add --no-cache docker-cli docker-compose

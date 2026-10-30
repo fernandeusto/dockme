@@ -1,3 +1,5 @@
+// @ts-ignore Shared Dockme security helpers.
+import { savePeer } from "../../../custom/security.js";
 // @ts-ignore
 import composerize from "composerize";
 import { SocketHandler } from "../socket-handler.js";
@@ -59,6 +61,21 @@ export class MainSocketHandler extends SocketHandler {
                         msg: e.message,
                     });
                 }
+            }
+        });
+
+        // Pair HTTP callbacks only through the existing authenticated Dockge channel.
+        socket.on("dockmePair", (token, callback) => {
+            try {
+                checkLogin(socket);
+                const central = process.env.CENTRAL_URL || process.env.WEBHOOK_URL;
+                if (!central || typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
+                    throw new Error("Invalid Dockme pairing");
+                }
+                savePeer(central, token);
+                callback({ ok: true });
+            } catch {
+                callback({ ok: false });
             }
         });
 

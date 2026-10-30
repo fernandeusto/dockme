@@ -566,7 +566,7 @@ async function main() {
     }
   });
 
-  server.listen(5000, '0.0.0.0', () => {
+  server.listen(5000, '127.0.0.1', () => {
     if (!ONCE) process.stderr.write('MetricsService escuchando en :5000\n');
   });
 }

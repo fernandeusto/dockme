@@ -1,7 +1,7 @@
 ############################################
 # Stage 1: Build Healthcheck (Go)
 ############################################
-FROM golang:1.21.4-bookworm AS build_healthcheck
+FROM golang:1-bookworm AS build_healthcheck
 WORKDIR /app
 COPY dockge/extra/healthcheck.go ./extra/healthcheck.go
 RUN go build -x -o ./extra/healthcheck ./extra/healthcheck.go
@@ -12,6 +12,13 @@ RUN go build -x -o ./extra/healthcheck ./extra/healthcheck.go
 FROM node:22-bookworm-slim AS build_dockge
 WORKDIR /app
 
+# Build SQLite against the same Debian/GLIBC used by the runtime. Upstream
+# prebuilt binaries may require a newer GLIBC than Bookworm provides.
+# These compilers stay in the build stage and are not copied to the runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -g 568 apps 2>/dev/null || true \
     && useradd -u 568 -g 568 -m -s /bin/bash apps 2>/dev/null || true
 
@@ -20,7 +27,9 @@ COPY dockge/package-lock.json ./package-lock.json
 
 RUN chown -R apps:apps /app
 USER apps
-RUN npm ci
+# prebuild-install accepts a package name here, so only SQLite is forced to
+# compile; the other native dependencies can keep their compatible prebuilds.
+RUN npm_config_build_from_source=sqlite3 npm ci --omit=dev
 
 
 
@@ -104,6 +113,9 @@ COPY --from=build_healthcheck /app/extra/healthcheck /app/extra/healthcheck
 # Node modules ya vienen con owner apps:apps del build stage
 COPY --from=build_dockge --chown=apps:apps /app/node_modules /app/node_modules
 
+# Fail the image build if the native module cannot load in the real runtime.
+RUN node -e "const sqlite = require('/app/node_modules/sqlite3'); const db = new sqlite.Database(':memory:', error => { if (error) throw error; db.get('SELECT 1 AS ok', (error, row) => { if (error) throw error; if (row.ok !== 1) throw new Error('SQLite runtime check failed'); db.close(); }); });"
+
 # Backend y archivos necesarios de Dockge
 COPY --chown=apps:apps dockge/backend /app/backend/
 COPY --chown=apps:apps dockge/common /app/common/
@@ -156,7 +168,7 @@ COPY custom/shoutrrr-services.json /custom/shoutrrr-services.json
 
 # Instalar dependencias de la API Node (como apps para evitar chown posterior)
 WORKDIR /custom
-RUN chown -R apps:apps /custom     && chmod +x /custom/api.js     && su -s /bin/sh apps -c "npm install --omit=dev" 
+RUN chown -R apps:apps /custom     && chmod +x /custom/api.js     && su -s /bin/sh apps -c "npm ci --omit=dev"
 
 # frontend-dist para Dockge backend — usar nuestro index.html de /custom/
 RUN mkdir -p /app/frontend-dist && cp /custom/index.html /app/frontend-dist/index.html

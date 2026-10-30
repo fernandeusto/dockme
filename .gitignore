@@ -15,3 +15,13 @@ Private/
 release.sh
 apply-latest.sh
 build.sh
+
+# Dependencias locales de las APIs
+node_modules/
+
+# Pruebas locales (no publicar)
+/custom/tests/
+/dockge/tests/
+
+# Credenciales locales
+.env

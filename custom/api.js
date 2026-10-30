@@ -1,8 +1,10 @@
+import { installAuth, validSession } from './api-auth.js';
+import { peerHeaders, peerOrigin, containedPath, stackFile, validateSvg, downloadImage, pruneMode as validatePruneMode, readPeers } from './security.js';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { exec, spawn } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import http from 'http';
 import { io } from 'socket.io-client';
 
@@ -21,7 +23,28 @@ console.error = (...a) => _origError(`[${_ts()}]`, ...a);
 const app = express();
 const port = 5002;
 
+app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
+app.use((req, _res, next) => { req.body ??= {}; next(); });
+installAuth(app);
+
+// All inter-node calls use credentials provisioned through the Dockge login.
+async function remoteFetch(target, options = {}) {
+  const headers = new Headers(options.headers);
+  for (const [name, value] of Object.entries(peerHeaders(target))) headers.set(name, value);
+  return fetch(target, { ...options, headers, redirect: 'error' });
+}
+
+app.get('/config/:file', (req, res) => {
+  if (!['settings.json', 'stacks.json', 'updates.json', 'links.json', 'layouts.json'].includes(req.params.file)) return res.sendStatus(404);
+  res.sendFile(containedPath('/app/data/config', req.params.file));
+});
+app.get('/metrics', async (_req, res) => {
+  try {
+    const response = await fetch('http://127.0.0.1:5000/metrics', { signal: AbortSignal.timeout(5000) });
+    res.status(response.status).json(await response.json());
+  } catch { res.sendStatus(502); }
+});
 
 // Servir xterm.js y xterm.css desde /custom
 app.get('/api/xterm.js',  (req, res) => res.sendFile('/custom/xterm.js'));
@@ -225,9 +248,9 @@ app.post('/api/set-server', async (req, res) => {
       }
       const hostname = data[idx].hostname;
       const iconsDir = '/app/data/icons';
-      const iconPath = path.join(iconsDir, `server-${hostname}.svg`);
+      const iconPath = containedPath(iconsDir, `server-${hostname}.svg`);
       fs.mkdirSync(iconsDir, { recursive: true });
-      fs.writeFileSync(iconPath, svg, 'utf8');
+      fs.writeFileSync(iconPath, validateSvg(svg), 'utf8');
     }
     writeUpdatesFile(data);
     res.json({ success: true });
@@ -297,7 +320,7 @@ app.get('/api/fetch-all-metrics', async (req, res) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 3000);
 
-        const response = await fetch(url, { signal: controller.signal });
+        const response = await (targetEndpoint === '127.0.0.1:5000' ? fetch : remoteFetch)(url, { signal: controller.signal });
         clearTimeout(timeoutId);
 
         if (!response.ok) {
@@ -406,20 +429,7 @@ app.post('/api/stack-icon', async (req, res) => {
       if (!url || typeof url !== 'string') {
         return res.status(400).json({ error: 'URL no válida' });
       }
-      const response = await fetch(url);
-      if (!response.ok) {
-        return res.status(400).json({
-          error: `No se pudo descargar la URL (${response.status})`
-        });
-      }
-      const contentType = response.headers.get('content-type') || '';
-      svgText = await response.text();
-      if (
-        !contentType.includes('image/svg+xml') &&
-        !svgText.trim().startsWith('<svg')
-      ) {
-        return res.status(400).json({ error: 'La URL no contiene un SVG válido' });
-      }
+      svgText = await downloadImage(url);
       // Nombre del fichero: filename enviado, o último segmento de la URL, o {stack}.svg
       iconFile = filename
         || path.basename(new URL(url).pathname)
@@ -436,7 +446,7 @@ app.post('/api/stack-icon', async (req, res) => {
       if (!/<svg[\s>]/i.test(svg)) {
         return res.status(400).json({ error: 'El contenido no es un SVG válido' });
       }
-      svgText = svg;
+      svgText = validateSvg(svg);
       iconFile = filename || `${stackName}.svg`;
       if (!iconFile.toLowerCase().endsWith('.svg')) iconFile += '.svg';
     }
@@ -455,14 +465,14 @@ app.post('/api/stack-icon', async (req, res) => {
       if (oldIcon && oldIcon !== iconFile) {
         const usedByOther = stacks.some((s, i) => i !== entryIdx && s.icon === oldIcon);
         if (!usedByOther) {
-          const oldPath = path.join(iconsDir, oldIcon);
+          const oldPath = containedPath(iconsDir, oldIcon);
           if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
         }
       }
     }
 
     // Guardar fichero SVG con nombre original
-    fs.writeFileSync(path.join(iconsDir, iconFile), svgText, 'utf8');
+    fs.writeFileSync(containedPath(iconsDir, iconFile), svgText, 'utf8');
 
     // Actualizar campo icon en stacks.json (no crear entradas para iconos de links)
     if (entryIdx >= 0) {
@@ -552,7 +562,7 @@ app.post('/api/update-dockme', async (req, res) => {
     console.log(`🔁 Proxy auto-update a Dockme remoto: ${targetUrl}`);
 
     try {
-        const response = await fetch(targetUrl, {
+        const response = await remoteFetch(targetUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -694,12 +704,8 @@ app.post('/api/test-notification', async (req, res) => {
     }
     const customMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     const msg = customMessage || '🔔 DockMe — Notificación de prueba.';
-    const tmpFile = `/tmp/shoutrrr-test-${Date.now()}.txt`;
-    fs.writeFileSync(tmpFile, msg);
-    exec(`shoutrrr send --url ${JSON.stringify(url)} --message - < ${tmpFile}`,
-      { shell: true },
+    execFile('shoutrrr', ['send', '--url', url, '--message', msg],
       (err, stdout, stderr) => {
-        fs.unlink(tmpFile, () => {});
         if (err) {
           console.error('❌ [Test notif]', err.message);
           return res.json({ success: false, message: err.message });
@@ -754,7 +760,7 @@ app.post('/api/test-telegram-bot', async (req, res) => {
 
 // Guarda fuera de settings.json la sesión necesaria para que el bot invoque
 // exactamente el mismo evento updateStack que utiliza la UI de Dockme.
-app.post('/api/telegram-dockge-session', (req, res) => {
+app.post('/api/telegram-dockge-session', async (req, res) => {
   try {
     const settings = readSettingsFile();
     const botToken = String(req.body?.botToken || '').trim();
@@ -762,7 +768,7 @@ app.post('/api/telegram-dockge-session', (req, res) => {
     if (!settings.telegramBot?.enabled || !botToken || botToken !== String(settings.telegramBot.token || '').trim()) {
       return res.status(403).json({ success: false, message: 'Configuración del bot no autorizada' });
     }
-    if (!dockgeToken) {
+    if (!await validSession(dockgeToken)) {
       return res.status(400).json({ success: false, message: 'No se encontró la sesión de Dockme' });
     }
     saveTelegramDockgeToken(dockgeToken);
@@ -868,7 +874,7 @@ app.post('/api/run-prune', async (req, res) => {
   // Proxy al agente remoto
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
     try {
-      const response = await fetch(`http://${endpoint}/api/run-prune`, {
+      const response = await remoteFetch(`http://${endpoint}/api/run-prune`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pruneMode }),
@@ -882,8 +888,10 @@ app.post('/api/run-prune', async (req, res) => {
   }
 
   // Prune local — se ejecuta en background, responde inmediatamente
-  const mode = pruneMode || readSettingsFile().pruneMode || 'disabled';
-  exec(`/tools/prune.sh ${mode} 2>&1 | tee -a /tmp/prune.log`, { shell: true }, (err) => {
+  let mode;
+  try { mode = validatePruneMode(pruneMode || readSettingsFile().pruneMode || 'disabled'); }
+  catch (err) { return res.status(400).json({ success: false, message: err.message }); }
+  execFile('/tools/prune.sh', [mode], (err) => {
     if (err) console.error('❌ Error en prune local:', err.message);
     else     console.log('✅ Prune local completado');
   });
@@ -947,7 +955,14 @@ app.post('/api/agent-alive', (req, res) => {
       });
     }
 
+    if (typeof hostname !== 'string' || !/^[a-zA-Z0-9_. -]{1,128}$/.test(hostname) || typeof endpoint !== 'string' || !/^[a-zA-Z0-9.\[\]:_-]{1,255}$/.test(endpoint) || endpoint.toLowerCase() === 'actual') {
+      return res.status(400).json({ error: 'Identificación de agente inválida' });
+    }
+    peerOrigin(endpoint);
     const currentData = readUpdatesFile();
+    if (req.discoveryOnly && (currentData.length >= 64 || currentData.some(h => h.endpoint?.toLowerCase() === endpoint.toLowerCase()))) {
+      return res.json({ success: true, message: 'Pendiente de conexión autenticada' });
+    }
     
     const existingIndex = currentData.findIndex(h => 
       h.endpoint?.toLowerCase() === endpoint.toLowerCase()
@@ -1082,7 +1097,7 @@ app.post('/api/set-stack', (req, res) => {
         if (oldIcon) {
           const usedByOther = data.some((s, i) => i !== idx && s.icon === oldIcon);
           if (!usedByOther) {
-            const iconPath = path.join('/app/data/icons', oldIcon);
+            const iconPath = containedPath('/app/data/icons', oldIcon);
             if (fs.existsSync(iconPath)) fs.unlinkSync(iconPath);
           }
         }
@@ -1125,12 +1140,12 @@ app.post('/api/run-check', async (req, res) => {
     const { endpoint, pruneMode, fromCycle } = req.body;
     // fromCycle=true: viene del scheduler — usa el pruneMode configurado.
     // fromCycle falsy: check manual del usuario — prune siempre disabled.
-    const mode = fromCycle ? (pruneMode || 'disabled') : 'disabled';
+    const mode = validatePruneMode(fromCycle ? (pruneMode || 'disabled') : 'disabled');
 
     // Si viene endpoint remoto, proxificar al agente
     if (endpoint && endpoint.toLowerCase() !== 'actual') {
         try {
-            const response = await fetch(`http://${endpoint}/api/run-check`, {
+            const response = await remoteFetch(`http://${endpoint}/api/run-check`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ pruneMode: mode, fromCycle }),
@@ -1156,8 +1171,7 @@ app.post('/api/run-check', async (req, res) => {
 
     const isManual = !fromCycle;
     console.log(`🔍 Lanzando check ${isManual ? 'manual' : '[Cycle]'} (prune: ${mode})...`);
-    exec(`/tools/check-updates.sh ${mode} 2>&1 | tee -a /tmp/updates-check.log > /proc/1/fd/1`,
-        { detached: true, shell: true }, (error) => {
+    execFile('/tools/check-updates.sh', [mode], { maxBuffer: 16 * 1024 * 1024 }, (error) => {
         if (error) console.error('❌ Error en check-updates:', error);
         else        console.log('✅ check-updates finalizado');
     });
@@ -1220,7 +1234,7 @@ app.post('/api/set-links', (req, res) => {
     oldLinks.forEach(cat => {
       (cat.links || []).forEach(link => {
         if (link.icon && !newIcons.has(link.icon)) {
-          const iconPath = path.join('/app/data/icons', link.icon);
+          const iconPath = containedPath('/app/data/icons', link.icon);
           if (fs.existsSync(iconPath)) fs.unlinkSync(iconPath);
         }
       });
@@ -1253,11 +1267,8 @@ app.post('/api/fetch-favicon', async (req, res) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
         const directUrl = `${protocol}//${host}/favicon.ico`;
-        const directRes = await fetch(directUrl, { signal: controller.signal });
+        buffer = await downloadImage(directUrl, 'binary');
         clearTimeout(timeoutId);
-        if (directRes.ok) {
-            buffer = await directRes.arrayBuffer();
-        }
     } catch {}
 
     // 2. Si no, intentar Google Favicons (solo para dominios públicos)
@@ -1266,18 +1277,15 @@ app.post('/api/fetch-favicon', async (req, res) => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 2000);
             const googleUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
-            const googleRes = await fetch(googleUrl, { signal: controller.signal });
+            buffer = await downloadImage(googleUrl, 'binary');
             clearTimeout(timeoutId);
-            if (googleRes.ok) {
-                buffer = await googleRes.arrayBuffer();
-            }
         } catch {}
     }
 
     if (!buffer) return res.json({ success: false });
 
     const iconsDir = '/app/data/icons';
-    const iconPath = path.join(iconsDir, `link-${name}.png`);
+    const iconPath = containedPath(iconsDir, `link-${name}.png`);
     fs.mkdirSync(iconsDir, { recursive: true });
     fs.writeFileSync(iconPath, Buffer.from(buffer));
     res.json({ success: true, iconFile: `link-${name}.png` });
@@ -1398,12 +1406,10 @@ async function tryDownloadIconFromCDN(stackName) {
   ];
   for (const filename of candidates) {
     try {
-      const res = await fetch(`${CDN_BASE}/${filename}`, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) continue;
-      const text = await res.text();
+      const text = await downloadImage(`${CDN_BASE}/${encodeURIComponent(filename)}`);
       if (!/<svg[\s>]/i.test(text)) continue;
       fs.mkdirSync(iconsDir, { recursive: true });
-      fs.writeFileSync(path.join(iconsDir, filename), text, 'utf8');
+      fs.writeFileSync(containedPath(iconsDir, filename), validateSvg(text), 'utf8');
       console.log(`✅ Icono descargado del CDN: ${stackName} → ${filename}`);
       return filename;
     } catch {
@@ -1518,7 +1524,7 @@ app.post('/api/set-primary-host', (req, res) => {
 function getStackPort(stackName) {
   try {
     const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
-    const composePath = path.join(stacksDir, stackName, 'compose.yaml');
+    const composePath = stackFile(stacksDir, stackName, 'compose.yaml');
     if (!fs.existsSync(composePath)) return null;
     const content = fs.readFileSync(composePath, 'utf8');
     const match = content.match(/^\s*-\s*["']?(?:[\d.]+:)?(\d+):\d+/m);
@@ -1814,6 +1820,18 @@ function getTelegramPendingUpdates() {
   );
 }
 
+function getTelegramDockmeUpdates() {
+  const pending = [];
+  for (const server of readUpdatesFile()) {
+    const endpoint = String(server.endpoint || 'Actual');
+    const hostname = String(server.hostname || endpoint);
+    const update = (Array.isArray(server.updates) ? server.updates : [])
+      .find(item => String(item?.stack || '').toLowerCase() === 'dockme');
+    if (update) pending.push({ endpoint, hostname, stack: 'dockme' });
+  }
+  return pending.sort((a, b) => a.hostname.localeCompare(b.hostname, 'es', { sensitivity: 'base' }));
+}
+
 function telegramUpdateKey(update) {
   return `${update.endpoint.toLowerCase()}|${update.stack.toLowerCase()}`;
 }
@@ -1911,7 +1929,7 @@ async function getTelegramStackStatuses(endpoint, stacks) {
 
   const entries = await Promise.all(stacks.map(async stack => {
     try {
-      const response = await fetch(
+      const response = await remoteFetch(
         `http://${endpoint}/api/stack-containers/${encodeURIComponent(stack)}`,
         { signal: AbortSignal.timeout(5000) }
       );
@@ -1930,7 +1948,7 @@ async function getTelegramServerMetrics(endpoint) {
     ? '127.0.0.1:5000'
     : endpoint;
   try {
-    const response = await fetch(`http://${targetEndpoint}/metrics`, {
+    const response = await (targetEndpoint === '127.0.0.1:5000' ? fetch : remoteFetch)(`http://${targetEndpoint}/metrics`, {
       signal: AbortSignal.timeout(3000)
     });
     if (!response.ok) return null;
@@ -2030,7 +2048,7 @@ async function runTelegramStackAction(endpoint, stack, action) {
     return;
   }
 
-  const containersResponse = await fetch(
+  const containersResponse = await remoteFetch(
     `http://${endpoint}/api/stack-containers/${encodeURIComponent(stack)}`,
     { signal: AbortSignal.timeout(8000) }
   );
@@ -2040,7 +2058,7 @@ async function runTelegramStackAction(endpoint, stack, action) {
   }
 
   for (const container of containersData.containers) {
-    const response = await fetch(`http://${endpoint}/api/container-action`, {
+    const response = await remoteFetch(`http://${endpoint}/api/container-action`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ container: container.name, action }),
@@ -2053,9 +2071,9 @@ async function runTelegramStackAction(endpoint, stack, action) {
 
 async function getTelegramDetailedStackStatus(endpoint, stack) {
   const normalizedEndpoint = String(endpoint || 'Actual').toLowerCase();
-  const baseUrl = normalizedEndpoint === 'actual' ? 'http://localhost:5002' : `http://${endpoint}`;
+  const baseUrl = normalizedEndpoint === 'actual' ? 'http://127.0.0.1:5002' : `http://${endpoint}`;
   try {
-    const response = await fetch(`${baseUrl}/api/stack-containers/${encodeURIComponent(stack)}`, {
+    const response = await (normalizedEndpoint === 'actual' ? fetch : remoteFetch)(`${baseUrl}/api/stack-containers/${encodeURIComponent(stack)}`, {
       signal: AbortSignal.timeout(8000)
     });
     if (!response.ok) return { status: 'unknown', running: 0, ready: 0, total: 0 };
@@ -2176,6 +2194,11 @@ function telegramServersView(session) {
     text: `⬆️ Actualizaciones pendientes (${pendingCount})`,
     callback_data: 'dm:updates'
   });
+  const dockmeUpdateCount = getTelegramDockmeUpdates().length;
+  if (dockmeUpdateCount > 0) buttons.push({
+    text: `🐳 ${dockmeUpdateCount === 1 ? 'Actualización' : 'Actualizaciones'} Dockme (${dockmeUpdateCount})`,
+    callback_data: 'dm:dupdates'
+  });
   buttons.push({ text: '📊 Métricas de servidores', callback_data: 'dm:metrics' });
   return {
     text: '🐋 Dockme\n\nSelecciona un servidor:',
@@ -2218,6 +2241,13 @@ function telegramStacksView(session) {
       callback_data: 'dm:updates'
     }]);
   }
+  const dockmeUpdateCount = getTelegramDockmeUpdates().length;
+  if (dockmeUpdateCount > 0) {
+    rows.push([{
+      text: `🐳 ${dockmeUpdateCount === 1 ? 'Actualización' : 'Actualizaciones'} Dockme (${dockmeUpdateCount})`,
+      callback_data: 'dm:dupdates'
+    }]);
+  }
   if (session.servers.length > 1) {
     rows.push([{ text: '⬅️ Servidores', callback_data: 'dm:servers' }]);
   }
@@ -2254,6 +2284,7 @@ async function telegramMetricsView(session) {
 function refreshTelegramUpdatesSession(session) {
   const previous = session.selectedUpdates || new Set();
   session.updates = getTelegramPendingUpdates();
+  session.dockmeUpdates = getTelegramDockmeUpdates();
   const validKeys = new Set(session.updates.map(telegramUpdateKey));
   session.selectedUpdates = new Set([...previous].filter(key => validKeys.has(key)));
 }
@@ -2281,6 +2312,59 @@ function telegramUpdatesView(session) {
       : '✅ No hay actualizaciones pendientes.',
     reply_markup: { inline_keyboard: rows }
   };
+}
+
+function telegramDockmeUpdatesView(session) {
+  session.dockmeUpdates = getTelegramDockmeUpdates();
+  const rows = session.dockmeUpdates.map((update, index) => [{
+    text: `🐳 Actualizar Dockme — ${update.hostname}`,
+    callback_data: `dm:du:${index}`
+  }]);
+  rows.push([{ text: '⬅️ Volver', callback_data: 'dm:home' }]);
+  return {
+    text: session.dockmeUpdates.length > 0
+      ? '🐳 Hay actualizaciones de Dockme disponibles.\n\nSelecciona la instancia que quieres actualizar:'
+      : '✅ No hay actualizaciones de Dockme pendientes.',
+    reply_markup: { inline_keyboard: rows }
+  };
+}
+
+function telegramDockmeUpdateConfirmView(update) {
+  const isCentral = String(update.endpoint || 'Actual').toLowerCase() === 'actual';
+  const consequence = isCentral
+    ? 'Dockme central se reiniciará y el bot quedará desconectado brevemente.'
+    : `Dockme se reiniciará en ${update.hostname}. Mientras se actualiza, no podrás gestionar ni actualizar los stacks de ese servidor.`;
+  return {
+    text: `🐳 Actualizar Dockme — ${update.hostname}\n\n${consequence}`,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⬆️ Actualizar Dockme', callback_data: 'dm:dur' }],
+        [{ text: '⬅️ Volver', callback_data: 'dm:dupdates' }]
+      ]
+    }
+  };
+}
+
+async function requestTelegramDockmeUpdate(update) {
+  const endpoint = String(update.endpoint || 'Actual');
+  const source = `telegram-dockme-update:${Date.now()}:${endpoint}`;
+  addDockerEventExclusion(endpoint, 'dockme', source);
+  addDockerEventExclusion(endpoint, 'dockme-auto-update', source);
+
+  const isLocal = endpoint.toLowerCase() === 'actual';
+  const response = await fetch(isLocal
+    ? 'http://127.0.0.1:5002/api/update-self'
+    : 'http://127.0.0.1:5002/api/update-dockme', {
+    method: 'POST',
+    headers: isLocal ? undefined : { 'Content-Type': 'application/json' },
+    body: isLocal ? undefined : JSON.stringify({ endpoint }),
+    signal: AbortSignal.timeout(15000)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success === false) {
+    throw new Error(String(data.message || `Error HTTP ${response.status}`));
+  }
+  removeTelegramPendingUpdate(update);
 }
 
 function removeTelegramPendingUpdate(update) {
@@ -2319,7 +2403,7 @@ async function editTelegramUpdateQueue(token, chatId, messageId, items, currentI
 
 async function requestDockmeStackUpdate(update) {
   const dockgeToken = getTelegramDockgeToken();
-  if (!dockgeToken) {
+  if (!await validSession(dockgeToken)) {
     throw new Error('Falta la sesión de Dockme. Vuelve a pulsar “Probar bot” en Ajustes');
   }
   const endpoint = String(update.endpoint || 'Actual').toLowerCase() === 'actual'
@@ -2461,9 +2545,16 @@ async function runTelegramUpdateQueue(token, chatId, messageId, selectedUpdates)
   const errorText = errors ? `, ${errors} con ${errors === 1 ? 'error' : 'errores'}` : '';
   const summary = `Finalizado: ${successText}${warningText}${errorText}.`;
   const pendingCount = getTelegramPendingUpdates().length;
+  const dockmeUpdateCount = getTelegramDockmeUpdates().length;
   const finalButtons = [];
   if (pendingCount > 0) {
     finalButtons.push({ text: `⬆️ Pendientes (${pendingCount})`, callback_data: 'dm:updates' });
+  }
+  if (dockmeUpdateCount > 0) {
+    finalButtons.push({
+      text: `🐳 Dockme (${dockmeUpdateCount})`,
+      callback_data: 'dm:dupdates'
+    });
   }
   finalButtons.push({ text: '🏠 Menú', callback_data: 'dm:home' });
   await editTelegramUpdateQueue(token, chatId, messageId, items, items.length - 1, summary, {
@@ -2690,7 +2781,13 @@ async function handleTelegramUpdate(token, authorizedChatIds, update) {
   const serverMatch = callback.data.match(/^dm:s:(\d+)$/);
   const stackMatch = callback.data.match(/^dm:k:(\d+)$/);
   const updateMatch = callback.data.match(/^dm:u:(\d+)$/);
+  const dockmeUpdateMatch = callback.data.match(/^dm:du:(\d+)$/);
+  const dockmeUpdateRun = callback.data === 'dm:dur';
   const actionMatch = callback.data.match(/^dm:a:(start|stop|restart):(\d+)$/);
+  if (callback.data === 'dm:noop') {
+    await telegramApi(token, 'answerCallbackQuery', { callback_query_id: callback.id });
+    return;
+  }
   if (callback.data === 'dm:metrics') {
     await telegramApi(token, 'answerCallbackQuery', { callback_query_id: callback.id });
     await telegramApi(token, 'editMessageText', {
@@ -2707,6 +2804,79 @@ async function handleTelegramUpdate(token, authorizedChatIds, update) {
       message_id: callback.message.message_id,
       ...telegramUpdatesView(session)
     });
+    return;
+  }
+  if (callback.data === 'dm:dupdates') {
+    await telegramApi(token, 'answerCallbackQuery', { callback_query_id: callback.id });
+    await telegramApi(token, 'editMessageText', {
+      chat_id: chatId,
+      message_id: callback.message.message_id,
+      ...telegramDockmeUpdatesView(session)
+    });
+    return;
+  }
+
+  if (dockmeUpdateMatch) {
+    refreshTelegramUpdatesSession(session);
+    const index = Number(dockmeUpdateMatch[1]);
+    const dockmeUpdate = session.dockmeUpdates?.[index];
+    if (!dockmeUpdate) {
+      await telegramApi(token, 'answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: 'Esta actualización ya no está pendiente.',
+        show_alert: true
+      });
+      return;
+    }
+    session.confirmedDockmeUpdate = dockmeUpdate;
+    await telegramApi(token, 'answerCallbackQuery', { callback_query_id: callback.id });
+    await telegramApi(token, 'editMessageText', {
+      chat_id: chatId,
+      message_id: callback.message.message_id,
+      ...telegramDockmeUpdateConfirmView(dockmeUpdate)
+    });
+    return;
+  }
+
+  if (dockmeUpdateRun) {
+    const confirmed = session.confirmedDockmeUpdate;
+    refreshTelegramUpdatesSession(session);
+    const dockmeUpdate = confirmed && session.dockmeUpdates?.find(update =>
+      String(update.endpoint).toLowerCase() === String(confirmed.endpoint).toLowerCase()
+    );
+    if (!dockmeUpdate) {
+      await telegramApi(token, 'answerCallbackQuery', {
+        callback_query_id: callback.id,
+        text: 'Esta actualización ya no está pendiente.',
+        show_alert: true
+      });
+      return;
+    }
+    session.confirmedDockmeUpdate = null;
+    await telegramApi(token, 'answerCallbackQuery', {
+      callback_query_id: callback.id,
+      text: `Actualizando Dockme en ${dockmeUpdate.hostname}…`
+    });
+    await telegramApi(token, 'editMessageText', {
+      chat_id: chatId,
+      message_id: callback.message.message_id,
+      text: `🐳 Actualizando Dockme — ${dockmeUpdate.hostname}\n\n⬇️ Descargando la nueva versión y reiniciando Dockme…`
+    });
+    try {
+      await requestTelegramDockmeUpdate(dockmeUpdate);
+      await telegramApi(token, 'editMessageText', {
+        chat_id: chatId,
+        message_id: callback.message.message_id,
+        text: `✅ Actualización de Dockme iniciada en ${dockmeUpdate.hostname}.\n\nLa instancia se reiniciará en unos instantes.`
+      }).catch(() => {});
+    } catch (error) {
+      await telegramApi(token, 'editMessageText', {
+        chat_id: chatId,
+        message_id: callback.message.message_id,
+        text: `❌ No se pudo iniciar la actualización de Dockme en ${dockmeUpdate.hostname}:\n\n${String(error?.message || error).slice(0, 500)}`,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Volver', callback_data: 'dm:dupdates' }]] }
+      }).catch(() => {});
+    }
     return;
   }
 
@@ -3008,7 +3178,7 @@ async function launchCheck(endpoint, pruneMode) {
     // Llamar via HTTP al propio API (puerto 5002) para flujo uniforme con remotos.
     // check-updates.sh hará POST a set-updates al terminar (señal de fin de ciclo).
     try {
-      await fetch(`http://localhost:5002/api/run-check`, {
+      await fetch(`http://127.0.0.1:5002/api/run-check`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pruneMode, fromCycle: true }),
@@ -3025,7 +3195,7 @@ async function launchCheck(endpoint, pruneMode) {
   } else {
     console.log(`🔍 [Cycle] Lanzando check en ${endpoint} (prune: ${pruneMode})...`);
     try {
-      await fetch(`http://${endpoint}/api/run-check`, {
+      await remoteFetch(`http://${endpoint}/api/run-check`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pruneMode, fromCycle: true }),
@@ -3170,14 +3340,9 @@ async function sendNotification(message) {
   let sent = false;
   for (const url of urls) {
     await new Promise((resolve) => {
-      // Escribir mensaje a fichero temporal para preservar saltos de línea
-      const tmpFile = `/tmp/shoutrrr-msg-${Date.now()}.txt`;
-      fs.writeFileSync(tmpFile, message);
-      exec(`shoutrrr send --url ${JSON.stringify(url)} --message - < ${tmpFile}`,
-        { shell: true },
+      execFile('shoutrrr', ['send', '--url', url, '--message', message],
         (err, stdout, stderr) => {
-          fs.unlink(tmpFile, () => {});
-          if (err) console.error(`❌ [Notif] Error enviando a ${url.split('://')[0]}: ${err.message}`);
+            if (err) console.error(`❌ [Notif] Error enviando a ${url.split('://')[0]}: ${err.message}`);
           else {
             sent = true;
             console.log(`✅ [Notif] Enviado a ${url.split('://')[0]}`);
@@ -3323,7 +3488,7 @@ function normalizeDockerEvent(event) {
 }
 
 function centralDockerEventUrl() {
-  if (!IS_AGENT) return 'http://localhost:5002/api/docker-event';
+  if (!IS_AGENT) return 'http://127.0.0.1:5002/api/docker-event';
 
   const central = process.env.CENTRAL_URL || process.env.WEBHOOK_URL || '';
   if (!central) return '';
@@ -3350,7 +3515,7 @@ async function postDockerEventToCentral(event) {
   }
 
   try {
-    await fetch(url, {
+    await (readPeers()[peerOrigin(url)] ? remoteFetch : fetch)(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(event),
@@ -3598,7 +3763,7 @@ app.get('/api/stack-containers/:stack', async (req, res) => {
   // Proxy al agente remoto
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
     try {
-      const response = await fetch(`http://${endpoint}/api/stack-containers/${encodeURIComponent(stack)}`, {
+      const response = await remoteFetch(`http://${endpoint}/api/stack-containers/${encodeURIComponent(stack)}`, {
         signal: AbortSignal.timeout(5000)
       });
       const data = await response.json();
@@ -3610,12 +3775,12 @@ app.get('/api/stack-containers/:stack', async (req, res) => {
 
   // Local
   const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
-  const composePath = path.join(stacksDir, stack, 'compose.yaml');
+  const composePath = stackFile(stacksDir, stack, 'compose.yaml');
   if (!fs.existsSync(composePath)) {
     return res.status(404).json({ success: false, message: 'Stack no encontrado' });
   }
 
-  exec(`docker compose -f ${composePath} ps --all --format json`, (err, stdout) => {
+  execFile('docker', ['compose', '-f', composePath, 'ps', '--all', '--format', 'json'], (err, stdout) => {
     if (err) return res.status(500).json({ success: false, message: err.message });
     try {
       const containers = stdout.trim().split('\n')
@@ -3657,14 +3822,14 @@ app.get('/api/logs/:stack', (req, res) => {
 
   // Proxy SSE al agente remoto
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
-    const [agentHost, agentPort = '5002'] = endpoint.split(':');
     const qs = new URLSearchParams({ tail, ...(container ? { container } : {}) }).toString();
     const agentPath = `/api/logs/${encodeURIComponent(stack)}?${qs}`;
 
     console.log(`📡 [Logs] Proxy → ${endpoint}${agentPath}`);
 
     const agentReq = http.request(
-      { host: agentHost, port: agentPort, path: agentPath, method: 'GET' },
+      new URL(agentPath, peerOrigin(endpoint)),
+      { method: 'GET', headers: peerHeaders(`http://${endpoint}`) },
       agentRes => { agentRes.pipe(res); }
     );
     agentReq.on('error', err => {
@@ -3678,7 +3843,7 @@ app.get('/api/logs/:stack', (req, res) => {
 
   // Local: lanzar docker compose logs
   const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
-  const composePath = path.join(stacksDir, stack, 'compose.yaml');
+  const composePath = stackFile(stacksDir, stack, 'compose.yaml');
 
   if (!fs.existsSync(composePath)) {
     res.write(`data: ❌ Stack no encontrado: ${stack}\n\n`);
@@ -3718,7 +3883,7 @@ app.get('/api/compose/:stack', async (req, res) => {
   // Proxy al agente remoto
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
     try {
-      const response = await fetch(`http://${endpoint}/api/compose/${encodeURIComponent(stack)}`, {
+      const response = await remoteFetch(`http://${endpoint}/api/compose/${encodeURIComponent(stack)}`, {
         signal: AbortSignal.timeout(5000)
       });
       const data = await response.json();
@@ -3730,8 +3895,8 @@ app.get('/api/compose/:stack', async (req, res) => {
 
   // Local
   const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
-  const composePath = path.join(stacksDir, stack, 'compose.yaml');
-  const envPath     = path.join(stacksDir, stack, '.env');
+  const composePath = stackFile(stacksDir, stack, 'compose.yaml');
+  const envPath     = stackFile(stacksDir, stack, '.env');
 
   if (!fs.existsSync(composePath)) {
     return res.status(404).json({ success: false, message: 'compose.yaml no encontrado' });
@@ -3757,7 +3922,7 @@ app.post('/api/compose/:stack', async (req, res) => {
   // Proxy al agente remoto
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
     try {
-      const response = await fetch(`http://${endpoint}/api/compose/${encodeURIComponent(stack)}`, {
+      const response = await remoteFetch(`http://${endpoint}/api/compose/${encodeURIComponent(stack)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, env }),
@@ -3772,8 +3937,8 @@ app.post('/api/compose/:stack', async (req, res) => {
 
   // Local
   const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
-  const composePath = path.join(stacksDir, stack, 'compose.yaml');
-  const envPath     = path.join(stacksDir, stack, '.env');
+  const composePath = stackFile(stacksDir, stack, 'compose.yaml');
+  const envPath     = stackFile(stacksDir, stack, '.env');
 
   if (!fs.existsSync(path.dirname(composePath))) {
     return res.status(404).json({ success: false, message: 'Stack no encontrado' });
@@ -3810,10 +3975,10 @@ app.get('/api/deploy/:stack', (req, res) => {
 
   // Proxy SSE al agente remoto
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
-    const [agentHost, agentPort = '5002'] = endpoint.split(':');
     const agentPath = `/api/deploy/${encodeURIComponent(stack)}`;
     const agentReq = http.request(
-      { host: agentHost, port: agentPort, path: agentPath, method: 'GET' },
+      new URL(agentPath, peerOrigin(endpoint)),
+      { method: 'GET', headers: peerHeaders(`http://${endpoint}`) },
       agentRes => { agentRes.pipe(res); }
     );
     agentReq.on('error', err => {
@@ -3827,7 +3992,7 @@ app.get('/api/deploy/:stack', (req, res) => {
 
   // Local
   const stacksDir = process.env.DOCKGE_STACKS_DIR || '/opt/stacks';
-  const composePath = path.join(stacksDir, stack, 'compose.yaml');
+  const composePath = stackFile(stacksDir, stack, 'compose.yaml');
   if (!fs.existsSync(composePath)) {
     res.write(`data: ❌ Stack no encontrado: ${stack}\n\n`);
     res.end();
@@ -3944,7 +4109,7 @@ app.get('/api/container-stats', async (req, res) => {
 
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
     try {
-      const response = await fetch(`http://${endpoint}/api/container-stats`, {
+      const response = await remoteFetch(`http://${endpoint}/api/container-stats`, {
         signal: AbortSignal.timeout(8000)
       });
       const data = await response.json();
@@ -4011,7 +4176,7 @@ app.get('/api/container-stats/live', async (req, res) => {
 
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
     try {
-      const response = await fetch(`http://${endpoint}/api/container-stats/live`, {
+      const response = await remoteFetch(`http://${endpoint}/api/container-stats/live`, {
         signal: AbortSignal.timeout(8000)
       });
       const data = await response.json();
@@ -4067,7 +4232,7 @@ app.post('/api/container-action', async (req, res) => {
   // Proxy al agente remoto
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
     try {
-      const response = await fetch(`http://${endpoint}/api/container-action`, {
+      const response = await remoteFetch(`http://${endpoint}/api/container-action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ container, action }),
@@ -4082,8 +4247,8 @@ app.post('/api/container-action', async (req, res) => {
 
   // Local
   const dockerArgs = action === 'remove'
-    ? ['rm', '-f', container]
-    : [action, container];
+    ? ['rm', '-f', '--', container]
+    : [action, '--', container];
   const proc = spawn('docker', dockerArgs);
   let stderr = '';
   proc.stderr.on('data', chunk => { stderr += chunk.toString(); });
@@ -4113,7 +4278,7 @@ app.post('/api/create-stack', async (req, res) => {
   // Proxy al agente remoto
   if (endpoint && endpoint.toLowerCase() !== 'actual') {
     try {
-      const response = await fetch(`http://${endpoint}/api/create-stack`, {
+      const response = await remoteFetch(`http://${endpoint}/api/create-stack`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stack, content, env }),
@@ -4147,7 +4312,7 @@ app.post('/api/create-stack', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
+app.listen(port, '127.0.0.1', () => {
   console.log(`✅ API Node lista`);
   console.log(`🔗 [Connected] Endpoints activos: [ninguno — pendiente sincronización del frontend]`);
   setupScheduler();

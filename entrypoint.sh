@@ -306,10 +306,8 @@ if [ -n "$WEBHOOK_URL" ] && [ -n "$ENDPOINT" ] && [ "$ENDPOINT" != "Actual" ]; t
     # Enviar alive al central (asíncrono)
     (
         sleep 5
-        curl -s -X POST "${WEBHOOK_BASE}/api/agent-alive" \
-            -H "Content-Type: application/json" \
-            -d "{\"hostname\":\"$HOSTNAME\",\"endpoint\":\"$ENDPOINT\"}" \
-            -m 5 \
+        node /custom/peer-request.js "${WEBHOOK_BASE}/api/agent-alive" \
+            "{\"hostname\":\"$HOSTNAME\",\"endpoint\":\"$ENDPOINT\"}" \
             || echo "⚠️ No se pudo registrar (el central podría estar offline)"
     ) &
     # Resetear updates.json local (agente no debe tener updates)

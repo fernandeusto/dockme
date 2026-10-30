@@ -8,7 +8,7 @@ import knex from "knex";
 // @ts-ignore
 import Dialect from "knex/lib/dialects/sqlite3/index.js";
 
-import sqlite from "@louislam/sqlite3";
+import sqlite from "sqlite3";
 import { sleep } from "../common/util-common";
 
 interface DBConfig {

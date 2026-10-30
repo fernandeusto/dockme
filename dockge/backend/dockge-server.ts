@@ -1,3 +1,5 @@
+import { pairConfiguredPeers } from "./dockme-peers";
+import { dockmeAuth } from "./dockme-auth";
 import "dotenv/config";
 import { MainRouter } from "./routers/main-router";
 import * as fs from "node:fs";
@@ -186,6 +188,8 @@ export class DockgeServer {
             log.info("server", "Server Type: HTTP");
             this.httpServer = http.createServer(this.app);
         }
+
+        this.app.use(dockmeAuth(this));
 
         // Binding Routers
         for (const router of this.routerList) {
@@ -389,6 +393,7 @@ export class DockgeServer {
 
         // Listen
         this.httpServer.listen(this.config.port, this.config.hostname, () => {
+            pairConfiguredPeers().catch(error => log.warn("server", `Dockme pairing: ${error.message}`));
             if (this.config.hostname) {
                 log.info( "server", `Listening on ${this.config.hostname}:${this.config.port}`);
             } else {

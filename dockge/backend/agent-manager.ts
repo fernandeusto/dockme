@@ -1,3 +1,5 @@
+// @ts-ignore Shared Dockme security helpers.
+import { ensurePeer, removePeer } from "../../custom/security.js";
 import { DockgeSocket } from "./util-server";
 import { io, Socket as SocketClient } from "socket.io-client";
 import { log } from "./log";
@@ -97,6 +99,7 @@ export class AgentManager {
 
         if (bean) {
             await R.trash(bean);
+            removePeer(url);
             let endpoint = bean.endpoint;
             this.disconnect(endpoint);
             this.sendAgentList();
@@ -142,9 +145,15 @@ export class AgentManager {
                 if (res.ok) {
                     log.info("agent-manager", "Logged in to the socket server: " + endpoint);
                     this.agentLoggedInList[endpoint] = true;
-                    this.socket.emit("agentStatus", {
-                        endpoint: endpoint,
-                        status: "online",
+                    // Older agents ignore the event; update agents before the central.
+                    client.timeout(5000).emit("dockmePair", ensurePeer(url), (error: Error | null, result: LooseObject) => {
+                        if (error || !result?.ok) {
+                            log.warn("agent-manager", `Dockme HTTP pairing pending for ${endpoint}; agent 3.8 required`);
+                        }
+                        this.socket.emit("agentStatus", {
+                            endpoint: endpoint,
+                            status: "online",
+                        });
                     });
                 } else {
                     log.error("agent-manager", "Failed to login to the socket server: " + endpoint);

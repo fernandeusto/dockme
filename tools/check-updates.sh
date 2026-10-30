@@ -56,17 +56,15 @@ fi
 # ============================
 send_webhook() {
     local updates_json="$1"
-    curl -s --retry 3 --retry-delay 30 --retry-connrefused -X POST "$WEBHOOK_ENDPOINT" \
-        -H "Content-Type: application/json" \
-        -d "{\"hostname\":\"$HOSTNAME\",\"endpoint\":\"$ENDPOINT\",\"updates\":$updates_json}" \
-        >/dev/null
+    node /custom/peer-request.js "$WEBHOOK_ENDPOINT" \
+        "{\"hostname\":\"$HOSTNAME\",\"endpoint\":\"$ENDPOINT\",\"updates\":$updates_json}"
 }
 
 save_updates_local() {
     local updates_json="$1"
     # POST al API Node (mismo contenedor, puerto 5002 — acceso directo sin nginx).
     # Permite que set-updates detecte el fin de ciclo igual que los agentes.
-    if curl -sf -X POST "http://localhost:5002/api/set-updates" \
+    if curl -sf -X POST "http://127.0.0.1:5002/api/set-updates" \
         -H "Content-Type: application/json" \
         -d "{\"hostname\":\"$HOSTNAME\",\"endpoint\":\"Actual\",\"updates\":$updates_json}" \
         -m 5 >/dev/null 2>&1; then

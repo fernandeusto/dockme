@@ -3,6 +3,39 @@
    Crea el socket y autentica con el token.
    ================================================================ */
 (function () {
+    // The socket client is served by Dockge. If its backend is down, show a
+    // recoverable error instead of leaving both the dashboard and login hidden.
+    if (typeof window.io !== 'function') {
+        const overlay = document.getElementById('dm-auth-overlay');
+        if (overlay) overlay.style.display = 'flex';
+        const error = document.getElementById('dm-auth-err');
+        if (error) {
+            error.textContent = 'El backend de Dockme no está disponible. Revisa su registro de arranque y vuelve a intentarlo.';
+            error.style.display = 'block';
+        }
+        for (const id of ['dm-auth-user', 'dm-auth-pass', 'dm-remember']) {
+            const field = document.getElementById(id);
+            if (field) field.disabled = true;
+        }
+        const button = document.getElementById('dm-auth-btn');
+        if (button) {
+            button.textContent = 'Reintentar';
+            button.addEventListener('click', () => window.location.reload());
+        }
+        return;
+    }
+    const nativeFetch = window.fetch.bind(window);
+    let releaseRequests;
+    let sessionReady = new Promise(resolve => { releaseRequests = resolve; });
+    // Cookies also authenticate EventSource; never put credentials in stream URLs.
+    window.fetch = async (input, options) => {
+        const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url, location.href);
+        if (url.origin === location.origin && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/config/') || url.pathname === '/metrics') && url.pathname !== '/api/public-info') {
+            await sessionReady;
+        }
+        return nativeFetch(input, options);
+    };
+
 
     // 1. Conectar socket.io
     const socket = io({
@@ -79,6 +112,15 @@
     function showLogin() { showAuth('login'); }
     function showSetup() { showAuth('setup'); }
 
+    function authErrorMessage(response, fallback) {
+        const messages = {
+            authIncorrectCreds: 'Usuario o contraseña incorrectos.',
+            authInvalidToken: 'La sesión ha caducado. Vuelve a iniciar sesión.',
+            authUserInactiveOrDeleted: 'La cuenta está desactivada o ya no existe.'
+        };
+        return messages[response?.msg] || (response?.msgi18n ? fallback : response?.msg) || fallback;
+    }
+
     function hideAuth() {
         const overlay = document.getElementById('dm-auth-overlay');
         if (overlay) overlay.style.display = 'none';
@@ -104,7 +146,20 @@
         }
     }
 
-    function onLoginOk(token) {
+    async function onLoginOk(token) {
+        try {
+            const response = await nativeFetch('/api/session', {
+                method: 'POST', headers: { Authorization: `Bearer ${token}` },
+                signal: AbortSignal.timeout(5000)
+            });
+            if (!response.ok) throw new Error('No se pudo validar la sesión de la API');
+            releaseRequests();
+        } catch (error) {
+            showLogin();
+            document.getElementById('dm-auth-err').textContent = error.message;
+            document.getElementById('dm-auth-err').style.display = 'block';
+            return;
+        }
         try {
             const payload = JSON.parse(atob(token.split('.')[1]));
             const username = payload.username || 'Usuario';
@@ -126,6 +181,8 @@
 
     window._dmLogout = () => {
         socket.emit('logout');
+        nativeFetch('/api/session', { method: 'DELETE' });
+        sessionReady = new Promise(resolve => { releaseRequests = resolve; });
         localStorage.removeItem('token');
         sessionStorage.removeItem('token');
         showLogin();
@@ -154,23 +211,23 @@
                     socket.emit('login', { username: user, password: pass }, lr => {
                         if (lr?.ok) { saveToken(lr.token); onLoginOk(lr.token); }
                     });
-                } else { err.textContent = res?.msg || 'Error al crear el usuario'; err.style.display = 'block'; }
+                } else { err.textContent = authErrorMessage(res, 'No se pudo crear el usuario.'); err.style.display = 'block'; }
             });
         } else {
             btn.disabled = true; btn.textContent = 'Entrando...';
             socket.emit('login', { username: user, password: pass }, res => {
                 btn.disabled = false; btn.textContent = 'Iniciar Sesión';
                 if (res?.ok) { saveToken(res.token); onLoginOk(res.token); }
-                else { err.textContent = res?.msg || 'Usuario o contraseña incorrectos'; err.style.display = 'block'; }
+                else { err.textContent = authErrorMessage(res, 'No se pudo iniciar sesión. Vuelve a intentarlo.'); err.style.display = 'block'; }
             });
         }
     });
 
     socket.on('connect', () => {
         // Detectar modo agente antes de mostrar login (para ocultar "Recuérdame")
-        fetch('/config/settings.json')
+        nativeFetch('/api/public-info', { signal: AbortSignal.timeout(5000) })
             .then(r => r.json())
-            .then(s => { if (s?.centralUrl) window._dmIsRemoteAgent = true; })
+            .then(s => { if (s?.isAgent) window._dmIsRemoteAgent = true; })
             .catch(() => {})
             .finally(() => {
                 const token = localStorage.getItem('token') || sessionStorage.getItem('token');
