@@ -103,6 +103,12 @@
     },
     "overrides": {
         "tar": "^7.5.22",
-        "node-gyp": "^13.1.0"
+        "node-gyp": "^13.1.0",
+        "composerize": {
+            "core-js": "^3.51.0"
+        },
+        "composeverter": {
+            "core-js": "^3.51.0"
+        }
     }
 }

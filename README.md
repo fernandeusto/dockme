@@ -183,8 +183,8 @@ Este proyecto incorpora código de Dockge y docge-update-check, ambos bajo licen
 Ver [LICENSE](LICENSE) para más detalles.
 
 
-## Versión 3.8rc: candidata de seguridad
+## Versión 3.8: actualización de seguridad
 
-Dockme mantiene su diseño para red local y VPN. La versión 3.8rc protege la API con el login existente y vincula automáticamente las llamadas HTTP entre central y agentes mediante sus credenciales guardadas, sin añadir variables obligatorias al compose.
+Dockme mantiene su diseño para red local y VPN. La versión 3.8 protege la API con el login existente y vincula automáticamente las llamadas HTTP entre central y agentes mediante sus credenciales guardadas, sin añadir variables obligatorias al compose.
 
-Actualizar central y agentes a 3.8rc en la misma ventana de mantenimiento: la autenticación HTTP requiere ambos extremos actualizados. Conservar `dockme-data` y las variables de conexión actuales. Los detalles de cada versión están en los [releases de GitHub](https://github.com/fernandeusto/dockme/releases).
+Actualizar central y agentes a 3.8 en la misma ventana de mantenimiento: la autenticación HTTP requiere ambos extremos actualizados. Conservar `dockme-data` y las variables de conexión actuales. Los detalles de cada versión están en los [releases de GitHub](https://github.com/fernandeusto/dockme/releases).

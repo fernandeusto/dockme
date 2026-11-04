@@ -172,9 +172,6 @@
             const nameEl = document.getElementById('dm-username');
             if (picEl)  picEl.textContent  = username.charAt(0).toUpperCase();
             if (nameEl) nameEl.textContent = username;
-            // Hostname en título
-            const titleEl = document.getElementById('dm-header-title');
-            if (titleEl) titleEl.textContent = window.hostnameLocal || 'DockMe';
         } catch(e) {}
         hideAuth();
     }

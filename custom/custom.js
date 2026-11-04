@@ -756,6 +756,7 @@ async switchTo(profileName) {
         setLocalHostname(hostname) {
             this.hostnameLocal = hostname;
             window.hostnameLocal = hostname;
+            ensureTitleIsCorrect();
         }
     };
 
@@ -769,12 +770,13 @@ async switchTo(profileName) {
     // ==================== UI / NAVEGACIÓN ====================
     function ensureTitleIsCorrect() {
         const titleElement = document.querySelector('.fs-4.title');
-        if (!titleElement || titleElement.dataset.dockmeTitle) return;
+        if (!titleElement) return;
         const hostname = State.hostnameLocal || 'Dockme';
         titleElement.textContent = hostname;
         document.title = `Dockme - ${hostname}`;
         titleElement.style.visibility = '';
         document.body.classList.add('dockme-title-ready');
+        if (titleElement.dataset.dockmeTitle) return;
         titleElement.dataset.dockmeTitle = '1';
         titleElement.addEventListener('click', () => {
             if (document.body.classList.contains('dockme-logs-mode')) deactivateLogsMode();
@@ -3138,6 +3140,7 @@ window.addEventListener('resize', () => {
         hasErrors: false,
         
         open(stacks) {
+            if (this.panel || stacks.length === 0) return;
             this.isActive = true;
             this.stacks = stacks;
             this.currentIndex = 0;
@@ -3147,9 +3150,13 @@ window.addEventListener('resize', () => {
             this.startTime = null;
             this.totalTimer = null;
             this.hasErrors = false;
+            this.hasStarted = false;
+            this.isCancelling = false;
             this.createPanel();
             this.updateButton();
             this.setupStackListListener();
+            this.startTotalTimer();
+            this.runUpdates();
         },
         
         createPanel() {
@@ -3199,8 +3206,7 @@ window.addEventListener('resize', () => {
 
             this.panel.innerHTML = `
                 <div class="panel-header">
-                    <button class="btn-start-updates">🚀 Comenzar Actualizaciones</button>
-                    <h3 class="panel-title" style="display: none;">🔄 Actualizando stacks</h3>
+                    <h3 class="panel-title">🔄 Actualizando stacks</h3>
                     <button class="btn-close-panel">×</button>
                 </div>
                 <div class="panel-body">
@@ -3264,15 +3270,6 @@ window.addEventListener('resize', () => {
                         }
                     }
                 }
-            });
-            // Listener botón comenzar
-            const btnStart = this.panel.querySelector('.btn-start-updates');
-            btnStart?.addEventListener('click', () => {
-                btnStart.style.display = 'none';
-                const title = this.panel.querySelector('.panel-title');
-                if (title) title.style.display = '';
-                this.startTotalTimer();
-                this.runUpdates();
             });
             // Swipe derecha para cerrar en móvil
             if (window.innerWidth <= 700) {
